@@ -1,19 +1,17 @@
-//! CLI for Nova IVC folding over BLS12-381
+//! CLI for NovaSlim — off-circuit NIFS folding + sumcheck compression + slim
+//! on-chain proofs.
 //!
-//! This crate provides a command-line interface for the Nova step-chain
-//! flow (Implementation 8): a long computation is decomposed into `N`
-//! identical step circuits, each proving `state_{i+1} = f(step_i, state_i)`,
-//! and every step is proven as a standalone Groth16 proof bound by a
-//! BLAKE2b512 transcript.
-//!
-//! The CLI covers the step-chain lifecycle:
+//! A long computation is decomposed into `N` identical step circuits, each
+//! proving `state_{i+1} = f(step_i, state_i)`. The CLI covers the slim flow:
 //!   1. `params` — inspect a step circuit and validate the IVC invariant
-//!   2. `ceremony` — single-party trusted setup for a step circuit
-//!   3. `fold` — fold step witnesses into an IVC bundle + transcript
-//!   4. `compress` — Groth16-compress a NIFS bundle into one proof
-//!   5. `verify` — verify a folded IVC bundle (pairings + chain + transcript)
+//!   2. `fold --nifs` — fold step witnesses into one Relaxed-R1CS instance
+//!   3. `compress` — sumcheck-compress (with `--slim` for the ~1.5 KiB
+//!      on-chain proof)
+//!   4. `verify` — verify the folded bundle against the proof
 //!
-//! The core IVC logic lives in the `nova-prover` crate; this crate only
+//! No trusted setup is needed anywhere in this flow.
+//!
+//! The core IVC logic lives in the `prover` crate; this crate only
 //! adds the command-line interface on top of it.
 
 use clap::{Parser, Subcommand};
@@ -35,24 +33,6 @@ pub enum Command {
     ///
     ///   $ nova params --circuit step_circuit.r1cs
     Params(cmd::params::Args),
-
-    /// Run a single-party ceremony for a step circuit
-    ///
-    /// Loads the step circuit from a `.r1cs` file, generates random toxic
-    /// waste, and produces a per-step proving key (`.pk`) and verifying
-    /// key (`.vk`) in binary format.
-    ///
-    /// This is the **insecure, dev-only** path — use `phase2` for
-    /// production multi-party ceremonies.  The resulting `.pk` contains
-    /// only curve points (no scalars), so the prover uses pure MSM.
-    ///
-    /// Use `--h-scalar` for h-query scalar compression (Implementation 7)
-    /// to reduce proving key size.
-    ///
-    /// Example:
-    ///
-    ///   $ nova ceremony --circuit step_circuit.r1cs --proving-key step.pk --verifying-key step.vk
-    Ceremony(cmd::ceremony::Args),
 
     /// Fold step witnesses into an IVC bundle
     ///
@@ -122,18 +102,14 @@ pub enum Command {
 #[clap(author = "HAL Team <hal@cardanofoundation.org>")]
 #[clap(version = env!("CARGO_PKG_VERSION"))]
 #[clap(
-    about = "Nova IVC folding CLI for BLS12-381",
-    long_about = "A command-line interface for the Nova step-chain IVC flow on BLS12-381.\n\n\
-A long computation is decomposed into N identical step circuits and each step is proven\n\
-either as a standalone Groth16 proof bound together by a BLAKE2b512 transcript\n\
-(Implementation 8: params, ceremony, fold, verify) or folded into one Relaxed-R1CS\n\
-instance with a NIFS and compressed into a single proof\n\
-(Implementation 9: fold --nifs, compress, verify --compression-proof)\n\
-or compressed with a transparent sumcheck argument requiring no trusted setup\n\
-(Implementation 10: fold --nifs, compress --sumcheck, verify --sumcheck-proof).\n\n\
-The core IVC logic lives in the `nova-prover` crate; the Groth16 proof-system core lives\n\
-in `groth16-prover` / `trusted-setup`. Step proofs use arkworks' canonical serialization\n\
-and are directly consumable by on-chain Aiken verifiers."
+    about = "NovaSlim — folding + slim on-chain proofs CLI",
+    long_about = "A command-line interface for NovaSlim: off-circuit NIFS folding with transparent\n\
+sumcheck compression and slim on-chain proofs.\n\n\
+A long computation is decomposed into N identical step circuits. The steps are folded into\n\
+one Relaxed-R1CS instance (`fold --nifs`), compressed into a constant-size sumcheck proof\n\
+(`compress --slim`), and verified with native field operations only — no pairings, no\n\
+trusted setup (`verify --slim-proof`).\n\n\
+The core IVC logic lives in the `prover` crate."
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -145,7 +121,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     match args.command {
         Command::Params(args) => cmd::params::run(args),
-        Command::Ceremony(args) => cmd::ceremony::run(args),
         Command::Fold(args) => cmd::fold::run(args),
         Command::Compress(args) => cmd::compress::run(args),
         Command::Verify(args) => cmd::verify::run(args),

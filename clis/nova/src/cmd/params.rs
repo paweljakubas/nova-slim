@@ -1,7 +1,7 @@
 //! `params` subcommand — inspect a step circuit and emit a JSON descriptor.
 
 use clap::Parser;
-use nova_prover::run_params;
+use prover::run_params;
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;

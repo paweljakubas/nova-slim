@@ -433,79 +433,8 @@ fn params_accepts_cardano_ed25519_ownership_step() {
     assert!(desc["n_constraints"].as_u64().unwrap() > 0);
 }
 
-/// Run `nova ceremony` + `nova fold` over a chained witness directory and
-/// return the (pk, vk, ivc) temp files.
-fn nova_ceremony_and_fold(
-    circuit: &std::path::Path,
-    steps_dir: &std::path::Path,
-) -> (NamedTempFile, NamedTempFile, NamedTempFile) {
-    let pk = NamedTempFile::new().unwrap();
-    let vk = NamedTempFile::new().unwrap();
-
-    let mut ceremony = Command::cargo_bin("nova").unwrap();
-    ceremony
-        .arg("ceremony")
-        .arg("--circuit")
-        .arg(circuit)
-        .arg("--proving-key")
-        .arg(pk.path())
-        .arg("--verifying-key")
-        .arg(vk.path());
-    ceremony.assert().success();
-
-    let ivc = NamedTempFile::new().unwrap();
-    let mut fold = Command::cargo_bin("nova").unwrap();
-    fold.arg("fold")
-        .arg("--circuit")
-        .arg(circuit)
-        .arg("--proving-key")
-        .arg(pk.path())
-        .arg("--steps")
-        .arg(steps_dir)
-        .arg("--out")
-        .arg(ivc.path());
-    fold.assert().success();
-
-    (pk, vk, ivc)
-}
-
-/// Full Implementation 8 flow on CardanoKeyOwnership:
-/// ceremony → fold → verify over a 3-step Ed25519 scalar-mul chain.
-#[test]
-fn cardano_ed25519_ownership_nova_fold_verify_e2e() {
-    if !nova_step_artifacts_present() {
-        eprintln!("Nova step circuit artifacts missing; skipping e2e test");
-        return;
-    }
-    if !snarkjs_available() {
-        eprintln!("snarkjs not installed; skipping e2e test");
-        return;
-    }
-
-    let circuit = cardano_key_ownership_dir().join("cardano_ed25519_ownership_nova.r1cs");
-    let wasm = cardano_key_ownership_dir()
-        .join("cardano_ed25519_ownership_nova_js/cardano_ed25519_ownership_nova.wasm");
-
-    let steps_dir = tempfile::tempdir().unwrap();
-    generate_nova_step_witnesses(steps_dir.path(), &wasm, 3).unwrap();
-
-    let (_pk, vk, ivc) = nova_ceremony_and_fold(&circuit, steps_dir.path());
-
-    let mut verify = Command::cargo_bin("nova").unwrap();
-    verify
-        .arg("verify")
-        .arg("--ivc")
-        .arg(ivc.path())
-        .arg("--verifying-key")
-        .arg(vk.path());
-    verify
-        .assert()
-        .success()
-        .stderr(predicate::str::contains("Verified 3 steps"));
-}
-
-/// `nova fold` isolates the exact step whose `state_in` breaks the chain:
-/// step 1 must be reported when step_0001.wtns does not follow step_0000.wtns.
+/// Full fold → verify flow on CardanoKeyOwnership over a 3-step Ed25519
+/// scalar-mul chain (NIFS path, no proving key).
 #[test]
 fn cardano_ed25519_ownership_nova_fold_rejects_broken_chain() {
     if !nova_step_artifacts_present() {
@@ -537,43 +466,25 @@ fn cardano_ed25519_ownership_nova_fold_rejects_broken_chain() {
     )
     .unwrap();
 
-    let (_pk, _vk, _ivc) = {
-        let pk = NamedTempFile::new().unwrap();
-        let vk = NamedTempFile::new().unwrap();
-        let mut ceremony = Command::cargo_bin("nova").unwrap();
-        ceremony
-            .arg("ceremony")
-            .arg("--circuit")
-            .arg(&circuit)
-            .arg("--proving-key")
-            .arg(pk.path())
-            .arg("--verifying-key")
-            .arg(vk.path());
-        ceremony.assert().success();
-
-        let ivc = NamedTempFile::new().unwrap();
-        let mut fold = Command::cargo_bin("nova").unwrap();
-        fold.arg("fold")
-            .arg("--circuit")
-            .arg(&circuit)
-            .arg("--proving-key")
-            .arg(pk.path())
-            .arg("--steps")
-            .arg(broken_dir.path())
-            .arg("--out")
-            .arg(ivc.path());
-        fold.assert()
-            .failure()
-            .stderr(predicate::str::contains(
-                "state_in does not chain to previous state_out",
-            ))
-            .stderr(predicate::str::contains("step_0001.wtns"));
-        (pk, vk, ivc)
-    };
+    let bundle_file = NamedTempFile::new().unwrap();
+    let mut fold = Command::cargo_bin("nova").unwrap();
+    fold.arg("fold")
+        .arg("--nifs")
+        .arg("--circuit")
+        .arg(&circuit)
+        .arg("--steps")
+        .arg(broken_dir.path())
+        .arg("--out")
+        .arg(bundle_file.path());
+    fold.assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "state_in does not chain to previous state_out",
+        ))
+        .stderr(predicate::str::contains("step_0001.wtns"));
 }
 
-/// Tampering with any part of the IVC bundle is detected at verify time:
-/// a modified final transcript fails the deterministic BLAKE2b512 re-derivation.
+/// Tampering with any part of the IVC bundle is detected at verify time.
 #[test]
 fn cardano_ed25519_ownership_nova_verify_rejects_tampered_bundle() {
     if !nova_step_artifacts_present() {
@@ -592,12 +503,39 @@ fn cardano_ed25519_ownership_nova_verify_rejects_tampered_bundle() {
     let steps_dir = tempfile::tempdir().unwrap();
     generate_nova_step_witnesses(steps_dir.path(), &wasm, 3).unwrap();
 
-    let (_pk, vk, ivc) = nova_ceremony_and_fold(&circuit, steps_dir.path());
+    // Fold the chain (NIFS path).
+    let ivc = NamedTempFile::new().unwrap();
+    let mut fold = Command::cargo_bin("nova").unwrap();
+    fold.arg("fold")
+        .arg("--nifs")
+        .arg("--circuit")
+        .arg(&circuit)
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(ivc.path());
+    fold.assert().success();
 
-    // Corrupt the final transcript digest in the bundle.
+    // Corrupt the final instance in the bundle.
     let mut bundle: serde_json::Value =
         serde_json::from_slice(&fs::read(ivc.path()).unwrap()).unwrap();
-    bundle["transcript_final"] = serde_json::Value::String("0".repeat(128));
+
+    // Produce a slim proof for the honest bundle, then verify the tampered
+    // bundle against it — the instance mismatch must be rejected.
+    let slim_file = NamedTempFile::new().unwrap();
+    let mut compress = Command::cargo_bin("nova").unwrap();
+    compress
+        .arg("compress")
+        .arg("--slim")
+        .arg("--circuit")
+        .arg(&circuit)
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(slim_file.path());
+    compress.assert().success();
+
+    bundle["final_instance"]["u"] = serde_json::Value::String("999".to_string());
     fs::write(ivc.path(), serde_json::to_vec_pretty(&bundle).unwrap()).unwrap();
 
     let mut verify = Command::cargo_bin("nova").unwrap();
@@ -605,12 +543,12 @@ fn cardano_ed25519_ownership_nova_verify_rejects_tampered_bundle() {
         .arg("verify")
         .arg("--ivc")
         .arg(ivc.path())
-        .arg("--verifying-key")
-        .arg(vk.path());
+        .arg("--slim-proof")
+        .arg(slim_file.path());
     verify
         .assert()
         .failure()
-        .stderr(predicate::str::contains("final transcript mismatch"));
+        .stderr(predicate::str::contains("not created for this NIFS bundle"));
 }
 
 // ------------------------------------------------------------------
@@ -627,47 +565,14 @@ fn help_top_level() {
         .stdout(predicate::str::contains("Usage: nova <COMMAND>"))
         .stdout(predicate::str::contains("Commands:"))
         .stdout(predicate::str::contains("params"))
-        .stdout(predicate::str::contains("ceremony"))
         .stdout(predicate::str::contains("fold"))
+        .stdout(predicate::str::contains("compress"))
         .stdout(predicate::str::contains("verify"));
-}
-
-/// `nova ceremony --help` shows the --h-scalar option.
-#[test]
-fn help_ceremony() {
-    let mut cmd = Command::cargo_bin("nova").unwrap();
-    cmd.arg("ceremony").arg("--help");
-    cmd.assert()
-        .success()
-        .stdout(predicate::str::contains("--h-scalar"))
-        .stdout(predicate::str::contains("h-query scalar compression"))
-        .stdout(predicate::str::contains(
-            "Use h-query scalar compression (Implementation 7)",
-        ));
 }
 
 // ------------------------------------------------------------------
 // Error cases
 // ------------------------------------------------------------------
-
-/// `nova ceremony` fails when the circuit file does not exist.
-#[test]
-fn ceremony_missing_circuit() {
-    let pk = NamedTempFile::new().unwrap();
-    let vk = NamedTempFile::new().unwrap();
-
-    let mut cmd = Command::cargo_bin("nova").unwrap();
-    cmd.arg("ceremony")
-        .arg("--circuit")
-        .arg("/nonexistent/step_circuit.r1cs")
-        .arg("--proving-key")
-        .arg(pk.path())
-        .arg("--verifying-key")
-        .arg(vk.path());
-    cmd.assert()
-        .failure()
-        .stderr(predicate::str::contains("failed to load circuit"));
-}
 
 /// `nova fold` fails early when the circuit is not a valid step circuit
 /// (n_pub_in != n_pub_out), before even trying to load the proving key.
@@ -918,7 +823,7 @@ fn fold_nifs_emits_compression_r1cs() {
     // Compression circuit: 2 constraints, n_public = 1+4+1+1 = 7,
     // n_wires_total = 8, n_pub_out = 6, n_prv_in = 1.
     let c =
-        nova_prover::load_circuit(compression_r1cs.path()).expect("compression .r1cs must parse");
+        prover::load_circuit(compression_r1cs.path()).expect("compression .r1cs must parse");
     assert_eq!(c.n_wires, 8);
     assert_eq!(c.n_constraints, 2);
     assert_eq!(c.n_pub_out, 6);
@@ -965,8 +870,8 @@ fn nifs_compress_verify_end_to_end() {
     let pk_path = tmp.path().join("compression.pk");
     let vk_path = tmp.path().join("compression.vk");
     {
-        let step = nova_prover::load_circuit(r1cs.path()).expect("step .r1cs parses");
-        let cc = nova_prover::compression::CompressionCircuit::new(
+        let step = prover::load_circuit(r1cs.path()).expect("step .r1cs parses");
+        let cc = prover::compression::CompressionCircuit::new(
             &step.l,
             &step.r,
             &step.o,

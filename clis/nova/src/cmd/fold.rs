@@ -1,7 +1,7 @@
 //! `fold` subcommand — fold step witnesses into an IVC bundle + transcript.
 
 use clap::Parser;
-use nova_prover::{emit_compression_r1cs, run_fold, run_fold_nifs_opt, OptFlags};
+use prover::{emit_compression_r1cs, run_fold, run_fold_nifs_opt, OptFlags};
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
@@ -13,7 +13,7 @@ pub struct Args {
     #[arg(long, value_name = "FILE")]
     pub circuit: PathBuf,
 
-    /// Path to the step proving key (from `nova ceremony`).
+    /// Path to the step proving key (legacy step-chain path only).
     /// Not required with `--nifs` — folding is transparent.
     #[arg(long, value_name = "FILE", required_unless_present = "nifs")]
     pub proving_key: Option<PathBuf>,

@@ -1,10 +1,16 @@
-//! Nova IVC folding library — step-chain proofs over BLS12-381 (Implementation 8).
+//! NovaSlim — off-circuit NIFS folding, sumcheck compression, and slim
+//! on-chain proofs.
 //!
 //! A long computation is decomposed into `N` identical step circuits, each
-//! proving `state_{i+1} = f(step_i, state_i)`.  The [`run_fold`] operation
-//! runs a chain of Groth16 proofs over the step witnesses — every step proof
-//! is individually verifiable and the state chain is bound by a BLAKE2b512
-//! transcript — while [`run_verify`] re-checks the whole chain.
+//! proving `state_{i+1} = f(step_i, state_i)`.  The primary flow is:
+//!
+//! 1. [`run_fold_nifs`] folds all step witnesses into a single Relaxed-R1CS
+//!    accumulator ([`nifs`] module — transparent, no trusted setup).
+//! 2. [`run_compress_sumcheck`] compresses the final instance into a
+//!    constant-size sumcheck proof ([`sumcheck`] module), or a **slim**
+//!    on-chain proof via [`NifsSumcheckProof::to_slim`] (HashPC openings
+//!    stripped).
+//! 3. [`run_verify_slim`] verifies it with native field operations only.
 //!
 //! The step circuits must satisfy one invariant (checked by [`check_step_circuit`],
 //! exposed to the CLI as the `params` operation): the number of public inputs
@@ -22,10 +28,7 @@ use ark_ec::{AffineRepr, VariableBaseMSM};
 use ark_ff::{PrimeField, Zero};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use blake2::{Blake2b512, Digest};
-use groth16_prover::ceremony::{
-    single_party_ceremony_full_from_tw_sparse, verify_with_vk, FullProvingKey, ToxicWaste,
-    VerifyingKey,
-};
+use groth16_prover::ceremony::{verify_with_vk, FullProvingKey, VerifyingKey};
 use groth16_prover::circom_adapter::SparseCircomCircuit;
 use groth16_prover::engine::FftQapEngine;
 use groth16_prover::prover::{PippengerProver, Proof, Prover, PublicInput};
@@ -237,13 +240,6 @@ pub struct NifsSumcheckProof {
     pub e_opening: Vec<String>,
 }
 
-/// Summary of a successful [`run_ceremony`].
-#[derive(Debug, Clone)]
-pub struct CeremonyOutput {
-    pub pk_bytes: usize,
-    pub vk_bytes: usize,
-}
-
 /// Summary of a successful [`run_verify`].
 #[derive(Debug, Clone)]
 pub struct VerifyOutput {
@@ -318,91 +314,6 @@ pub fn run_params(circuit: &Path) -> Result<CircuitDescriptor, Box<dyn Error>> {
     let c = load_circuit(circuit)?;
     check_step_circuit(&c)?;
     Ok(circuit_descriptor(&c))
-}
-
-/// `ceremony` — single-party ceremony for a step circuit.
-///
-/// Loads the step circuit from a `.r1cs` file, generates random toxic
-/// waste, and writes a per-step proving key (`.pk`) and verifying key
-/// (`.vk`) in binary format.
-///
-/// This is the **insecure, dev-only** path — use `phase2` for production
-/// multi-party ceremonies.  The resulting `.pk` contains only curve points
-/// (no scalars), so the prover uses pure MSM.
-///
-/// Use `h_scalar` for h-query scalar compression (Implementation 7) to
-/// reduce proving key size.
-pub fn run_ceremony(
-    circuit: &Path,
-    proving_key: &Path,
-    verifying_key: &Path,
-    h_scalar: bool,
-) -> Result<CeremonyOutput, Box<dyn Error>> {
-    let circuit = load_circuit(circuit)?;
-    check_step_circuit(&circuit)?;
-
-    eprintln!(
-        "Loaded step circuit (sparse): {} wires, {} constraints (public: {} out + {} in, private: {})",
-        circuit.n_wires,
-        circuit.n_constraints,
-        circuit.n_pub_out,
-        circuit.n_pub_in,
-        circuit.n_prv_in
-    );
-
-    let n_public = 1 + circuit.n_pub_out as usize + circuit.n_pub_in as usize;
-    let mut rng = rand::thread_rng();
-    let engine = FftQapEngine::new();
-    let tw = ToxicWaste::random(&mut rng);
-
-    let (full_pk, vk) = single_party_ceremony_full_from_tw_sparse(
-        &engine,
-        circuit.n_constraints as usize,
-        circuit.n_wires as usize,
-        n_public,
-        &circuit.l,
-        &circuit.r,
-        &circuit.o,
-        tw,
-        h_scalar,
-    );
-
-    let pk_bytes = write_pk_uncompressed(&full_pk, proving_key)?;
-    let vk_bytes = write_vk_uncompressed(&vk, verifying_key)?;
-
-    eprintln!(
-        "Nova ceremony complete. h_scalar compression: {}.",
-        if h_scalar { "enabled" } else { "disabled" }
-    );
-    Ok(CeremonyOutput { pk_bytes, vk_bytes })
-}
-
-fn write_pk_uncompressed(pk: &FullProvingKey, path: &Path) -> Result<usize, Box<dyn Error>> {
-    let mut bytes = Vec::new();
-    pk.serialize_uncompressed(&mut bytes)
-        .map_err(|e| format!("failed to serialize proving key: {e:?}"))?;
-    fs::write(path, &bytes)
-        .map_err(|e| format!("failed to write proving key to {}: {e}", path.display()))?;
-    eprintln!(
-        "Full proving key ({} bytes) written to {}",
-        bytes.len(),
-        path.display()
-    );
-    Ok(bytes.len())
-}
-
-fn write_vk_uncompressed(vk: &VerifyingKey, path: &Path) -> Result<usize, Box<dyn Error>> {
-    let mut bytes = Vec::new();
-    vk.serialize_uncompressed(&mut bytes)
-        .map_err(|e| format!("failed to serialize verifying key: {e:?}"))?;
-    fs::write(path, &bytes)
-        .map_err(|e| format!("failed to write verifying key to {}: {e}", path.display()))?;
-    eprintln!(
-        "Verifying key ({} bytes) written to {}",
-        bytes.len(),
-        path.display()
-    );
-    Ok(bytes.len())
 }
 
 /// `fold` — fold step witnesses into an IVC bundle.
@@ -1630,6 +1541,7 @@ pub fn frs_from_strings(strs: &[String]) -> Result<Vec<Fr>, Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use groth16_prover::ceremony::{single_party_ceremony_full_from_tw_sparse, ToxicWaste};
     use groth16_prover::circom_adapter::{r1cs_to_bytes_sparse, wtns_to_bytes};
 
     /// One-constraint step circuit `out = in · x` (wires `[1, out, in, x]`).

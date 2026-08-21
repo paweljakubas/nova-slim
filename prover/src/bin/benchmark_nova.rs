@@ -44,8 +44,8 @@ use groth16_prover::ceremony::{
 use groth16_prover::circom_adapter::SparseCircomCircuit;
 use groth16_prover::engine::FftQapEngine;
 use groth16_prover::prover::{PippengerProver, Proof, Prover, PublicInput};
-use nova_prover::nifs;
-use nova_prover::{
+use prover::nifs;
+use prover::{
     fr_to_string, prove_compression, prove_sumcheck_compression_opt, verify_compression,
     verify_sumcheck_compression, NifsBundle, NifsFinalInstance, NifsFoldOutput, OptFlags,
     NIFS_PARAMS_SEED, NIFS_TRANSCRIPT_PREFIX,
@@ -238,7 +238,7 @@ fn benchmark_nifs(engine: &FftQapEngine, circuit: &mut SparseCircomCircuit, wtns
     );
 
     // 2. Compression ceremony
-    let cc = nova_prover::compression::CompressionCircuit::new(
+    let cc = prover::compression::CompressionCircuit::new(
         &circuit.l, &circuit.r, &circuit.o, n_wires,
     );
     let mut rng = rand::thread_rng();

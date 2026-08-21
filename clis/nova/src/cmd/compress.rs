@@ -8,7 +8,7 @@
 //! (~4 KiB for 7,724-constraint steps).
 
 use clap::Parser;
-use nova_prover::{run_compress_opt, run_compress_sumcheck_opt, NifsSumcheckProof, OptFlags};
+use prover::{run_compress_opt, run_compress_sumcheck_opt, NifsSumcheckProof, OptFlags};
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;

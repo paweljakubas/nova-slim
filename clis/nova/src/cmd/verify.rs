@@ -2,7 +2,7 @@
 //! compression proof).
 
 use clap::Parser;
-use nova_prover::{run_verify, run_verify_slim, run_verify_sumcheck};
+use prover::{run_verify, run_verify_slim, run_verify_sumcheck};
 use std::error::Error;
 use std::path::PathBuf;
 
@@ -13,7 +13,7 @@ pub struct Args {
     #[arg(long, value_name = "FILE")]
     pub ivc: PathBuf,
 
-    /// Path to the step verifying key (from `nova ceremony`).
+    /// Path to the step verifying key (legacy step-chain path only).
     /// Not used for NIFS bundles.
     #[arg(long, value_name = "FILE", required_unless_present_any = ["compression_proof", "sumcheck_proof", "slim_proof"])]
     pub verifying_key: Option<PathBuf>,
