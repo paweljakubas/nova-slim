@@ -131,6 +131,322 @@ pub struct NifsBundle {
     pub transcript_final: String,
 }
 
+/// Compact CBOR codec for the public artifacts ([`NifsBundle`],
+/// [`NifsSlimProof`], [`NifsSumcheckProof`]).
+///
+/// Field elements are stored as 32-byte little-endian values, curve points in
+/// compressed form and digests as raw bytes — roughly half the size of the
+/// decimal/hex JSON encoding.  Format version `v` guards against decoding
+/// stale artifacts.
+pub mod codec {
+    use super::{NifsBundle, NifsFinalInstance, NifsSlimProof, NifsSumcheckProof};
+    use ark_bls12_381::Fr;
+    use ark_ff::PrimeField;
+    use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+    use serde::{Deserialize, Serialize};
+    use serde_bytes::ByteBuf;
+    use std::error::Error;
+
+    const FORMAT_VERSION: u8 = 1;
+
+    /// A field element in its cheapest CBOR form: a plain integer when the
+    /// value fits in u64 (sumcheck coefficients often do), otherwise the
+    /// canonical 32-byte little-endian encoding.
+    #[derive(Serialize, Deserialize)]
+    #[serde(untagged)]
+    enum FrCbor {
+        Small(u64),
+        Wide(#[serde(with = "serde_bytes")] Box<[u8]>),
+    }
+
+    fn fr_enc(f: &Fr) -> FrCbor {
+        let big = f.into_bigint();
+        if big.0[1] == 0 && big.0[2] == 0 && big.0[3] == 0 {
+            FrCbor::Small(big.0[0])
+        } else {
+            let mut buf = Vec::with_capacity(32);
+            f.serialize_compressed(&mut buf).expect("Fr serialize");
+            FrCbor::Wide(Box::from(buf))
+        }
+    }
+
+    fn fr_dec(v: &FrCbor) -> Result<Fr, Box<dyn Error>> {
+        match v {
+            FrCbor::Small(x) => Ok(Fr::from(*x)),
+            FrCbor::Wide(b) => Ok(Fr::deserialize_compressed(b.as_ref())?),
+        }
+    }
+
+    fn fr_parse(s: &str) -> Result<Fr, Box<dyn Error>> {
+        s.parse::<Fr>()
+            .map_err(|e| format!("invalid field element '{s}': {e:?}").into())
+    }
+
+    fn frs_enc(strs: &[String]) -> Result<Vec<FrCbor>, Box<dyn Error>> {
+        strs.iter().map(|s| Ok(fr_enc(&fr_parse(s)?))).collect()
+    }
+
+    fn frs_dec(vs: &[FrCbor]) -> Result<Vec<String>, Box<dyn Error>> {
+        vs.iter()
+            .map(|v| Ok(super::fr_to_string(&fr_dec(v)?)))
+            .collect()
+    }
+
+    fn hash_enc(hex_str: &str) -> Result<ByteBuf, Box<dyn Error>> {
+        Ok(ByteBuf::from(hex::decode(hex_str)?))
+    }
+
+    fn instance_enc(i: &NifsFinalInstance) -> Result<InstanceCbor, Box<dyn Error>> {
+        Ok(InstanceCbor {
+            x: frs_enc(&i.x)?,
+            u: fr_enc(&fr_parse(&i.u)?),
+            w_commit: ByteBuf::from(hex::decode(&i.w_commit)?),
+            e_commit: ByteBuf::from(hex::decode(&i.e_commit)?),
+        })
+    }
+
+    fn instance_dec(c: &InstanceCbor) -> Result<NifsFinalInstance, Box<dyn Error>> {
+        Ok(NifsFinalInstance {
+            x: frs_dec(&c.x)?,
+            u: super::fr_to_string(&fr_dec(&c.u)?),
+            w_commit: hex::encode(&c.w_commit),
+            e_commit: hex::encode(&c.e_commit),
+        })
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct InstanceCbor {
+        x: Vec<FrCbor>,
+        u: FrCbor,
+        w_commit: ByteBuf,
+        e_commit: ByteBuf,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct Dims([u32; 4]);
+
+    #[derive(Serialize, Deserialize)]
+    struct BundleCbor {
+        v: u8,
+        circuit: String,
+        dims: Dims,
+        initial_state: Vec<FrCbor>,
+        n_steps: u64,
+        final_instance: InstanceCbor,
+        transcript_final: ByteBuf,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct ProofCoreCbor {
+        v: u8,
+        circuit: String,
+        dims: Dims,
+        final_instance: InstanceCbor,
+        polys: Vec<Vec<FrCbor>>,
+        claims: Vec<FrCbor>,
+        r_challenges: Vec<FrCbor>,
+        product_at_r: FrCbor,
+        w_hash: ByteBuf,
+        e_hash: ByteBuf,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct SumcheckProofCbor {
+        #[serde(flatten)]
+        core: ProofCoreCbor,
+        w_opening: Vec<FrCbor>,
+        e_opening: Vec<FrCbor>,
+    }
+
+    fn core_of(p: &NifsSumcheckProof) -> Result<(String, Dims), Box<dyn Error>> {
+        Ok((
+            p.circuit.clone(),
+            Dims([p.n_wires, p.n_constraints, p.n_pub_out, p.n_pub_in]),
+        ))
+    }
+
+    fn write<T: Serialize>(v: &T) -> Result<Vec<u8>, Box<dyn Error>> {
+        let mut out = Vec::new();
+        ciborium::into_writer(v, &mut out)?;
+        Ok(out)
+    }
+
+    fn check_version(v: u8) -> Result<(), Box<dyn Error>> {
+        if v != FORMAT_VERSION {
+            Err(format!(
+                "unsupported artifact format version {v} (expected {FORMAT_VERSION})"
+            )
+            .into())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn bundle_encode(b: &NifsBundle) -> Result<Vec<u8>, Box<dyn Error>> {
+        let dto = BundleCbor {
+            v: FORMAT_VERSION,
+            circuit: b.circuit.clone(),
+            dims: Dims([b.n_wires, b.n_constraints, b.n_pub_out, b.n_pub_in]),
+            initial_state: frs_enc(&b.initial_state)?,
+            n_steps: b.n_steps as u64,
+            final_instance: instance_enc(&b.final_instance)?,
+            transcript_final: hash_enc(&b.transcript_final)?,
+        };
+        write(&dto)
+    }
+
+    pub fn bundle_decode(bytes: &[u8]) -> Result<NifsBundle, Box<dyn Error>> {
+        let d: BundleCbor =
+            ciborium::from_reader(bytes).map_err(|e| format!("invalid CBOR bundle: {e}"))?;
+        check_version(d.v)?;
+        let [nw, nc, npo, npi] = d.dims.0;
+        Ok(NifsBundle {
+            circuit: d.circuit,
+            n_wires: nw,
+            n_constraints: nc,
+            n_pub_out: npo,
+            n_pub_in: npi,
+            initial_state: frs_dec(&d.initial_state)?,
+            n_steps: d.n_steps as usize,
+            final_instance: instance_dec(&d.final_instance)?,
+            transcript_final: hex::encode(&d.transcript_final),
+        })
+    }
+
+    pub fn slim_proof_encode(p: &NifsSlimProof) -> Result<Vec<u8>, Box<dyn Error>> {
+        let (circuit, dims) =
+            (p.circuit.clone(), Dims([p.n_wires, p.n_constraints, p.n_pub_out, p.n_pub_in]));
+        let dto = ProofCoreCbor {
+            v: FORMAT_VERSION,
+            circuit,
+            dims,
+            final_instance: instance_enc(&p.final_instance)?,
+            polys: p
+                .sumcheck_polys
+                .iter()
+                .map(|row| frs_enc(row))
+                .collect::<Result<_, _>>()?,
+            claims: frs_enc(&p.sumcheck_claims)?,
+            r_challenges: frs_enc(&p.r_challenges)?,
+            product_at_r: fr_enc(&fr_parse(&p.claimed_product_at_r)?),
+            w_hash: hash_enc(&p.w_commit_hash)?,
+            e_hash: hash_enc(&p.e_commit_hash)?,
+        };
+        write(&dto)
+    }
+
+    pub fn slim_proof_decode(bytes: &[u8]) -> Result<NifsSlimProof, Box<dyn Error>> {
+        let d: ProofCoreCbor =
+            ciborium::from_reader(bytes).map_err(|e| format!("invalid CBOR proof: {e}"))?;
+        proof_core_to_slim(d)
+    }
+
+    fn proof_core_to_slim(d: ProofCoreCbor) -> Result<NifsSlimProof, Box<dyn Error>> {
+        check_version(d.v)?;
+        let [nw, nc, npo, npi] = d.dims.0;
+        Ok(NifsSlimProof {
+            circuit: d.circuit,
+            n_wires: nw,
+            n_constraints: nc,
+            n_pub_out: npo,
+            n_pub_in: npi,
+            final_instance: instance_dec(&d.final_instance)?,
+            sumcheck_polys: d
+                .polys
+                .iter()
+                .map(|row| frs_dec(row))
+                .collect::<Result<_, _>>()?,
+            sumcheck_claims: frs_dec(&d.claims)?,
+            r_challenges: frs_dec(&d.r_challenges)?,
+            claimed_product_at_r: super::fr_to_string(&fr_dec(&d.product_at_r)?),
+            w_commit_hash: hex::encode(&d.w_hash),
+            e_commit_hash: hex::encode(&d.e_hash),
+        })
+    }
+
+    pub fn sumcheck_proof_encode(p: &NifsSumcheckProof) -> Result<Vec<u8>, Box<dyn Error>> {
+        let (circuit, dims) = core_of(p)?;
+        let dto = SumcheckProofCbor {
+            core: ProofCoreCbor {
+                v: FORMAT_VERSION,
+                circuit,
+                dims,
+                final_instance: instance_enc(&p.final_instance)?,
+                polys: p
+                    .sumcheck_polys
+                    .iter()
+                    .map(|row| frs_enc(row))
+                    .collect::<Result<_, _>>()?,
+                claims: frs_enc(&p.sumcheck_claims)?,
+                r_challenges: frs_enc(&p.r_challenges)?,
+                product_at_r: fr_enc(&fr_parse(&p.claimed_product_at_r)?),
+                w_hash: hash_enc(&p.w_commit_hash)?,
+                e_hash: hash_enc(&p.e_commit_hash)?,
+            },
+            w_opening: frs_enc(&p.w_opening)?,
+            e_opening: frs_enc(&p.e_opening)?,
+        };
+        write(&dto)
+    }
+
+    pub fn sumcheck_proof_decode(bytes: &[u8]) -> Result<NifsSumcheckProof, Box<dyn Error>> {
+        let d: SumcheckProofCbor =
+            ciborium::from_reader(bytes).map_err(|e| format!("invalid CBOR proof: {e}"))?;
+        let c = &d.core;
+        check_version(c.v)?;
+        let [nw, nc, npo, npi] = c.dims.0;
+        Ok(NifsSumcheckProof {
+            circuit: c.circuit.clone(),
+            n_wires: nw,
+            n_constraints: nc,
+            n_pub_out: npo,
+            n_pub_in: npi,
+            final_instance: instance_dec(&c.final_instance)?,
+            sumcheck_polys: c
+                .polys
+                .iter()
+                .map(|row| frs_dec(row))
+                .collect::<Result<_, _>>()?,
+            sumcheck_claims: frs_dec(&c.claims)?,
+            r_challenges: frs_dec(&c.r_challenges)?,
+            claimed_product_at_r: super::fr_to_string(&fr_dec(&c.product_at_r)?),
+            w_commit_hash: hex::encode(&c.w_hash),
+            e_commit_hash: hex::encode(&c.e_hash),
+            w_opening: frs_dec(&d.w_opening)?,
+            e_opening: frs_dec(&d.e_opening)?,
+        })
+    }
+
+    impl NifsBundle {
+        /// Compact binary encoding (CBOR).
+        pub fn to_cbor(&self) -> Result<Vec<u8>, Box<dyn Error>> {
+            bundle_encode(self)
+        }
+        /// Decode a compact binary (CBOR) bundle.
+        pub fn from_cbor(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
+            bundle_decode(bytes)
+        }
+    }
+
+    impl NifsSlimProof {
+        pub fn to_cbor(&self) -> Result<Vec<u8>, Box<dyn Error>> {
+            slim_proof_encode(self)
+        }
+        pub fn from_cbor(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
+            slim_proof_decode(bytes)
+        }
+    }
+
+    impl NifsSumcheckProof {
+        pub fn to_cbor(&self) -> Result<Vec<u8>, Box<dyn Error>> {
+            sumcheck_proof_encode(self)
+        }
+        pub fn from_cbor(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
+            sumcheck_proof_decode(bytes)
+        }
+    }
+}
+
 /// Output of [`run_fold_nifs`]: the public bundle plus the private final
 /// instance/witness (consumed by the compression prover).
 #[derive(Debug, Clone)]
@@ -419,25 +735,25 @@ pub fn run_compress_sumcheck_opt(
     let mut rng = rand::thread_rng();
     let cproof = prove_sumcheck_compression_opt(&c, &folded, &mut rng, opts)?;
 
-    let json = serde_json::to_string_pretty(&cproof)
+    let cbor = codec::sumcheck_proof_encode(&cproof)
         .map_err(|e| format!("failed to serialize sumcheck proof: {e}"))?;
-    fs::write(out, &json)
+    fs::write(out, &cbor)
         .map_err(|e| format!("failed to write sumcheck proof to {}: {e}", out.display()))?;
     eprintln!(
         "Sumcheck proof written to {} ({} bytes, u = {})",
         out.display(),
-        json.len(),
+        cbor.len(),
         fr_to_string(&folded.final_instance.u)
     );
     Ok(CompressOutput {
-        bytes: json.len(),
+        bytes: cbor.len(),
         bundle: folded.bundle,
     })
 }
 
 /// Verify a sumcheck compression proof against a NIFS bundle (CLI path).
 ///
-/// Loads the NIFS bundle and the sumcheck proof JSON, then runs
+/// Loads the NIFS bundle and the compact CBOR sumcheck proof, then runs
 /// [`verify_sumcheck_compression`].  No verifying key is needed.
 pub fn run_verify_sumcheck(
     ivc: &Path,
@@ -445,7 +761,7 @@ pub fn run_verify_sumcheck(
 ) -> Result<VerifyOutput, Box<dyn Error>> {
     let bundle_bytes =
         fs::read(ivc).map_err(|e| format!("failed to read IVC bundle {}: {e}", ivc.display()))?;
-    let bundle: NifsBundle = serde_json::from_slice(&bundle_bytes)
+    let bundle: NifsBundle = codec::bundle_decode(&bundle_bytes)
         .map_err(|e| format!("failed to parse IVC bundle as NIFS bundle: {e}"))?;
 
     let proof_bytes = fs::read(sumcheck_proof).map_err(|e| {
@@ -454,7 +770,7 @@ pub fn run_verify_sumcheck(
             sumcheck_proof.display()
         )
     })?;
-    let sc_proof: NifsSumcheckProof = serde_json::from_slice(&proof_bytes)
+    let sc_proof: NifsSumcheckProof = codec::sumcheck_proof_decode(&proof_bytes)
         .map_err(|e| format!("failed to parse sumcheck proof: {e}"))?;
 
     verify_sumcheck_compression(&bundle, &sc_proof)
@@ -814,7 +1130,7 @@ pub fn verify_slim(
 
 /// Verify a slim sumcheck compression proof against a NIFS bundle (CLI path).
 ///
-/// Loads the NIFS bundle and the slim proof JSON, then runs
+/// Loads the NIFS bundle and the compact CBOR slim proof, then runs
 /// [`verify_slim`].  No verifying key is needed.
 pub fn run_verify_slim(
     ivc: &Path,
@@ -822,7 +1138,7 @@ pub fn run_verify_slim(
 ) -> Result<VerifyOutput, Box<dyn Error>> {
     let bundle_bytes =
         fs::read(ivc).map_err(|e| format!("failed to read IVC bundle {}: {e}", ivc.display()))?;
-    let bundle: NifsBundle = serde_json::from_slice(&bundle_bytes)
+    let bundle: NifsBundle = codec::bundle_decode(&bundle_bytes)
         .map_err(|e| format!("failed to parse IVC bundle as NIFS bundle: {e}"))?;
 
     let proof_bytes = fs::read(slim_proof).map_err(|e| {
@@ -831,7 +1147,7 @@ pub fn run_verify_slim(
             slim_proof.display()
         )
     })?;
-    let sp: NifsSlimProof = serde_json::from_slice(&proof_bytes)
+    let sp: NifsSlimProof = codec::slim_proof_decode(&proof_bytes)
         .map_err(|e| format!("failed to parse slim proof: {e}"))?;
 
     verify_slim(&bundle, &sp)

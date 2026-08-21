@@ -523,9 +523,7 @@ fn cardano_ed25519_ownership_nova_verify_rejects_tampered_bundle() {
         .arg(ivc.path());
     fold.assert().success();
 
-    // Corrupt the final instance in the bundle.
-    let mut bundle: serde_json::Value =
-        serde_json::from_slice(&fs::read(ivc.path()).unwrap()).unwrap();
+    // Decode the bundle (compact CBOR), then corrupt the final instance.
 
     // Produce a slim proof for the honest bundle, then verify the tampered
     // bundle against it — the instance mismatch must be rejected.
@@ -542,8 +540,10 @@ fn cardano_ed25519_ownership_nova_verify_rejects_tampered_bundle() {
         .arg(slim_file.path());
     compress.assert().success();
 
-    bundle["final_instance"]["u"] = serde_json::Value::String("999".to_string());
-    fs::write(ivc.path(), serde_json::to_vec_pretty(&bundle).unwrap()).unwrap();
+    let mut bundle: prover::NifsBundle =
+        prover::NifsBundle::from_cbor(&fs::read(ivc.path()).unwrap()).unwrap();
+    bundle.final_instance.u = "999".to_string();
+    fs::write(ivc.path(), bundle.to_cbor().unwrap()).unwrap();
 
     let mut verify = Command::cargo_bin("nova").unwrap();
     verify
@@ -650,24 +650,19 @@ fn fold_nifs_end_to_end() {
         .arg(bundle_file.path());
     cmd.assert().success();
 
-    let bundle: serde_json::Value =
-        serde_json::from_slice(&fs::read(bundle_file.path()).unwrap()).unwrap();
-    assert!(bundle.get("steps").is_none());
-    assert!(bundle["final_instance"].is_object());
-    assert_eq!(bundle["n_steps"], 3);
-    assert_eq!(bundle["initial_state"], serde_json::json!(["2"]));
+    let bundle: prover::NifsBundle =
+        prover::NifsBundle::from_cbor(&fs::read(bundle_file.path()).unwrap()).unwrap();
+    assert_eq!(bundle.n_steps, 3);
+    assert_eq!(bundle.initial_state, serde_json::json!(["2"]).as_array().unwrap()
+        .iter().map(|v| v.as_str().unwrap().to_string()).collect::<Vec<_>>());
     // The final instance holds the *folded* accumulated state
     // (x_acc = x_0 + Σ r_i·x_i), not the last step's state — so just check
     // the structure and that folding is deterministic.
-    assert_eq!(bundle["final_instance"]["x"].as_array().unwrap().len(), 2);
-    assert_ne!(bundle["final_instance"]["u"].as_str().unwrap(), "1");
-    assert!(bundle["final_instance"]["w_commit"]
-        .as_str()
-        .is_some_and(|s| !s.is_empty()));
-    assert!(bundle["final_instance"]["e_commit"]
-        .as_str()
-        .is_some_and(|s| !s.is_empty()));
-    assert_eq!(bundle["transcript_final"].as_str().unwrap().len(), 128);
+    assert_eq!(bundle.final_instance.x.len(), 2);
+    assert_ne!(bundle.final_instance.u, "1");
+    assert!(!bundle.final_instance.w_commit.is_empty());
+    assert!(!bundle.final_instance.e_commit.is_empty());
+    assert_eq!(bundle.transcript_final.len(), 128);
 
     // Folding is deterministic: re-folding the same witnesses yields the
     // exact same bundle (challenges are transcript-derived, not sampled).
@@ -681,8 +676,8 @@ fn fold_nifs_end_to_end() {
         .arg("--out")
         .arg(rerun.path());
     cmd.assert().success();
-    let bundle2: serde_json::Value =
-        serde_json::from_slice(&fs::read(rerun.path()).unwrap()).unwrap();
+    let bundle2: prover::NifsBundle =
+        prover::NifsBundle::from_cbor(&fs::read(rerun.path()).unwrap()).unwrap();
     assert_eq!(bundle, bundle2);
 }
 
@@ -814,16 +809,11 @@ fn nifs_compress_verify_end_to_end() {
         .stderr(predicate::str::contains("slim sumcheck proof OK"));
 
     // 4. tampering the bundle's instance must fail verification
-    let bundle: serde_json::Value =
-        serde_json::from_slice(&fs::read(bundle_file.path()).unwrap()).unwrap();
-    let mut tampered = bundle.clone();
-    tampered["final_instance"]["x"][0] = serde_json::json!((state + 1).to_string());
+    let mut tampered: prover::NifsBundle =
+        prover::NifsBundle::from_cbor(&fs::read(bundle_file.path()).unwrap()).unwrap();
+    tampered.final_instance.x[0] = (state + 1).to_string();
     let tampered_file = tempfile::NamedTempFile::new().unwrap();
-    fs::write(
-        tampered_file.path(),
-        serde_json::to_string_pretty(&tampered).unwrap(),
-    )
-    .unwrap();
+    fs::write(tampered_file.path(), tampered.to_cbor().unwrap()).unwrap();
     let mut verify2 = Command::cargo_bin("nova").unwrap();
     verify2
         .arg("verify")

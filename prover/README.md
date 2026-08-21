@@ -7,7 +7,7 @@ A long computation is split into `N` identical step circuits, each proving
 `state_{i+1} = f(step_i, state_i)`. The `fold` operation transparently accumulates
 all steps into one Relaxed-R1CS instance; `compress` produces a constant-size
 sumcheck proof; and `verify` checks it with native field operations — no
-pairings, no trusted setup, and a **~1.5 KiB** on-chain footprint with the
+pairings, no trusted setup, and a **~2.5 KiB** on-chain footprint with the
 slim proof.
 
 | | Full sumcheck proof | **Slim proof** |
@@ -17,7 +17,7 @@ slim proof.
 | On-chain verify | sumcheck + HashPC (pairing-free) | **sumcheck only (pairing-free)** |
 | Trusted setup | **none** | **none** |
 | ZK | Yes | **Yes** |
-| On-chain size | ~473 KiB | **~1.5 KiB** |
+| On-chain size | ~473 KiB | **~2.5 KiB** (CBOR) |
 
 The R1CS parsing / circom adapter lives in the `groth16-prover` crate; this
 crate adds the IVC folding layer. The `nova` CLI (`clis/nova`) wraps this
@@ -46,7 +46,7 @@ nova params --circuit step_circuit.r1cs
 nova fold --circuit step_circuit.r1cs \
   --steps ./step_witnesses/ --out bundle.ivc.json
 
-# 3. Compress into a slim on-chain proof (~1.5 KiB, no trusted setup)
+# 3. Compress into a slim on-chain proof (~2.5 KiB, no trusted setup)
 nova compress --slim --circuit step_circuit.r1cs \
   --steps ./step_witnesses/ --out slim.proof.json
 
@@ -99,7 +99,7 @@ for on-chain soundness.
 | HashPC openings (Z + E) | ~492 KiB | **off-chain** |
 | Commitment hashes | — | 128 B |
 | Final IVC state | ~1 KiB | ~0.4 KiB (binary) |
-| **On-chain total** | **~473 KiB** | **~1.5 KiB** |
+| **On-chain total** | **~473 KiB** | **~2.5 KiB** (CBOR) |
 
 ---
 
@@ -115,8 +115,8 @@ release build, 255 chained steps):
 
 | Step circuit | Constraints | Steps | Fold total | Fold/step | Compress | Verify (full) | Verify (slim) | Slim proof | Bundle |
 |---|---|---|---|---|---|---|---|---|---|
-| `cardano_ed25519_ownership_nova` | 7,724 | 255 | 122.2 / 120.1 s | 479 / 471 ms | 20.0 / 19.9 s | 20.4 / 20.4 s | **0.5 ms** | **6.6 KiB** | 5.1 KiB |
-| `ed25519_verify_nova` | 7,724 | 255 | 120.7 / 116.9 s | 473 / 458 ms | 20.0 / 19.9 s | 20.1 / 19.8 s | **0.3 ms** | **6.6 KiB** | 5.1 KiB |
+| `cardano_ed25519_ownership_nova` | 7,724 | 255 | 122.2 / 120.1 s | 479 / 471 ms | 20.0 / 19.9 s | 20.4 / 20.4 s | **0.5 ms** | **2.5 KiB** | 2.2 KiB |
+| `ed25519_verify_nova` | 7,724 | 255 | 120.7 / 116.9 s | 473 / 458 ms | 20.0 / 19.9 s | 20.1 / 19.8 s | **0.3 ms** | **2.5 KiB** | 2.2 KiB |
 
 *Each cell shows baseline / `--opt-parallel` where two values are shown.
 The slim proof is constant in both step count and step width.*

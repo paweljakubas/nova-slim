@@ -41,13 +41,13 @@ pub enum Command {
     /// instance into one running Relaxed-R1CS accumulator via the NIFS.
     /// Folding is linear-time, transparent, and needs no proving key.
     ///
-    /// The output bundle (`.ivc.json`) contains the final folded instance,
-    /// the initial state, and the final transcript hash.  It is consumed by
-    /// the `compress` and `verify` subcommands.
+    /// The output bundle (compact CBOR, `.ivc.cbor`) contains the final
+    /// folded instance, the initial state, and the final transcript hash.
+    /// It is consumed by the `compress` and `verify` subcommands.
     ///
     /// Example:
     ///
-    ///   $ nova fold --circuit step_circuit.r1cs --steps ./step_witnesses/ --out bundle.ivc.json
+    ///   $ nova fold --circuit step_circuit.r1cs --steps ./step_witnesses/ --out bundle.ivc.cbor
     Fold(cmd::fold::Args),
 
     /// Compress a NIFS bundle into a single constant-size proof
@@ -55,27 +55,27 @@ pub enum Command {
     /// Re-folds the step witnesses deterministically, then compresses the
     /// final relaxed instance into one sumcheck proof — transparent, no
     /// trusted setup.  With `--slim`, strips the HashPC opening proofs to
-    /// produce the on-chain-friendly slim proof (~1.5 KiB for
-    /// 7,724-constraint steps).
+    /// produce the on-chain-friendly slim proof (~2.4 KiB for
+    /// 7,724-constraint steps).  Artifacts are compact CBOR.
     ///
     /// The result is consumed by `nova verify` on the NIFS bundle.
     ///
     /// Examples:
     ///
-    ///   $ nova compress --circuit step_circuit.r1cs --steps ./step_witnesses/ --out sumcheck.proof.json
-    ///   $ nova compress --slim --circuit step_circuit.r1cs --steps ./step_witnesses/ --out slim.proof.json
+    ///   $ nova compress --circuit step_circuit.r1cs --steps ./step_witnesses/ --out sumcheck.proof.cbor
+    ///   $ nova compress --slim --circuit step_circuit.r1cs --steps ./step_witnesses/ --out slim.proof.cbor
     Compress(cmd::compress::Args),
 
     /// Verify a folded NIFS bundle against its compression proof
     ///
-    /// Loads a NIFS bundle (`.ivc.json`) and checks the compression proof:
+    /// Loads a NIFS bundle (`.ivc.cbor`) and checks the compression proof:
     /// sumcheck protocol + commitments (`--sumcheck-proof`, audit-grade) or
     /// the slim on-chain path (`--slim-proof`, no opening proofs).
     ///
     /// Examples:
     ///
-    ///   $ nova verify --ivc bundle.ivc.json --sumcheck-proof sumcheck.proof.json
-    ///   $ nova verify --ivc bundle.ivc.json --slim-proof slim.proof.json
+    ///   $ nova verify --ivc bundle.ivc.cbor --sumcheck-proof sumcheck.proof.cbor
+    ///   $ nova verify --ivc bundle.ivc.cbor --slim-proof slim.proof.cbor
     Verify(cmd::verify::Args),
 }
 

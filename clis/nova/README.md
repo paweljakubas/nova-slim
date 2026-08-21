@@ -9,7 +9,7 @@ A long computation is split into `N` identical step circuits, each proving
 | | |
 |---|---|
 | **Path** | `fold` → `compress --slim` → `verify --slim-proof` |
-| **Proof size** | **O(1) — ~1.5 KiB on-chain** |
+| **Proof size** | **O(1) — ~2.5 KiB on-chain (CBOR)** |
 | **Trusted setup** | **None** |
 | **On-chain verify** | **Pairing-free** — native field sumcheck |
 | **ZK** | **Yes** — witness-hiding |
@@ -30,14 +30,14 @@ nova params --circuit step_circuit.r1cs
 
 # 2. Fold step witnesses into a single Relaxed-R1CS instance
 nova fold --circuit step_circuit.r1cs \
-  --steps ./step_witnesses/ --out bundle.ivc.json
+  --steps ./step_witnesses/ --out bundle.ivc.cbor
 
-# 3. Compress into a slim on-chain proof (~1.5 KiB)
+# 3. Compress into a slim on-chain proof (~2.5 KiB)
 nova compress --slim --circuit step_circuit.r1cs \
-  --steps ./step_witnesses/ --out slim.proof.json
+  --steps ./step_witnesses/ --out slim.proof.cbor
 
 # 4. Verify (no verifying key needed)
-nova verify --ivc bundle.ivc.json --slim-proof slim.proof.json
+nova verify --ivc bundle.ivc.cbor --slim-proof slim.proof.cbor
 # → Verified N steps: slim sumcheck proof OK
 ```
 
@@ -49,8 +49,8 @@ for an off-chain audit trail.
 ### With parallel optimization
 
 ```bash
-nova fold --opt parallel --circuit step_circuit.r1cs --steps ./step_witnesses/ --out bundle.ivc.json
-nova compress --slim --opt parallel --circuit step_circuit.r1cs --steps ./step_witnesses/ --out slim.proof.json
+nova fold --opt parallel --circuit step_circuit.r1cs --steps ./step_witnesses/ --out bundle.ivc.cbor
+nova compress --slim --opt parallel --circuit step_circuit.r1cs --steps ./step_witnesses/ --out slim.proof.cbor
 ```
 
 ### Full sumcheck proof (with openings, for audit)
@@ -58,8 +58,8 @@ nova compress --slim --opt parallel --circuit step_circuit.r1cs --steps ./step_w
 Omit `--slim` to keep the HashPC opening proofs:
 
 ```bash
-nova compress --circuit step_circuit.r1cs --steps ./step_witnesses/ --out sumcheck.proof.json
-nova verify --ivc bundle.ivc.json --sumcheck-proof sumcheck.proof.json
+nova compress --circuit step_circuit.r1cs --steps ./step_witnesses/ --out sumcheck.proof.cbor
+nova verify --ivc bundle.ivc.cbor --sumcheck-proof sumcheck.proof.cbor
 ```
 
 ---
@@ -106,7 +106,7 @@ Transparent folding, no proving key, O(1) bundle.
 
 ```bash
 nova fold --circuit step_circuit.r1cs \
-  --steps ./step_witnesses/ --out bundle.ivc.json
+  --steps ./step_witnesses/ --out bundle.ivc.cbor
 ```
 
 Add `--opt parallel` for rayon-parallelized cross-term computation.
@@ -117,13 +117,13 @@ Add `--opt parallel` for rayon-parallelized cross-term computation.
 for off-chain audit).
 
 ```bash
-nova compress --circuit step_circuit.r1cs --steps ./step_witnesses/ --out sumcheck.proof.json
+nova compress --circuit step_circuit.r1cs --steps ./step_witnesses/ --out sumcheck.proof.cbor
 ```
 
 **Slim on-chain proof:** strips HashPC openings (~98% smaller).
 
 ```bash
-nova compress --slim --circuit step_circuit.r1cs --steps ./step_witnesses/ --out slim.proof.json
+nova compress --slim --circuit step_circuit.r1cs --steps ./step_witnesses/ --out slim.proof.cbor
 ```
 
 ### `verify` — verify a folded bundle
@@ -131,13 +131,13 @@ nova compress --slim --circuit step_circuit.r1cs --steps ./step_witnesses/ --out
 **Slim proof (on-chain path):**
 
 ```bash
-nova verify --ivc bundle.ivc.json --slim-proof slim.proof.json
+nova verify --ivc bundle.ivc.cbor --slim-proof slim.proof.cbor
 ```
 
 **Full sumcheck proof (audit-grade):**
 
 ```bash
-nova verify --ivc bundle.ivc.json --sumcheck-proof sumcheck.proof.json
+nova verify --ivc bundle.ivc.cbor --sumcheck-proof sumcheck.proof.cbor
 ```
 
 ---
@@ -146,13 +146,13 @@ nova verify --ivc bundle.ivc.json --sumcheck-proof sumcheck.proof.json
 
 ```bash
 # 1. Fold (transparent, no proving key)
-nova fold --circuit step_circuit.r1cs --steps ./step_witnesses/ --out bundle.ivc.json
+nova fold --circuit step_circuit.r1cs --steps ./step_witnesses/ --out bundle.ivc.cbor
 
-# 2. Compress to slim proof (~1.5 KiB)
-nova compress --slim --circuit step_circuit.r1cs --steps ./step_witnesses/ --out slim.proof.json
+# 2. Compress to slim proof (~2.5 KiB)
+nova compress --slim --circuit step_circuit.r1cs --steps ./step_witnesses/ --out slim.proof.cbor
 
 # 3. Verify (pairing-free, no VK)
-nova verify --ivc bundle.ivc.json --slim-proof slim.proof.json
+nova verify --ivc bundle.ivc.cbor --slim-proof slim.proof.cbor
 ```
 
 ---
@@ -168,9 +168,9 @@ of 7,724 constraints each (24 public inputs / 24 public outputs).
 
 ```bash
 nova params --circuit cardano_ed25519_ownership_nova.r1cs
-nova fold --circuit cardano_ed25519_ownership_nova.r1cs --steps <witness-dir> --out bundle.ivc.json
-nova compress --slim --circuit cardano_ed25519_ownership_nova.r1cs --steps <witness-dir> --out slim.proof.json
-nova verify --ivc bundle.ivc.json --slim-proof slim.proof.json
+nova fold --circuit cardano_ed25519_ownership_nova.r1cs --steps <witness-dir> --out bundle.ivc.cbor
+nova compress --slim --circuit cardano_ed25519_ownership_nova.r1cs --steps <witness-dir> --out slim.proof.cbor
+nova verify --ivc bundle.ivc.cbor --slim-proof slim.proof.cbor
 ```
 
 ---

@@ -2,7 +2,7 @@
 
 Transparent folding-scheme proofs sized for Cardano on-chain verification:
 NIFS-fold a chain of identical step circuits into one accumulator, compress
-with a sumcheck argument, and verify a **~6.6 KiB** proof with **no pairing,
+with a sumcheck argument, and verify a **~2.5 KiB** proof with **no pairing,
 no trusted setup, and sub-millisecond verification**.
 
 ```
@@ -49,15 +49,15 @@ $NOVA params --circuit ../bls/circom/CardanoKeyOwnership/cardano_ed25519_ownersh
 
 # 5. Fold 255 steps into one transparent bundle (~2 min)
 $NOVA fold --circuit ../bls/circom/CardanoKeyOwnership/cardano_ed25519_ownership_nova.r1cs \
-    --steps <witness-dir> --out cko.json
+    --steps <witness-dir> --out cko.ivc.cbor
 
-# 6a. On-chain path: slim proof (~6.6 KiB, no openings)
-$NOVA compress --slim --circuit ... --steps <witness-dir> --out cko_slim.json
-$NOVA verify --ivc cko.json --slim-proof cko_slim.json
+# 6a. On-chain path: slim proof (~2.5 KiB CBOR, no openings)
+$NOVA compress --slim --circuit ... --steps <witness-dir> --out cko_slim.proof.cbor
+$NOVA verify --ivc cko.ivc.cbor --slim-proof cko_slim.proof.cbor
 
-# 6b. Audit path: full sumcheck proof (~670 KiB, includes HashPC openings)
-$NOVA compress --circuit ... --steps <witness-dir> --out cko_full.json
-$NOVA verify --ivc cko.json --sumcheck-proof cko_full.json
+# 6b. Audit path: full sumcheck proof (~548 KiB, includes HashPC openings)
+$NOVA compress --circuit ... --steps <witness-dir> --out cko_full.proof.cbor
+$NOVA verify --ivc cko.ivc.cbor --sumcheck-proof cko_full.proof.cbor
 ```
 
 ## Testing
@@ -97,11 +97,13 @@ Fresh numbers live in `benchmarks/results/<timestamp>/summary.md`. Latest run
 
 | Step circuit | Constraints | Steps | Fold total | Fold/step | Compress | Verify (full) | Verify (slim) | Slim proof | Bundle |
 |---|---|---|---|---|---|---|---|---|---|
-| `cardano_ed25519_ownership_nova` | 7,724 | 255 | 122.2 / 120.1 s | 479 / 471 ms | 20.0 / 19.9 s | 20.4 / 20.4 s | **0.5 ms** | **6.6 KiB** | 5.1 KiB |
-| `ed25519_verify_nova` | 7,724 | 255 | 120.7 / 116.9 s | 473 / 458 ms | 20.0 / 19.9 s | 20.1 / 19.8 s | **0.3 ms** | **6.6 KiB** | 5.1 KiB |
+| `cardano_ed25519_ownership_nova` | 7,724 | 255 | 122.2 / 120.1 s | 479 / 471 ms | 20.0 / 19.9 s | 20.4 / 20.4 s | **0.5 ms** | **2.5 KiB** | 2.2 KiB |
+| `ed25519_verify_nova` | 7,724 | 255 | 120.7 / 116.9 s | 473 / 458 ms | 20.0 / 19.9 s | 20.1 / 19.8 s | **0.3 ms** | **2.5 KiB** | 2.2 KiB |
 
 *Each cell shows baseline / `--opt-parallel` where two values are shown.
-The slim proof is constant in step count and step width.*
+The slim proof is constant in step count and step width. Artifacts use a
+compact CBOR encoding (field elements as 32-byte little-endian values,
+sizes shown for CBOR; the legacy decimal/hex JSON encoding is ~2.6× larger).*
 
 Re-run after any folding/compression change and paste the new summary here:
 

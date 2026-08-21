@@ -20,8 +20,8 @@ pub struct Args {
     #[arg(long, value_name = "DIR")]
     pub steps: PathBuf,
 
-    /// Output path for the NIFS bundle JSON
-    /// (`.ivc.json` extension recommended).
+    /// Output path for the NIFS bundle (compact CBOR;
+    /// `.ivc.cbor` extension recommended).
     #[arg(long, value_name = "FILE")]
     pub out: PathBuf,
 
@@ -51,9 +51,11 @@ fn parse_opt_flags(s: &str) -> Result<OptFlags, Box<dyn Error>> {
 pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
     let opts = parse_opt_flags(&args.opt)?;
     let out = run_fold_nifs_opt(&args.circuit, &args.steps, opts)?;
-    let json = serde_json::to_string_pretty(&out.bundle)
+    let cbor = out
+        .bundle
+        .to_cbor()
         .map_err(|e| format!("failed to serialize NIFS bundle: {e}"))?;
-    fs::write(&args.out, &json)
+    fs::write(&args.out, &cbor)
         .map_err(|e| format!("failed to write NIFS bundle to {}: {e}", args.out.display()))?;
     eprintln!(
         "NIFS bundle written to {} ({} steps → one instance, u = {}, opt: {:?})",

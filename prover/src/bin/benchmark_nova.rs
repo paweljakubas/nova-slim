@@ -133,32 +133,44 @@ fn benchmark_slim(circuit: &mut SparseCircomCircuit, wtns: &[PathBuf], parallel:
 
     // 3b. Verify — slim on-chain path (openings stripped).
     let slim = sc_proof.to_slim();
-    let slim_json =
-        serde_json::to_string_pretty(&slim).expect("slim proof serialization should not fail");
     let t = Instant::now();
     verify_slim(&folded.bundle, &slim)
         .unwrap_or_else(|e| panic!("slim verification failed: {e}"));
     let verify_slim_s = t.elapsed().as_secs_f64();
 
     // Sizes: the bundle is O(1) in N; the slim proof is what lands on-chain.
+    // Compact CBOR vs decimal/hex JSON shown for both.
     let bundle_json =
         serde_json::to_string_pretty(&folded.bundle).expect("bundle serialization should not fail");
     let full_json =
         serde_json::to_string_pretty(&sc_proof).expect("proof serialization should not fail");
+    let json_slim_len = serde_json::to_string_pretty(&slim)
+        .expect("slim proof serialization should not fail")
+        .len();
+    let slim_cbor = slim
+        .to_cbor()
+        .expect("slim proof serialization should not fail");
+    let bundle_cbor = folded
+        .bundle
+        .to_cbor()
+        .expect("bundle serialization should not fail");
     println!(
-        "nifs bundle: {} B ({:.1} KiB), O(1) in the step count",
-        bundle_json.len(),
+        "nifs bundle: {} B ({:.1} KiB cbor / {:.1} KiB json), O(1) in the step count",
+        bundle_cbor.len(),
+        bundle_cbor.len() as f64 / 1024.0,
         bundle_json.len() as f64 / 1024.0
     );
     println!(
-        "sumcheck proof (full): {} B ({:.1} KiB) — off-chain audit variant",
-        full_json.len(),
+        "sumcheck proof (full): {} B ({:.1} KiB cbor / {:.1} KiB json) — off-chain audit variant",
+        sc_proof.to_cbor().unwrap().len(),
+        sc_proof.to_cbor().unwrap().len() as f64 / 1024.0,
         full_json.len() as f64 / 1024.0
     );
     println!(
-        "slim proof: {} B ({:.1} KiB) — on-chain variant",
-        slim_json.len(),
-        slim_json.len() as f64 / 1024.0
+        "slim proof: {} B ({:.1} KiB cbor / {:.1} KiB json) — on-chain variant",
+        slim_cbor.len(),
+        slim_cbor.len() as f64 / 1024.0,
+        json_slim_len as f64 / 1024.0
     );
     println!("verify (slim): {verify_slim_s:.4} s");
     println!("all verifications OK");

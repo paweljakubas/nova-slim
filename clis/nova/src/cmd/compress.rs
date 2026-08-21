@@ -4,7 +4,10 @@
 //! Default: full sumcheck proof (sumcheck argument + HashPC opening proofs,
 //! transparent, no trusted setup) — the off-chain audit variant.
 //! With `--slim`, strips the HashPC opening proofs to produce the
-//! on-chain-friendly slim proof (~1.5 KiB for 7,724-constraint steps).
+//! on-chain-friendly slim proof (~2.4 KiB for 7,724-constraint steps).
+//!
+//! Artifacts use a compact CBOR encoding (field elements as 32-byte
+//! little-endian values).
 
 use clap::Parser;
 use prover::{run_compress_sumcheck_opt, NifsSumcheckProof, OptFlags};
@@ -25,13 +28,13 @@ pub struct Args {
     #[arg(long, value_name = "DIR")]
     pub steps: PathBuf,
 
-    /// Output path for the compression proof JSON
-    /// (`.proof.json` extension recommended)
+    /// Output path for the compression proof (compact CBOR;
+    /// `.proof.cbor` extension recommended)
     #[arg(long, value_name = "FILE")]
     pub out: PathBuf,
 
     /// Strip HashPC opening proofs to produce a slim on-chain proof.
-    /// Cuts proof size from ~470 KiB to ~1.5 KiB for 7,724-constraint
+    /// Cuts proof size from ~270 KiB to ~2.4 KiB for 7,724-constraint
     /// steps.  The opening proofs are verified off-chain as an audit
     /// trail.
     #[arg(long)]
@@ -64,15 +67,15 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
     let opts = parse_opt_flags(&args.opt)?;
     if args.slim {
         // Sumcheck compress, then strip opening proofs for on-chain proof.
-        let tmp = args.out.with_extension("full.json");
+        let tmp = args.out.with_extension("full.cbor");
         run_compress_sumcheck_opt(&args.circuit, &args.steps, &tmp, opts)?;
         let full_bytes = fs::read(&tmp)?;
-        let full_proof: NifsSumcheckProof = serde_json::from_slice(&full_bytes)?;
+        let full_proof = NifsSumcheckProof::from_cbor(&full_bytes)?;
         let slim_proof = full_proof.to_slim();
-        let slim_json = serde_json::to_string_pretty(&slim_proof)?;
-        fs::write(&args.out, &slim_json)?;
+        let slim_cbor = slim_proof.to_cbor()?;
+        fs::write(&args.out, &slim_cbor)?;
         let full_size = full_bytes.len();
-        let slim_size = slim_json.len();
+        let slim_size = slim_cbor.len();
         fs::remove_file(&tmp).ok();
         eprintln!(
             "Slim proof written to {} ({} bytes, down from {} bytes — {:.0}% reduction)",
