@@ -18,28 +18,24 @@
 //! public-input block of step `i+1` must equal the public-output block of
 //! step `i`.  Public inputs ARE the IVC state.
 //!
-//! The proof-system core (R1CS/QAP/engine, ceremony, circom adapter, prover)
-//! lives in the `groth16-prover` / `trusted-setup` crates; this crate adds the
-//! IVC folding layer on top.  The `nova` CLI (`clis/nova`) wraps the
-//! operations in this crate.
+//! The proof-system core (R1CS parsing, circom adapter) lives in the
+//! `groth16-prover` crate; this crate adds the IVC folding layer on top.
+//! The `nova` CLI (`clis/nova`) wraps the operations in this crate.
 
-use ark_bls12_381::{Fr, G1Affine, G1Projective, G2Affine};
+use ark_bls12_381::{Fr, G1Affine, G1Projective};
 use ark_ec::{AffineRepr, VariableBaseMSM};
 use ark_ff::{PrimeField, Zero};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use blake2::{Blake2b512, Digest};
-use groth16_prover::ceremony::{verify_with_vk, FullProvingKey, VerifyingKey};
 use groth16_prover::circom_adapter::SparseCircomCircuit;
-use groth16_prover::engine::FftQapEngine;
-use groth16_prover::prover::{PippengerProver, Proof, Prover, PublicInput};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Implementation 11 optimization flags — orthogonal to Impl 8/9/10.
+/// Optimization flags for folding and compression.
 ///
-/// These flags can be combined freely and apply to any implementation:
+/// These flags can be combined freely:
 /// - `parallel`: use rayon for independent row/column operations
 /// - `lazy_commit`: defer Pedersen MSM to the final fold step
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -75,29 +71,22 @@ impl OptFlags {
     }
 }
 
-/// Domain separator for the IVC transcript.
-pub const TRANSCRIPT_PREFIX: &[u8] = b"groth16-prover-nova-transcript-v1";
-
-/// NIFS (Implementation 9) domain separators.
+/// NIFS domain separators.
 ///
 /// `NIFS_PARAMS_SEED` derives the transparent Pedersen basis; the transcript
-/// prefix is distinct from the `"chain"` transcript to prevent cross-context
-/// challenge reuse.
+/// prefix binds the fold sequence and is domain-separated from the folding
+/// challenge hash to prevent cross-context challenge reuse.
 pub const NIFS_PARAMS_SEED: &[u8] = b"groth16-prover-nova-nifs-params-v1";
 pub const NIFS_TRANSCRIPT_PREFIX: &[u8] = b"groth16-prover-nova-nifs-transcript-v1";
 
 /// Curve abstraction — makes the folding scheme curve-agnostic.
 pub mod curve;
 
-/// NIFS folding module (Implementation 9) — Relaxed-R1CS + Pedersen commitments.
+/// NIFS folding module — Relaxed-R1CS + Pedersen commitments.
 pub mod nifs;
 
-/// Compression circuit for the NIFS fold (Implementation 9, work item 2) —
-/// proves the final relaxed instance satisfiable, reusing the step A/B/C.
-pub mod compression;
-
-/// Sumcheck-based constant-size compression (Implementation 10) —
-/// replaces Groth16 compression with a sumcheck argument + HashPC openings.
+/// Sumcheck-based constant-size compression — a sumcheck argument over the
+/// relaxed R1CS equation + HashPC commitments.
 pub mod sumcheck;
 
 /// JSON descriptor of a step circuit (emitted by the `params` operation).
@@ -108,32 +97,6 @@ pub struct CircuitDescriptor {
     pub n_pub_out: u32,
     pub n_pub_in: u32,
     pub n_prv_in: u32,
-}
-
-/// One folded step inside the IVC bundle.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StepProof {
-    pub idx: usize,
-    /// Public inputs = IVC state entering the step (decimal field strings)
-    pub state_in: Vec<String>,
-    /// Public outputs = IVC state leaving the step (decimal field strings)
-    pub state_out: Vec<String>,
-    pub proof_a: String,
-    pub proof_b: String,
-    pub proof_c: String,
-    pub public_v: String,
-    pub transcript: String,
-}
-
-/// The folded IVC bundle produced by [`run_fold`] and consumed by [`run_verify`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IvcBundle {
-    pub circuit: String,
-    pub n_pub_out: u32,
-    pub n_pub_in: u32,
-    pub initial_state: Vec<String>,
-    pub steps: Vec<StepProof>,
-    pub transcript_final: String,
 }
 
 /// Final Relaxed-R1CS instance in a NIFS bundle (public artifact).
@@ -151,10 +114,10 @@ pub struct NifsFinalInstance {
 
 /// The NIFS bundle produced by [`run_fold_nifs`] — O(1) in the step count.
 ///
-/// Consumed by the compression proof (Implementation 9, work item 2) and the
-/// `nova verify` subcommand.  `n_wires`/`n_constraints` are included so the
-/// verifier can derive the transparent Pedersen basis for the commitment
-/// check without re-loading the step circuit.
+/// Consumed by the sumcheck compression ([`run_compress_sumcheck`]) and by
+/// `nova verify`.  `n_wires`/`n_constraints` are included so the verifier can
+/// derive the transparent Pedersen basis for the commitment check without
+/// re-loading the step circuit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NifsBundle {
     pub circuit: String,
@@ -169,7 +132,7 @@ pub struct NifsBundle {
 }
 
 /// Output of [`run_fold_nifs`]: the public bundle plus the private final
-/// instance/witness (consumed by the compression proof).
+/// instance/witness (consumed by the compression prover).
 #[derive(Debug, Clone)]
 pub struct NifsFoldOutput {
     pub bundle: NifsBundle,
@@ -177,39 +140,12 @@ pub struct NifsFoldOutput {
     pub final_witness: nifs::RelaxedR1csWitness,
 }
 
-/// The compression Groth16 proof over the final relaxed instance
-/// (Implementation 9, work item 2).
+/// Sumcheck-based compression proof.
 ///
-/// The circuit makes `(1, Z, u, E)` public (the full folded witness, slack and
-/// error vector — only the `t_i = u·(CZ)_i` intermediates are private), so the
-/// verifier recomputes the Pedersen commitments `com(Z)`, `com(E)` and the
-/// public-input commitment `V` natively and cross-checks them against the
-/// bundle's final instance.  `public_inputs` is `witness[..n_public]` as
-/// decimal field strings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompressionProof {
-    pub circuit: String,
-    pub n_wires: u32,
-    pub n_constraints: u32,
-    pub n_pub_out: u32,
-    pub n_pub_in: u32,
-    /// The exact final instance this proof certifies (cross-checked against
-    /// the bundle by [`verify_compression`]).
-    pub final_instance: NifsFinalInstance,
-    pub proof_a: String,
-    pub proof_b: String,
-    pub proof_c: String,
-    /// Compressed G1 hex of the public-input commitment `V`.
-    pub public_v: String,
-    /// `witness[..n_public]` = `[1, Z(1..1+n_wires), u, E(2+n_wires..)]`.
-    pub public_inputs: Vec<String>,
-}
-
-/// Sumcheck-based compression proof (Implementation 10).
-///
-/// Replaces the Groth16 [`CompressionProof`] with a sumcheck argument.
-/// The verifier never sees `Z` or `E` — only the sumcheck transcript
-/// and HashPC opening proofs.
+/// Compresses a NIFS fold into a constant-size argument: a sumcheck proof
+/// over the relaxed R1CS equation, HashPC commitments, and opening proofs.
+/// The verifier never sees the full witness `Z` or error vector `E` — only
+/// the sumcheck transcript and HashPC openings.
 ///
 /// Proof size is O(log(n_constraints)) field elements (the sumcheck
 /// messages) plus the opening proofs, independent of the step width.
@@ -240,35 +176,11 @@ pub struct NifsSumcheckProof {
     pub e_opening: Vec<String>,
 }
 
-/// Summary of a successful [`run_verify`].
+/// Summary of a successful NIFS bundle verification.
 #[derive(Debug, Clone)]
 pub struct VerifyOutput {
     pub steps: usize,
     pub transcript_final: String,
-}
-
-/// Load a `FullProvingKey` from a file, trying uncompressed unchecked first
-/// (fast for large keys) and falling back to compressed deserialization.
-pub fn load_full_pk(path: &Path) -> Result<FullProvingKey, Box<dyn Error>> {
-    let bytes = fs::read(path).map_err(|e| format!("failed to read proving key: {e}"))?;
-    if let Ok(pk) = FullProvingKey::deserialize_uncompressed_unchecked(&bytes[..]) {
-        return Ok(pk);
-    }
-    let pk = FullProvingKey::deserialize_compressed(&bytes[..])
-        .map_err(|e| format!("failed to deserialize FullProvingKey: {e:?}"))?;
-    Ok(pk)
-}
-
-/// Load a `VerifyingKey` from a file, trying uncompressed unchecked first
-/// and falling back to compressed deserialization.
-pub fn load_vk(path: &Path) -> Result<VerifyingKey, Box<dyn Error>> {
-    let bytes = fs::read(path).map_err(|e| format!("failed to read verifying key: {e}"))?;
-    if let Ok(vk) = VerifyingKey::deserialize_uncompressed_unchecked(&bytes[..]) {
-        return Ok(vk);
-    }
-    let vk = VerifyingKey::deserialize_compressed(&bytes[..])
-        .map_err(|e| format!("failed to deserialize VerifyingKey: {e:?}"))?;
-    Ok(vk)
 }
 
 /// Load a step circuit from a `.r1cs` file.
@@ -316,139 +228,7 @@ pub fn run_params(circuit: &Path) -> Result<CircuitDescriptor, Box<dyn Error>> {
     Ok(circuit_descriptor(&c))
 }
 
-/// `fold` — fold step witnesses into an IVC bundle.
-///
-/// Loads the step circuit, the per-step proving key, and a directory of
-/// witness files (`step_0000.wtns`, `step_0001.wtns`, …), then produces a
-/// Groth16 proof for each step and binds them together with a BLAKE2b
-/// transcript.  Returns the [`IvcBundle`] (all step proofs, the initial
-/// state, and the final transcript hash), which is consumed by [`run_verify`].
-pub fn run_fold(
-    circuit: &Path,
-    proving_key: &Path,
-    steps: &Path,
-) -> Result<IvcBundle, Box<dyn Error>> {
-    let circuit_path_str = circuit.to_string_lossy().into_owned();
-    let mut circuit = load_circuit(circuit)?;
-    check_step_circuit(&circuit)?;
-
-    let n_pub_out = circuit.n_pub_out as usize;
-    let n_pub_in = circuit.n_pub_in as usize;
-    let n_constraints = circuit.n_constraints as usize;
-
-    let full_pk =
-        load_full_pk(proving_key).map_err(|e| format!("failed to load proving key: {e}"))?;
-    let engine = FftQapEngine::new();
-    let prover = PippengerProver::new();
-
-    let mut wtns_paths: Vec<PathBuf> = Vec::new();
-    for entry in fs::read_dir(steps)
-        .map_err(|e| format!("failed to read steps dir {}: {e}", steps.display()))?
-    {
-        let entry = entry.map_err(|e| format!("failed to read steps dir entry: {e}"))?;
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("wtns") {
-            wtns_paths.push(path);
-        }
-    }
-    wtns_paths.sort();
-
-    if wtns_paths.is_empty() {
-        return Err(format!("no .wtns files found in steps dir {}", steps.display()).into());
-    }
-    eprintln!(
-        "Folding {} step witnesses from {}",
-        wtns_paths.len(),
-        steps.display()
-    );
-
-    // ------------------------------------------------------------------
-    // Transcript: acc = BLAKE2b512(prefix || initial_state)
-    //             acc = BLAKE2b512(acc || state_out_bytes || proof_bytes)
-    // ------------------------------------------------------------------
-    let mut steps_out: Vec<StepProof> = Vec::new();
-    let mut prev_out: Option<Vec<String>> = None;
-    let mut initial_state: Vec<String> = Vec::new();
-    let mut acc_hash: Vec<u8> = {
-        let mut h = Blake2b512::new();
-        h.update(TRANSCRIPT_PREFIX);
-        h.finalize().to_vec()
-    };
-
-    for (i, p) in wtns_paths.iter().enumerate() {
-        circuit
-            .load_witness(
-                p.to_str()
-                    .ok_or_else(|| format!("step witness path is not valid UTF-8: {p:?}"))?,
-            )
-            .map_err(|e| format!("failed to load witness {}: {e}", p.display()))?;
-        let w = &circuit.witness;
-
-        let out_fr = &w[1..1 + n_pub_out];
-        let in_fr = &w[1 + n_pub_out..1 + n_pub_out + n_pub_in];
-
-        let state_in: Vec<String> = in_fr.iter().map(fr_to_string).collect();
-        let state_out: Vec<String> = out_fr.iter().map(fr_to_string).collect();
-
-        // Chain check: this step's state in must equal the previous state out.
-        if let Some(prev) = &prev_out {
-            if state_in != *prev {
-                return Err(format!(
-                    "step {i} ({}): state_in does not chain to previous state_out. \
-                     The step witnesses were not generated from a consistent state chain.",
-                    p.display()
-                )
-                .into());
-            }
-        } else {
-            initial_state = state_in.clone();
-            acc_hash = transcript_step(&acc_hash, &frs_bytes(in_fr), &[]);
-        }
-
-        let (proof, public) = prover.prove_with_full_pk_sparse(
-            &engine,
-            &full_pk,
-            n_constraints,
-            &circuit.l,
-            &circuit.r,
-            &circuit.o,
-            w,
-        );
-
-        acc_hash = transcript_step(&acc_hash, &frs_bytes(out_fr), &proof_bytes(&proof, &public));
-
-        let transcript = hex::encode(&acc_hash);
-        steps_out.push(StepProof {
-            idx: i,
-            state_in,
-            state_out: state_out.clone(),
-            proof_a: g1_hex(&proof.a),
-            proof_b: g2_hex(&proof.b),
-            proof_c: g1_hex(&proof.c),
-            public_v: g1_hex(&public.v),
-            transcript,
-        });
-
-        prev_out = Some(state_out);
-        eprintln!(
-            "  step {i:>3}: {:6} gates → proof A/B/C + transcript {}",
-            n_constraints,
-            &steps_out.last().unwrap().transcript[..16]
-        );
-    }
-
-    let transcript_final = hex::encode(&acc_hash);
-    Ok(IvcBundle {
-        circuit: circuit_path_str,
-        n_pub_out: circuit.n_pub_out,
-        n_pub_in: circuit.n_pub_in,
-        initial_state,
-        steps: steps_out,
-        transcript_final,
-    })
-}
-
-/// `fold --nifs` — fold step witnesses into a single Relaxed-R1CS instance.
+/// `fold` — fold step witnesses into a single Relaxed-R1CS instance.
 ///
 /// Loads the step circuit and a directory of witness files, derives the
 /// transparent Pedersen parameters, and folds every step instance into one
@@ -459,7 +239,7 @@ pub fn run_fold_nifs(circuit: &Path, steps: &Path) -> Result<NifsFoldOutput, Box
     fold_nifs(circuit, steps, OptFlags::NONE)
 }
 
-/// Like [`run_fold_nifs`] but with optimization flags (Implementation 11).
+/// Like [`run_fold_nifs`] but with optimization flags.
 pub fn run_fold_nifs_opt(
     circuit: &Path,
     steps: &Path,
@@ -612,63 +392,7 @@ fn fold_nifs(
     })
 }
 
-/// `compress` — Groth16-compress the final NIFS instance (Implementation 9,
-/// work item 2).
-///
-/// Re-folds the step witnesses deterministically to recover the private final
-/// instance `(u, W, E)`, builds the [`compression::CompressionCircuit`]
-/// (relaxed-equation check, `2·n_constraints` constraints), and proves it with
-/// the compression `FullProvingKey` (from `trusted-setup ceremony-dev
-/// --sparse` on the `.r1cs` emitted by `fold --nifs --compression-r1cs`).
-/// Writes a [`CompressionProof`] JSON to `out`.
-///
-/// Proof size is O(1) — a single Groth16 proof — regardless of the step count.
-pub fn run_compress(
-    circuit: &Path,
-    steps: &Path,
-    proving_key: &Path,
-    out: &Path,
-) -> Result<CompressOutput, Box<dyn Error>> {
-    run_compress_opt(circuit, steps, proving_key, out, OptFlags::NONE)
-}
-
-/// Like [`run_compress`] but with optimization flags.
-pub fn run_compress_opt(
-    circuit: &Path,
-    steps: &Path,
-    proving_key: &Path,
-    out: &Path,
-    opts: OptFlags,
-) -> Result<CompressOutput, Box<dyn Error>> {
-    let c = load_circuit(circuit)?;
-    check_step_circuit(&c)?;
-
-    let folded = fold_nifs(circuit, steps, opts)?;
-    let full_pk =
-        load_full_pk(proving_key).map_err(|e| format!("failed to load proving key: {e}"))?;
-    let cproof = prove_compression(&c, &folded, &full_pk)?;
-
-    let json = serde_json::to_string_pretty(&cproof)
-        .map_err(|e| format!("failed to serialize compression proof: {e}"))?;
-    fs::write(out, &json).map_err(|e| {
-        format!(
-            "failed to write compression proof to {}: {e}",
-            out.display()
-        )
-    })?;
-    eprintln!(
-        "Compression proof written to {} ({} bytes, u = {})",
-        out.display(),
-        json.len(),
-        fr_to_string(&folded.final_instance.u)
-    );
-    Ok(CompressOutput {
-        bytes: json.len(),
-        bundle: folded.bundle,
-    })
-}
-
-/// Sumcheck-compress a NIFS bundle (Implementation 10, CLI path).
+/// `compress` — compress a NIFS bundle into a constant-size proof.
 ///
 /// No proving key is needed — the sumcheck protocol is transparent.  Folds
 /// the step witnesses, builds the sumcheck compression proof (one sumcheck
@@ -736,56 +460,6 @@ pub fn run_verify_sumcheck(
     verify_sumcheck_compression(&bundle, &sc_proof)
 }
 
-/// Build the compression Groth16 proof over an already-folded NIFS instance
-/// (in-memory; the CLI path [`run_compress`] folds and serializes it).
-///
-/// This is the O(1) end of Implementation 9: one Groth16 proof certifying the
-/// final relaxed instance, independent of the step count.
-pub fn prove_compression(
-    circuit: &SparseCircomCircuit,
-    folded: &NifsFoldOutput,
-    full_pk: &FullProvingKey,
-) -> Result<CompressionProof, Box<dyn Error>> {
-    let cc = compression::CompressionCircuit::new(
-        &circuit.l,
-        &circuit.r,
-        &circuit.o,
-        circuit.n_wires as usize,
-    );
-    let v = cc.witness(
-        &folded.final_witness.w,
-        folded.final_instance.u,
-        &folded.final_witness.e,
-    );
-    if !cc.is_satisfied(&v) {
-        return Err("internal error: compression witness does not satisfy the circuit".into());
-    }
-    if full_pk.vk.n_public != cc.n_public || full_pk.a_query.len() != cc.n_wires_total {
-        return Err(
-            "proving key does not match the compression circuit (wrong ceremony output?)".into(),
-        );
-    }
-
-    let engine = FftQapEngine::new();
-    let prover = PippengerProver::new();
-    let (proof, public) =
-        prover.prove_with_full_pk_sparse(&engine, full_pk, cc.l.len(), &cc.l, &cc.r, &cc.o, &v);
-
-    Ok(CompressionProof {
-        circuit: circuit_path_display(circuit),
-        n_wires: circuit.n_wires,
-        n_constraints: circuit.n_constraints,
-        n_pub_out: circuit.n_pub_out,
-        n_pub_in: circuit.n_pub_in,
-        final_instance: folded.bundle.final_instance.clone(),
-        proof_a: g1_hex(&proof.a),
-        proof_b: g2_hex(&proof.b),
-        proof_c: g1_hex(&proof.c),
-        public_v: g1_hex(&public.v),
-        public_inputs: cc.public_inputs(&v).iter().map(fr_to_string).collect(),
-    })
-}
-
 fn circuit_path_display(_c: &SparseCircomCircuit) -> String {
     // The circuit's source path is only known to the file-based loaders; the
     // in-memory path records the step circuit's provenance as its identity is
@@ -793,112 +467,19 @@ fn circuit_path_display(_c: &SparseCircomCircuit) -> String {
     String::new()
 }
 
-/// Output of [`run_compress`].
+/// Output of [`run_compress_sumcheck`].
 #[derive(Debug, Clone)]
 pub struct CompressOutput {
     pub bytes: usize,
     pub bundle: NifsBundle,
 }
 
-/// Verify a compression proof against a NIFS bundle (in-memory).
-///
-/// Checks, in order:
-///   1. the proof's public inputs match the bundle's final instance
-///      (`x`, `u`, and the Pedersen commitments `com(Z)`, `com(E)` recomputed
-///      natively with the transparent basis);
-///   2. the Groth16 pairing check `e(A,B) = e(α,β)·e(C,δ)·e(V,γ)`, where `V`
-///      is recomputed from the public inputs and the VK's `ic` points.
-///
-/// This is the O(1) end of Implementation 9: constant-size proof and
-/// verification regardless of the step count.
-pub fn verify_compression(
-    bundle: &NifsBundle,
-    proof: &CompressionProof,
-    vk: &VerifyingKey,
-) -> Result<VerifyOutput, Box<dyn Error>> {
-    if proof.final_instance != bundle.final_instance {
-        return Err("compression proof was not created for this NIFS bundle".into());
-    }
-    if proof.n_wires != bundle.n_wires
-        || proof.n_constraints != bundle.n_constraints
-        || proof.n_pub_out != bundle.n_pub_out
-        || proof.n_pub_in != bundle.n_pub_in
-    {
-        return Err("compression proof does not match the NIFS bundle parameters".into());
-    }
-
-    let n_wires = bundle.n_wires as usize;
-    let n_constraints = bundle.n_constraints as usize;
-    let n_pub_out = bundle.n_pub_out as usize;
-    let n_pub_in = bundle.n_pub_in as usize;
-    let n_public = 1 + n_wires + 1 + n_constraints;
-
-    let pub_frs = frs_from_strings(&proof.public_inputs)?;
-    if pub_frs.len() != n_public {
-        return Err(format!(
-            "compression proof public-input vector has {} entries, expected {n_public} \
-             (1 + {n_wires} step wires + u + {n_constraints} error entries)",
-            pub_frs.len()
-        )
-        .into());
-    }
-
-    // [1, Z(1..1+n_wires), u, E(2+n_wires..2+n_wires+n_constraints)]
-    let z = &pub_frs[1..1 + n_wires];
-    let u = pub_frs[1 + n_wires];
-    let e = &pub_frs[2 + n_wires..2 + n_wires + n_constraints];
-
-    // 1a. state chain
-    let x = z[1..1 + n_pub_out + n_pub_in].to_vec();
-    if x != frs_from_strings(&bundle.final_instance.x)? {
-        return Err("compression proof public x does not match the NIFS bundle".into());
-    }
-    if u != bundle
-        .final_instance
-        .u
-        .parse::<Fr>()
-        .map_err(|e| format!("bundle final_instance.u is not a valid field element: {e:?}"))?
-    {
-        return Err("compression proof slack u does not match the NIFS bundle".into());
-    }
-
-    // 1b. commitments: recompute com(Z), com(E) with the transparent basis.
-    let params = nifs::PedersenParams::from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints);
-    if nifs::commit(&params.basis_w, z) != deserialize_g1(&bundle.final_instance.w_commit)? {
-        return Err("W commitment recomputation does not match the NIFS bundle".into());
-    }
-    if nifs::commit(&params.basis_e, e) != deserialize_g1(&bundle.final_instance.e_commit)? {
-        return Err("E commitment recomputation does not match the NIFS bundle".into());
-    }
-
-    // 2. Groth16 pairing check with V recomputed from the public inputs.
-    // The VK's `ic` holds one point per variable; only the first `n_public`
-    // (the constant + public wires) contribute to `V`.
-    let proof = deserialize_proof(&proof.proof_a, &proof.proof_b, &proof.proof_c)?;
-    if vk.ic.len() < n_public {
-        return Err("compression verifying key has too few ic points".into());
-    }
-    let v = G1Affine::from(
-        G1Projective::msm(&vk.ic[..n_public], &pub_frs)
-            .map_err(|e| format!("MSM for V failed: {e:?}"))?,
-    );
-    if !verify_with_vk(&proof, &PublicInput { v }, vk) {
-        return Err("compression proof Groth16 pairing check failed".into());
-    }
-
-    Ok(VerifyOutput {
-        steps: bundle.n_steps,
-        transcript_final: bundle.transcript_final.clone(),
-    })
-}
-
 /// Build a sumcheck compression proof over an already-folded NIFS instance
-/// (Implementation 10, in-memory).
+/// (in-memory).
 ///
-/// This is the constant-size replacement for [`prove_compression`]: instead
-/// of a Groth16 proof that reveals `Z`/`E`, it produces a sumcheck proof
-/// plus HashPC opening proofs.  The proof size is O(log(n_constraints))
-/// field elements (the sumcheck messages), independent of the step width.
+/// Produces a sumcheck proof over the relaxed R1CS equation plus HashPC
+/// opening proofs.  The proof size is O(log(n_constraints)) field elements
+/// (the sumcheck messages), independent of the step width.
 pub fn prove_sumcheck_compression(
     circuit: &SparseCircomCircuit,
     folded: &NifsFoldOutput,
@@ -1107,7 +688,7 @@ pub fn verify_sumcheck_compression(
     })
 }
 
-/// Slim sumcheck compression proof — on-chain friendly (Implementation 11).
+/// Slim sumcheck compression proof — on-chain friendly.
 ///
 /// Identical to [`NifsSumcheckProof`] but **omits the HashPC opening proofs**
 /// (`w_opening`, `e_opening`), which contain the full Z/E truth tables
@@ -1256,167 +837,9 @@ pub fn run_verify_slim(
     verify_slim(&bundle, &sp)
 }
 
-/// Emit the compression circuit `.r1cs` for a step circuit (Implementation 9,
-/// work item 2).
-///
-/// The compression circuit reuses the step circuit's sparse A/B/C matrices and
-/// checks the relaxed equation `(AZ)∘(BZ) = u·(CZ) + E` row by row — the exact
-/// invariant [`nifs::fold`] guarantees the accumulated instance satisfies.  The
-/// resulting `.r1cs` is Circom-compatible and can be fed to
-/// `trusted-setup ceremony-dev --sparse` to derive the compression proving /
-/// verifying keys.  Returns the number of bytes written.
-pub fn emit_compression_r1cs(circuit: &Path, out: &Path) -> Result<usize, Box<dyn Error>> {
-    let c = load_circuit(circuit)?;
-    check_step_circuit(&c)?;
-
-    let cc = compression::CompressionCircuit::new(&c.l, &c.r, &c.o, c.n_wires as usize);
-    let bytes = cc.to_r1cs_bytes();
-    fs::write(out, &bytes).map_err(|e| {
-        format!(
-            "failed to write compression .r1cs to {}: {e}",
-            out.display()
-        )
-    })?;
-    eprintln!(
-        "Compression circuit (from {} step constraints): {} wires, {} constraints, {} public",
-        c.n_constraints,
-        cc.n_wires_total,
-        cc.l.len(),
-        cc.n_public
-    );
-    eprintln!(
-        "Compression circuit .r1cs ({} bytes) written to {}",
-        bytes.len(),
-        out.display()
-    );
-    Ok(bytes.len())
-}
-
-/// `verify` — verify a folded IVC bundle.
-///
-/// Loads an IVC bundle (`.ivc.json`) and the step verifying key, then
-/// checks:
-///   1. Each step's Groth16 pairing verification passes
-///   2. The state chain is consistent (step[i].state_out == step[i+1].state_in)
-///   3. The BLAKE2b transcript hashes match at every step
-///
-/// For a NIFS bundle (Implementation 9) the step verifying key is ignored:
-/// verification requires the compression proof (`compression_proof`) and the
-/// compression verifying key (`compression_vk`) and runs [`verify_compression`].
-pub fn run_verify(
-    ivc: &Path,
-    verifying_key: &Path,
-    compression_proof: Option<&Path>,
-    compression_vk: Option<&Path>,
-) -> Result<VerifyOutput, Box<dyn Error>> {
-    let bytes =
-        fs::read(ivc).map_err(|e| format!("failed to read IVC bundle {}: {e}", ivc.display()))?;
-    let bundle: IvcBundle = match serde_json::from_slice(&bytes) {
-        Ok(b) => b,
-        Err(_) => {
-            let nifs: NifsBundle = serde_json::from_slice(&bytes).map_err(|_| {
-                "failed to parse IVC bundle: not a step-chain bundle and not a NIFS bundle"
-            })?;
-            return verify_nifs_bundle(&nifs, compression_proof, compression_vk);
-        }
-    };
-
-    let vk = load_vk(verifying_key).map_err(|e| format!("failed to load verifying key: {e}"))?;
-
-    if bundle.steps.is_empty() {
-        return Err("IVC bundle contains no steps".into());
-    }
-    if bundle.initial_state != bundle.steps[0].state_in {
-        return Err("IVC bundle initial_state does not match step 0 state_in".into());
-    }
-
-    let mut acc_hash: Vec<u8> = {
-        let mut h = Blake2b512::new();
-        h.update(TRANSCRIPT_PREFIX);
-        h.finalize().to_vec()
-    };
-    acc_hash = transcript_step(
-        &acc_hash,
-        &frs_bytes(&frs_from_strings(&bundle.initial_state)?),
-        &[],
-    );
-
-    let mut prev: Option<&Vec<String>> = None;
-    for step in &bundle.steps {
-        // 1. Chain check
-        if let Some(prev) = prev {
-            if step.state_in != *prev {
-                return Err(format!(
-                    "step {}: state_in does not chain to previous state_out",
-                    step.idx
-                )
-                .into());
-            }
-        }
-
-        // 2. Groth16 pairing check for this step's proof
-        let proof = deserialize_proof(&step.proof_a, &step.proof_b, &step.proof_c)?;
-        let public = deserialize_public(&step.public_v)?;
-        if !verify_with_vk(&proof, &public, &vk) {
-            return Err(format!("step {}: Groth16 pairing check failed", step.idx).into());
-        }
-
-        // 3. Transcript check
-        acc_hash = transcript_step(
-            &acc_hash,
-            &frs_bytes(&frs_from_strings(&step.state_out)?),
-            &proof_bytes(&proof, &public),
-        );
-        if hex::encode(&acc_hash) != step.transcript {
-            return Err(format!(
-                "step {}: transcript mismatch (IVC chain was tampered with)",
-                step.idx
-            )
-            .into());
-        }
-
-        prev = Some(&step.state_out);
-    }
-
-    if hex::encode(&acc_hash) != bundle.transcript_final {
-        return Err("final transcript mismatch".into());
-    }
-
-    Ok(VerifyOutput {
-        steps: bundle.steps.len(),
-        transcript_final: bundle.transcript_final,
-    })
-}
-
-/// Load the compression proof + VK for a NIFS bundle and run
-/// [`verify_compression`].
-fn verify_nifs_bundle(
-    nifs: &NifsBundle,
-    compression_proof: Option<&Path>,
-    compression_vk: Option<&Path>,
-) -> Result<VerifyOutput, Box<dyn Error>> {
-    let proof_path = compression_proof.ok_or(
-        "this is a NIFS bundle (Implementation 9) — verifying it requires the compression \
-         proof (--compression-proof) and the compression verifying key (--compression-vk)",
-    )?;
-    let vk_path = compression_vk.ok_or(
-        "this is a NIFS bundle (Implementation 9) — verifying it requires the compression \
-         proof (--compression-proof) and the compression verifying key (--compression-vk)",
-    )?;
-
-    let proof_bytes = fs::read(proof_path).map_err(|e| {
-        format!(
-            "failed to read compression proof {}: {e}",
-            proof_path.display()
-        )
-    })?;
-    let cproof: CompressionProof = serde_json::from_slice(&proof_bytes)
-        .map_err(|e| format!("failed to parse compression proof: {e}"))?;
-    let vk =
-        load_vk(vk_path).map_err(|e| format!("failed to load compression verifying key: {e}"))?;
-
-    verify_compression(nifs, &cproof, &vk)
-}
+// ────────────────────────────────────────────────────────────────────
+// Field/point serialization helpers shared by all paths
+// ────────────────────────────────────────────────────────────────────
 
 /// Serialize a field element to its compressed bytes.
 fn fr_bytes(f: &Fr) -> Vec<u8> {
@@ -1430,49 +853,11 @@ fn frs_bytes(frs: &[Fr]) -> Vec<u8> {
     frs.iter().flat_map(fr_bytes).collect()
 }
 
-/// Serialize a proof + public input to compressed bytes.
-fn proof_bytes(proof: &Proof, public: &PublicInput) -> Vec<u8> {
-    let mut buf = Vec::new();
-    proof
-        .a
-        .serialize_compressed(&mut buf)
-        .expect("proof.a serialize");
-    proof
-        .b
-        .serialize_compressed(&mut buf)
-        .expect("proof.b serialize");
-    proof
-        .c
-        .serialize_compressed(&mut buf)
-        .expect("proof.c serialize");
-    public
-        .v
-        .serialize_compressed(&mut buf)
-        .expect("public.v serialize");
-    buf
-}
-
 /// Hex of a compressed G1 point.
 fn g1_hex(p: &G1Affine) -> String {
     let mut buf = Vec::new();
     p.serialize_compressed(&mut buf).expect("G1 serialize");
     hex::encode(buf)
-}
-
-/// Hex of a compressed G2 point.
-fn g2_hex(p: &G2Affine) -> String {
-    let mut buf = Vec::new();
-    p.serialize_compressed(&mut buf).expect("G2 serialize");
-    hex::encode(buf)
-}
-
-/// Next transcript digest: `H(acc || state_out || proof)`.
-pub fn transcript_step(acc_hash: &[u8], out_bytes: &[u8], proof_bytes: &[u8]) -> Vec<u8> {
-    let mut h = Blake2b512::new();
-    h.update(acc_hash);
-    h.update(out_bytes);
-    h.update(proof_bytes);
-    h.finalize().to_vec()
 }
 
 /// Initialize the NIFS transcript: `H(NIFS_TRANSCRIPT_PREFIX ‖ initial_state)`.
@@ -1500,26 +885,6 @@ fn deserialize_g1(hex: &str) -> Result<G1Affine, Box<dyn Error>> {
         .map_err(|e| format!("failed to deserialize G1 point: {e:?}").into())
 }
 
-fn deserialize_g2(hex: &str) -> Result<G2Affine, Box<dyn Error>> {
-    let bytes = hex::decode(hex).map_err(|e| format!("invalid G2 hex: {e}"))?;
-    G2Affine::deserialize_compressed(&bytes[..])
-        .map_err(|e| format!("failed to deserialize G2 point: {e:?}").into())
-}
-
-fn deserialize_proof(a: &str, b: &str, c: &str) -> Result<Proof, Box<dyn Error>> {
-    Ok(Proof {
-        a: deserialize_g1(a)?,
-        b: deserialize_g2(b)?,
-        c: deserialize_g1(c)?,
-    })
-}
-
-fn deserialize_public(v: &str) -> Result<PublicInput, Box<dyn Error>> {
-    Ok(PublicInput {
-        v: deserialize_g1(v)?,
-    })
-}
-
 /// Canonical decimal string for a field element.
 ///
 /// arkworks' `Display` for BLS12-381 `Fr` emits an empty string for the
@@ -1541,7 +906,6 @@ pub fn frs_from_strings(strs: &[String]) -> Result<Vec<Fr>, Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use groth16_prover::ceremony::{single_party_ceremony_full_from_tw_sparse, ToxicWaste};
     use groth16_prover::circom_adapter::{r1cs_to_bytes_sparse, wtns_to_bytes};
 
     /// One-constraint step circuit `out = in · x` (wires `[1, out, in, x]`).
@@ -1570,82 +934,6 @@ mod tests {
         )
         .unwrap();
         st_out
-    }
-
-    /// Fold 3 steps, run a dev ceremony on the compression circuit, compress,
-    /// and verify the O(1) compression proof.
-    #[test]
-    fn nifs_compression_end_to_end() {
-        let tmp = tempfile::tempdir().unwrap();
-        let r1cs_path = tmp.path().join("step.r1cs");
-        let steps_dir = tmp.path().join("steps");
-        let pk_path = tmp.path().join("compression.pk");
-        let proof_path = tmp.path().join("compression.proof.json");
-        fs::write(&r1cs_path, step_r1cs_bytes()).unwrap();
-        fs::create_dir(&steps_dir).unwrap();
-
-        let mut state = 2u64;
-        for (i, x) in [3u64, 5, 7].iter().enumerate() {
-            state = write_step_wtns(&steps_dir, i, state, *x);
-        }
-        assert_eq!(state, 210);
-
-        // 1. fold -> bundle + private final instance/witness
-        let fold_out = run_fold_nifs(&r1cs_path, &steps_dir).unwrap();
-        assert_eq!(fold_out.bundle.n_steps, 3);
-        assert_ne!(fold_out.final_instance.u, Fr::from(1u64));
-
-        // 2. ceremony on the compression circuit (dev path, group elements only)
-        let c = load_circuit(&r1cs_path).unwrap();
-        let cc = compression::CompressionCircuit::new(&c.l, &c.r, &c.o, c.n_wires as usize);
-        let mut rng = rand::thread_rng();
-        let engine = FftQapEngine::new();
-        let tw = ToxicWaste::random(&mut rng);
-        let (full_pk, vk) = single_party_ceremony_full_from_tw_sparse(
-            &engine,
-            cc.l.len(),
-            cc.n_wires_total,
-            cc.n_public,
-            &cc.l,
-            &cc.r,
-            &cc.o,
-            tw,
-            false,
-        );
-        let mut pk_bytes = Vec::new();
-        full_pk.serialize_uncompressed(&mut pk_bytes).unwrap();
-        fs::write(&pk_path, &pk_bytes).unwrap();
-
-        // 3. compress -> one Groth16 proof, O(1) in the step count
-        let compress_out = run_compress(&r1cs_path, &steps_dir, &pk_path, &proof_path).unwrap();
-        assert_eq!(
-            compress_out.bundle.final_instance,
-            fold_out.bundle.final_instance
-        );
-        let proof: CompressionProof =
-            serde_json::from_slice(&fs::read(&proof_path).unwrap()).unwrap();
-        assert_eq!(proof.public_inputs.len(), cc.n_public);
-
-        // 4. verify: pairing + recomputed commitments + state/u
-        let vout = verify_compression(&compress_out.bundle, &proof, &vk).unwrap();
-        assert_eq!(vout.steps, 3);
-
-        // 5. tamper resistance: a flipped public input fails the commitment check
-        let mut bad = proof.clone();
-        bad.public_inputs[1 + c.n_wires as usize] =
-            fr_to_string(&(fold_out.final_instance.u + Fr::from(1u64)));
-        assert!(
-            verify_compression(&compress_out.bundle, &bad, &vk).is_err(),
-            "tampered u must fail verification"
-        );
-
-        // 6. tamper resistance: a corrupted proof point fails the pairing check
-        let mut bad2 = proof.clone();
-        bad2.proof_a = g1_hex(&G1Affine::generator());
-        assert!(
-            verify_compression(&compress_out.bundle, &bad2, &vk).is_err(),
-            "tampered proof must fail the pairing check"
-        );
     }
 
     #[test]
@@ -1757,60 +1045,6 @@ mod tests {
         }
     }
 
-    /// E2E: both Impl 9 (Groth16) and Impl 10 (sumcheck) verify the same
-    /// folded instance — they agree on the final state.
-    #[test]
-    fn sumcheck_and_groth16_agree_on_folded_instance() {
-        let tmp = tempfile::tempdir().unwrap();
-        let r1cs_path = tmp.path().join("step.r1cs");
-        let steps_dir = tmp.path().join("steps");
-        let pk_path = tmp.path().join("compression.pk");
-        let proof_path = tmp.path().join("compression.proof.json");
-        fs::write(&r1cs_path, step_r1cs_bytes()).unwrap();
-        fs::create_dir(&steps_dir).unwrap();
-
-        let mut state = 2u64;
-        for (i, x) in [3u64, 5, 7].iter().enumerate() {
-            state = write_step_wtns(&steps_dir, i, state, *x);
-        }
-
-        let fold_out = run_fold_nifs(&r1cs_path, &steps_dir).unwrap();
-
-        // Impl 10: sumcheck compression.
-        let c = load_circuit(&r1cs_path).unwrap();
-        let mut rng = rand::thread_rng();
-        let sc_proof = prove_sumcheck_compression(&c, &fold_out, &mut rng).unwrap();
-        let v10 = verify_sumcheck_compression(&fold_out.bundle, &sc_proof).unwrap();
-
-        // Impl 9: Groth16 compression (requires ceremony).
-        let cc = compression::CompressionCircuit::new(&c.l, &c.r, &c.o, c.n_wires as usize);
-        let engine = FftQapEngine::new();
-        let tw = ToxicWaste::random(&mut rng);
-        let (full_pk, vk) = single_party_ceremony_full_from_tw_sparse(
-            &engine,
-            cc.l.len(),
-            cc.n_wires_total,
-            cc.n_public,
-            &cc.l,
-            &cc.r,
-            &cc.o,
-            tw,
-            false,
-        );
-        let mut pk_bytes = Vec::new();
-        full_pk.serialize_uncompressed(&mut pk_bytes).unwrap();
-        fs::write(&pk_path, &pk_bytes).unwrap();
-
-        let compress_out = run_compress(&r1cs_path, &steps_dir, &pk_path, &proof_path).unwrap();
-        let proof: CompressionProof =
-            serde_json::from_slice(&fs::read(&proof_path).unwrap()).unwrap();
-        let v9 = verify_compression(&compress_out.bundle, &proof, &vk).unwrap();
-
-        // Both produce the same step count and the same transcript.
-        assert_eq!(v10.steps, v9.steps);
-        assert_eq!(v10.transcript_final, v9.transcript_final);
-    }
-
     fn sc_proof_json_size(p: &NifsSumcheckProof) -> usize {
         serde_json::to_string(p).unwrap().len()
     }
@@ -1897,7 +1131,7 @@ mod tests {
         assert_eq!(fold_out.final_instance.w_commit, w_commit);
     }
 
-    // ── Slim-proof tests (Implementation 11) ──────────────────────────
+    // ── Slim-proof tests ──────────────────────────────────────────────
 
     #[test]
     fn slim_proof_is_much_smaller_than_full() {

@@ -1,4 +1,4 @@
-//! NIFS folding module (Implementation 9) — Relaxed-R1CS over BLS12-381.
+//! NIFS folding module — Relaxed-R1CS over BLS12-381.
 //!
 //! A Relaxed-R1CS instance `U = (x, u, W̄, Ē)` consists of a public input
 //! `x`, a slack scalar `u`, and Pedersen commitments `W̄`, `Ē` to the witness

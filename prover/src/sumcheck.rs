@@ -1,9 +1,8 @@
-//! Sumcheck-based constant-size compression (Implementation 10).
+//! Sumcheck-based constant-size compression.
 //!
-//! Replaces the Groth16 compression of Implementation 9 with a sumcheck
-//! argument over the relaxed R1CS equation.  The verifier never sees the
-//! folded witness `Z` or error vector `E` — only constant-size transcripts
-//! and hash-based polynomial commitment openings.
+//! A sumcheck argument over the relaxed R1CS equation.  The verifier never
+//! sees the folded witness `Z` or error vector `E` — only constant-size
+//! transcripts and hash-based polynomial commitment openings.
 //!
 //! ## Protocol overview
 //!
