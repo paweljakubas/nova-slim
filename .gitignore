@@ -11,3 +11,6 @@ Cargo.lock
 # OS
 .DS_Store
 Thumbs.db
+
+# Benchmark artifacts (witnesses, compiled circuits)
+benchmarks/work/

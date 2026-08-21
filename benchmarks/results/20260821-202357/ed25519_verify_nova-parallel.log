@@ -1,0 +1,11 @@
+step circuit: 7658 wires, 7724 constraints, pub 24 out + 24 in, private 1
+step witnesses: 255 (from /home/pawel/Work/cardano-foundation/nova-slim/benchmarks/work/ed25519_verify_nova/steps)
+mode: NIFS fold + sumcheck compress (parallel)
+nifs fold: 116.891 s total, 458.396 ms/step over 255 steps (2 O(step)-sized MSMs)
+sumcheck compress: 19.888 s (transparent, O(log N) sumcheck rounds)
+verify (full): 19.7553 s (sumcheck + HashPC checks)
+nifs bundle: 5267 B (5.1 KiB), O(1) in the step count
+sumcheck proof (full): 686130 B (670.0 KiB) — off-chain audit variant
+slim proof: 6711 B (6.6 KiB) — on-chain variant
+verify (slim): 0.0006 s
+all verifications OK

@@ -105,67 +105,34 @@ for on-chain soundness.
 
 ## Benchmarks
 
-Measured with `cargo run --release --bin benchmark_nova -- --circuit <step.r1cs> --steps <witness-dir>`
-on a single machine / single core, witnesses kept in memory. All numbers in a
-row come from the **same run**. Step witnesses use full-size state values.
+<details>
+<summary><b>Measured numbers and how to reproduce them</b></summary>
 
-### Proof size
+Measured with `benchmark_nova --release` on real step circuits from
+[cardano-foundation/bls](https://github.com/cardano-foundation/bls) via
+`benchmarks/run_benchmarks.py`. Latest run (2026-08-21, 4-core desktop,
+release build, 255 chained steps):
 
-| Step circuit | Constraints | Steps | Slim bundle |
-|---|---|---|---|
-| `eddsa_jubjub_nova` | 9 | 254 | **~1.5 KiB** |
-| `anonymous_airdrop_nova` | 1,207 | 5 | **~1.5 KiB** |
-| `ed25519_verify_nova` | 7,724 | 255 | **~1.5 KiB** |
-| `cardano_ed25519_ownership_nova` | 7,724 | 255 | **~1.5 KiB** |
+| Step circuit | Constraints | Steps | Fold total | Fold/step | Compress | Verify (full) | Verify (slim) | Slim proof | Bundle |
+|---|---|---|---|---|---|---|---|---|---|
+| `cardano_ed25519_ownership_nova` | 7,724 | 255 | 122.2 / 120.1 s | 479 / 471 ms | 20.0 / 19.9 s | 20.4 / 20.4 s | **0.5 ms** | **6.6 KiB** | 5.1 KiB |
+| `ed25519_verify_nova` | 7,724 | 255 | 120.7 / 116.9 s | 473 / 458 ms | 20.0 / 19.9 s | 20.1 / 19.8 s | **0.3 ms** | **6.6 KiB** | 5.1 KiB |
 
-The slim proof is **constant in both step count and step width**.
+*Each cell shows baseline / `--opt-parallel` where two values are shown.
+The slim proof is constant in both step count and step width.*
 
-### Timing
-
-| Step circuit | Constraints | Steps | Fold total | Fold/step | Compress | Verify |
-|---|---|---|---|---|---|---|
-| `eddsa_jubjub_nova` | 9 | 254 | 1.01 s | 3.96 ms | 0.02 s | 0.02 s |
-| `anonymous_airdrop_nova` | 1,207 | 5 | 1.77 s | 354 ms | 1.31 s | 1.34 s |
-| `ed25519_verify_nova` | 7,724 | 255 | 47.3 s | 185 ms | 7.75 s | 7.87 s |
-| `cardano_ed25519_ownership_nova` | 7,724 | 255 | 47.3 s | 185 ms | 7.75 s | 7.87 s |
-
-*Compress and verify times are for the full sumcheck proof. The slim path skips
-HashPC opening verification, so verify is slightly faster. No trusted setup is
-needed anywhere in the flow.*
-
-### Parallel speedup (`--opt parallel`)
-
-| Step circuit | Constraints | Steps | Fold baseline | Fold parallel | Speedup |
-|---|---|---|---|---|---|
-| `eddsa_jubjub_nova` | 9 | 254 | 1.01 s | 0.88 s | 1.1× |
-| `anonymous_airdrop_nova` | 1,207 | 5 | 1.11 s | 1.22 s | 0.9× |
-| `ed25519_verify_nova` | 7,724 | 255 | 27.9 s | 16.8 s | **1.66×** |
-| `cardano_ed25519_ownership_nova` | 7,724 | 255 | 14.5 s | 17.9 s | 0.8× |
-
-| Step circuit | Compress baseline | Compress parallel | Speedup | Verify baseline | Verify parallel |
-|---|---|---|---|---|---|
-| `eddsa_jubjub_nova` | 10 ms | 13 ms | 0.8× | 11.3 ms | 14.4 ms |
-| `anonymous_airdrop_nova` | 946 ms | 850 ms | 1.1× | 1,307 ms | 907 ms |
-| `ed25519_verify_nova` | 7.95 s | 6.11 s | **1.30×** | 8.26 s | 6.35 s |
-| `cardano_ed25519_ownership_nova` | 8.99 s | 9.17 s | 1.0× | 9.00 s | 8.48 s |
-
-Parallelism shows the strongest gains on large step circuits (7,724 constraints)
-where row-level work amortizes rayon overhead. Proof sizes are identical between
-baseline and parallel.
-
-### Running the benchmark
+Re-run after any folding/compression change and paste the new summary here:
 
 ```bash
-cd prover
-
-# Slim path (default)
-cargo run --release --bin benchmark_nova -- --circuit <step.r1cs> --steps <witness-dir>
-
-# With parallel optimization
-cargo run --release --bin benchmark_nova -- --opt-parallel --circuit <step.r1cs> --steps <witness-dir>
+python3 benchmarks/run_benchmarks.py   # from the repository root
 ```
 
-`--limit N` restricts to the first N steps.
+The harness resolves the bls checkout (`$BLS_REPO_DIR` or sibling `../bls`),
+compiles circuits if needed, generates chained witnesses with snarkjs
+(resumable), and measures baseline + parallel passes; raw logs land in
+`benchmarks/results/<timestamp>/`.
+
+</details>
 
 ---
 
