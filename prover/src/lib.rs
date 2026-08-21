@@ -22,8 +22,8 @@
 //! `groth16-prover` crate; this crate adds the IVC folding layer on top.
 //! The `nova` CLI (`clis/nova`) wraps the operations in this crate.
 
-use ark_bls12_381::{Fr, G1Affine, G1Projective};
-use ark_ec::{AffineRepr, VariableBaseMSM};
+use ark_bls12_381::{Fr, G1Affine};
+use ark_ec::AffineRepr;
 use ark_ff::{PrimeField, Zero};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use blake2::{Blake2b512, Digest};
@@ -964,7 +964,7 @@ mod tests {
         assert_eq!(fold_out.bundle.n_steps, 3);
         assert_ne!(fold_out.final_instance.u, Fr::from(1u64));
 
-        // 2. sumcheck compression proof (no ceremony needed!)
+        // 2. sumcheck compression proof (transparent — no trusted setup)
         let c = load_circuit(&r1cs_path).unwrap();
         let mut rng = rand::thread_rng();
         let sc_proof = prove_sumcheck_compression(&c, &fold_out, &mut rng).unwrap();

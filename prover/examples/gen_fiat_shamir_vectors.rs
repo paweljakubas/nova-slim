@@ -2,7 +2,7 @@
 ///
 /// Run with: cargo run --example gen_fiat_shamir_vectors
 use ark_bls12_381::Fr;
-use ark_ff::{BigInteger, Field, PrimeField, Zero};
+use ark_ff::{BigInteger, Field, PrimeField};
 use blake2::{Blake2b, Digest};
 use blake2::digest::consts::U32;
 
@@ -29,12 +29,6 @@ fn main() {
     // Let's use claims = [42, 100, 200] (3 claims for 2 rounds).
 
     println!("=== Test 1: Simple 2-round ===");
-
-    let claims_1 = vec![Fr::from(42u64), Fr::from(100u64), Fr::from(200u64)];
-    let polys_1 = vec![
-        vec![Fr::from(10u64), Fr::from(20u64)],
-        vec![Fr::from(30u64), Fr::from(40u64)],
-    ];
 
     // Round 0: hash([42, 10, 20])
     let h0_input = vec![Fr::from(42u64), Fr::from(10u64), Fr::from(20u64)];
@@ -87,8 +81,6 @@ fn main() {
 
     // === Test 3: Single round with value ===
     println!("\n=== Test 3: Single round ===");
-    let claims_3 = vec![Fr::from(777u64)];
-    let polys_3 = vec![vec![Fr::from(500u64), Fr::from(277u64)]];
     let h3 = hash_field_elements(&[Fr::from(777u64), Fr::from(500u64), Fr::from(277u64)]);
     let ch3 = challenge_from_hash(&h3);
     println!("hash_input = [777, 500, 277]");
