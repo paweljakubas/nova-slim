@@ -21,6 +21,7 @@ summary into the Benchmarks section of prover/README.md.
 """
 import argparse
 import datetime
+import glob
 import json
 import os
 import subprocess
@@ -112,6 +113,18 @@ def run(cmd, log_path=None):
         sys.exit(f"command failed ({r.returncode}); see {log_path or 'output above'}")
 
 
+def prune_witness_intermediates(steps_dir):
+    """Free disk after generation: keep step_*.wtns plus the newest wit_*.json
+    (the resume anchor for interrupted runs); drop the rest."""
+    if not os.path.isdir(steps_dir):
+        return
+    wits = sorted(glob.glob(os.path.join(steps_dir, "wit_*.json")))
+    for p in wits[:-1]:
+        os.remove(p)
+    for p in glob.glob(os.path.join(steps_dir, "input_*.json")):
+        os.remove(p)
+
+
 def parse_bench_log(path):
     out = {}
     for line in open(path):
@@ -167,6 +180,7 @@ def main():
             run([sys.executable, os.path.join(SCRIPT_DIR, "gen_step_witnesses.py"),
                  "--wasm", wasm, "--initial", initial, "--outputs", fam["outputs"],
                  "--steps", str(n_steps), "--dir", steps_dir])
+        prune_witness_intermediates(steps_dir)
 
         row = {"family": name, "constraints": fam["constraints"], "steps": n_steps}
         for mode, flag in (("base", []), ("parallel", ["--opt-parallel"])):
