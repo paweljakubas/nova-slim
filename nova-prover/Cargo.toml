@@ -1,0 +1,23 @@
+[package]
+name = "nova-prover"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "NovaSlim — curve-agnostic Nova IVC folding with sumcheck compression and slim proofs"
+
+[dependencies]
+ark-bls12-381 = "0.4"
+ark-ec = "0.4"
+ark-ff = "0.4"
+ark-serialize = "0.4"
+blake2 = "0.10"
+groth16-prover = { git = "https://github.com/cardano-foundation/bls.git" }
+hex = "0.4"
+rand = "0.8"
+rayon = "1.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+proptest = "1.4"
+tempfile = "3"
