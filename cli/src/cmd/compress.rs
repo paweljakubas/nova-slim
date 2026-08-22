@@ -10,10 +10,11 @@
 //! little-endian values).
 
 use clap::Parser;
-use prover::{run_compress_sumcheck_opt, NifsSumcheckProof, OptFlags};
+use prover::{run_compress_sumcheck_opt, NifsSumcheckProof, OptFlags, curve::{Bls12_381, Bn254}};
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
+use crate::Curve;
 
 /// Arguments for the `compress` subcommand
 #[derive(Debug, Parser)]
@@ -40,6 +41,10 @@ pub struct Args {
     #[arg(long)]
     pub slim: bool,
 
+    /// Elliptic curve to use.
+    #[arg(long, value_enum, default_value = "bls12-381")]
+    pub curve: Curve,
+
     /// Optimizations (comma-separated):
     ///   parallel  — use rayon for independent row/column operations
     ///   lazy      — defer Pedersen MSM to final step
@@ -62,31 +67,40 @@ fn parse_opt_flags(s: &str) -> Result<OptFlags, Box<dyn Error>> {
     Ok(flags)
 }
 
+fn strip_and_write(full_bytes: &[u8], out: &std::path::Path) -> Result<(), Box<dyn Error>> {
+    let full_proof = NifsSumcheckProof::from_cbor::<ark_bls12_381::Fr>(full_bytes)?;
+    let slim_proof = full_proof.to_slim();
+    let slim_cbor = slim_proof.to_cbor::<ark_bls12_381::Fr>()?;
+    fs::write(out, &slim_cbor)?;
+    eprintln!(
+        "Slim proof written to {} ({} bytes, down from {} bytes — {:.0}% reduction)",
+        out.display(),
+        slim_cbor.len(),
+        full_bytes.len(),
+        100.0 * (1.0 - slim_cbor.len() as f64 / full_bytes.len() as f64),
+    );
+    Ok(())
+}
+
 /// Run the `compress` subcommand.
 pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
     let opts = parse_opt_flags(&args.opt)?;
     if args.slim {
         // Sumcheck compress, then strip opening proofs for on-chain proof.
         let tmp = args.out.with_extension("full.cbor");
-        run_compress_sumcheck_opt(&args.circuit, &args.steps, &tmp, opts)?;
+        match args.curve {
+            Curve::Bls12_381 => run_compress_sumcheck_opt::<Bls12_381>(&args.circuit, &args.steps, &tmp, opts)?,
+            Curve::Bn254 => run_compress_sumcheck_opt::<Bn254>(&args.circuit, &args.steps, &tmp, opts)?,
+        };
         let full_bytes = fs::read(&tmp)?;
-        let full_proof = NifsSumcheckProof::from_cbor(&full_bytes)?;
-        let slim_proof = full_proof.to_slim();
-        let slim_cbor = slim_proof.to_cbor()?;
-        fs::write(&args.out, &slim_cbor)?;
-        let full_size = full_bytes.len();
-        let slim_size = slim_cbor.len();
+        strip_and_write(&full_bytes, &args.out)?;
         fs::remove_file(&tmp).ok();
-        eprintln!(
-            "Slim proof written to {} ({} bytes, down from {} bytes — {:.0}% reduction)",
-            args.out.display(),
-            slim_size,
-            full_size,
-            100.0 * (1.0 - slim_size as f64 / full_size as f64),
-        );
     } else {
         // Default: full sumcheck compression (transparent, O(log N)).
-        run_compress_sumcheck_opt(&args.circuit, &args.steps, &args.out, opts)?;
+        match args.curve {
+            Curve::Bls12_381 => run_compress_sumcheck_opt::<Bls12_381>(&args.circuit, &args.steps, &args.out, opts)?,
+            Curve::Bn254 => run_compress_sumcheck_opt::<Bn254>(&args.circuit, &args.steps, &args.out, opts)?,
+        };
     }
     Ok(())
 }

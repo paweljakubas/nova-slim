@@ -14,10 +14,20 @@
 //! The core IVC logic lives in the `prover` crate; this crate only
 //! adds the command-line interface on top of it.
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::error::Error;
 
 mod cmd;
+
+/// Supported elliptic curves.
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+pub enum Curve {
+    /// BLS12-381 (Cardano-native).
+    #[default]
+    Bls12_381,
+    /// BN254 (Ethereum zk-rollups).
+    Bn254,
+}
 
 /// CLI commands available
 #[derive(Debug, Subcommand)]

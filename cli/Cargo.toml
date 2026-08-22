@@ -15,6 +15,8 @@ path = "src/main.rs"
 
 [dependencies]
 prover = { path = "../prover", default-features = false, features = ["bls12-381", "bn254"] }
+ark-bls12-381 = "0.4"
+ark-bn254 = "0.4"
 clap = { version = "4.5", features = ["derive"] }
 serde_json = "1"
 
