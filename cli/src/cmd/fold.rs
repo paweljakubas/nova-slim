@@ -2,7 +2,7 @@
 //! instance (NIFS) and emit the O(1) bundle.
 
 use clap::Parser;
-use prover::{run_fold_nifs_opt, OptFlags, NifsBundle, curve::{Bls12_381, Bn254}};
+use prover::{run_fold_nifs_opt, OptFlags, NifsBundle, curve::{Bls12_381, Bn254, Pallas, NovaCurve, ScalarField}};
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
@@ -52,9 +52,9 @@ fn parse_opt_flags(s: &str) -> Result<OptFlags, Box<dyn Error>> {
     Ok(flags)
 }
 
-fn write_bundle(out: &NifsBundle, path: &std::path::Path, opts: OptFlags) -> Result<(), Box<dyn Error>> {
+fn write_bundle<C: NovaCurve>(out: &NifsBundle, path: &std::path::Path, opts: OptFlags) -> Result<(), Box<dyn Error>> {
     let cbor = out
-        .to_cbor::<ark_bls12_381::Fr>()
+        .to_cbor::<ScalarField<C>>()
         .map_err(|e| format!("failed to serialize NIFS bundle: {e}"))?;
     fs::write(path, &cbor)
         .map_err(|e| format!("failed to write NIFS bundle to {}: {e}", path.display()))?;
@@ -74,11 +74,15 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
     match args.curve {
         Curve::Bls12_381 => {
             let out = run_fold_nifs_opt::<Bls12_381>(&args.circuit, &args.steps, opts)?;
-            write_bundle(&out.bundle, &args.out, opts)?;
+            write_bundle::<Bls12_381>(&out.bundle, &args.out, opts)?;
         }
         Curve::Bn254 => {
             let out = run_fold_nifs_opt::<Bn254>(&args.circuit, &args.steps, opts)?;
-            write_bundle(&out.bundle, &args.out, opts)?;
+            write_bundle::<Bn254>(&out.bundle, &args.out, opts)?;
+        }
+        Curve::Pallas => {
+            let out = run_fold_nifs_opt::<Pallas>(&args.circuit, &args.steps, opts)?;
+            write_bundle::<Pallas>(&out.bundle, &args.out, opts)?;
         }
     }
     Ok(())

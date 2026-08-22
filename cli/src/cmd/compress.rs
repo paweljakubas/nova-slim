@@ -10,7 +10,7 @@
 //! little-endian values).
 
 use clap::Parser;
-use prover::{run_compress_sumcheck_opt, NifsSumcheckProof, OptFlags, curve::{Bls12_381, Bn254}};
+use prover::{run_compress_sumcheck_opt, NifsSumcheckProof, OptFlags, curve::{Bls12_381, Bn254, Pallas, NovaCurve, ScalarField}};
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
@@ -67,10 +67,10 @@ fn parse_opt_flags(s: &str) -> Result<OptFlags, Box<dyn Error>> {
     Ok(flags)
 }
 
-fn strip_and_write(full_bytes: &[u8], out: &std::path::Path) -> Result<(), Box<dyn Error>> {
-    let full_proof = NifsSumcheckProof::from_cbor::<ark_bls12_381::Fr>(full_bytes)?;
+fn strip_and_write<C: NovaCurve>(full_bytes: &[u8], out: &std::path::Path) -> Result<(), Box<dyn Error>> {
+    let full_proof = NifsSumcheckProof::from_cbor::<ScalarField<C>>(full_bytes)?;
     let slim_proof = full_proof.to_slim();
-    let slim_cbor = slim_proof.to_cbor::<ark_bls12_381::Fr>()?;
+    let slim_cbor = slim_proof.to_cbor::<ScalarField<C>>()?;
     fs::write(out, &slim_cbor)?;
     eprintln!(
         "Slim proof written to {} ({} bytes, down from {} bytes — {:.0}% reduction)",
@@ -91,15 +91,21 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
         match args.curve {
             Curve::Bls12_381 => run_compress_sumcheck_opt::<Bls12_381>(&args.circuit, &args.steps, &tmp, opts)?,
             Curve::Bn254 => run_compress_sumcheck_opt::<Bn254>(&args.circuit, &args.steps, &tmp, opts)?,
+            Curve::Pallas => run_compress_sumcheck_opt::<Pallas>(&args.circuit, &args.steps, &tmp, opts)?,
         };
         let full_bytes = fs::read(&tmp)?;
-        strip_and_write(&full_bytes, &args.out)?;
+        match args.curve {
+            Curve::Bls12_381 => strip_and_write::<Bls12_381>(&full_bytes, &args.out)?,
+            Curve::Bn254 => strip_and_write::<Bn254>(&full_bytes, &args.out)?,
+            Curve::Pallas => strip_and_write::<Pallas>(&full_bytes, &args.out)?,
+        };
         fs::remove_file(&tmp).ok();
     } else {
         // Default: full sumcheck compression (transparent, O(log N)).
         match args.curve {
             Curve::Bls12_381 => run_compress_sumcheck_opt::<Bls12_381>(&args.circuit, &args.steps, &args.out, opts)?,
             Curve::Bn254 => run_compress_sumcheck_opt::<Bn254>(&args.circuit, &args.steps, &args.out, opts)?,
+            Curve::Pallas => run_compress_sumcheck_opt::<Pallas>(&args.circuit, &args.steps, &args.out, opts)?,
         };
     }
     Ok(())

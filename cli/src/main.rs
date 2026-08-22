@@ -27,6 +27,8 @@ pub enum Curve {
     Bls12_381,
     /// BN254 (Ethereum zk-rollups).
     Bn254,
+    /// Pallas (Zcash Orchard).
+    Pallas,
 }
 
 /// CLI commands available

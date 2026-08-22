@@ -1,7 +1,7 @@
 //! `verify` subcommand — verify a NIFS bundle against a compression proof.
 
 use clap::Parser;
-use prover::{run_verify_slim, run_verify_sumcheck, curve::{Bls12_381, Bn254}};
+use prover::{run_verify_slim, run_verify_sumcheck, curve::{Bls12_381, Bn254, Pallas}};
 use std::error::Error;
 use std::path::PathBuf;
 use crate::Curve;
@@ -36,6 +36,7 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
         let out = match args.curve {
             Curve::Bls12_381 => run_verify_slim::<Bls12_381>(&args.ivc, sp)?,
             Curve::Bn254 => run_verify_slim::<Bn254>(&args.ivc, sp)?,
+            Curve::Pallas => run_verify_slim::<Pallas>(&args.ivc, sp)?,
         };
         eprintln!(
             "Verified {} steps: slim sumcheck proof OK, state chain OK (no opening proofs — off-chain audit trail)",
@@ -49,6 +50,7 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
         let out = match args.curve {
             Curve::Bls12_381 => run_verify_sumcheck::<Bls12_381>(&args.ivc, sc_proof)?,
             Curve::Bn254 => run_verify_sumcheck::<Bn254>(&args.ivc, sc_proof)?,
+            Curve::Pallas => run_verify_sumcheck::<Pallas>(&args.ivc, sc_proof)?,
         };
         eprintln!(
             "Verified {} steps: sumcheck compression proof OK, commitments OK, state chain OK",

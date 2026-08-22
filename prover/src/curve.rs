@@ -59,3 +59,14 @@ impl NovaCurve for Bn254 {
     type ScalarField = ark_bn254::Fr;
     type G1Affine = ark_bn254::G1Affine;
 }
+
+/// Pallas — the Zcash Orchard curve (prime-order, no pairing).
+#[cfg(feature = "pallas")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pallas;
+
+#[cfg(feature = "pallas")]
+impl NovaCurve for Pallas {
+    type ScalarField = ark_pallas::Fr;
+    type G1Affine = ark_pallas::Affine;
+}
