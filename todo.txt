@@ -1,9 +1,0 @@
-Create generic SparseCircuit<F> parser in prover/src/circuit.rs to replace groth16-prover dependency
-Make lib.rs generic over C: NovaCurve (run_* functions, codec, NifsBundle, proofs)
-Update nifs.rs tests to be generic over NovaCurve
-Update sumcheck.rs tests to be generic over NovaCurve
-Update CLI with --curve argument and generic dispatch
-Update Cargo.toml features and dependencies
-Run tests to verify both bls12-381 and bn254 features compile and pass
-Leave only ed25519_verify_nova benchmark and add one mentioned in Sonoba paper
-Adjust docs/article.md
