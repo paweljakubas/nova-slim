@@ -1,4 +1,4 @@
-//! NIFS folding module — Relaxed-R1CS over BLS12-381.
+//! NIFS folding module — Relaxed-R1CS over any curve.
 //!
 //! A Relaxed-R1CS instance `U = (x, u, W̄, Ē)` consists of a public input
 //! `x`, a slack scalar `u`, and Pedersen commitments `W̄`, `Ē` to the witness
@@ -11,12 +11,13 @@
 //! basis is deterministic (hash-to-scalar from a fixed seed) — transparent,
 //! no trusted setup.
 
-use ark_bls12_381::{Fr, G1Affine, G1Projective};
 use ark_ec::{AffineRepr, Group, VariableBaseMSM};
 use ark_ff::{PrimeField, Zero};
 use ark_serialize::{CanonicalSerialize, SerializationError};
 use blake2::{Blake2b512, Digest};
 use rayon::prelude::*;
+
+use crate::curve::{G1Projective, NovaCurve, ScalarField};
 
 /// Domain separator for the folding challenge hash (distinct from the
 /// `"chain"` state-chain transcript).
@@ -24,71 +25,75 @@ pub const FOLD_PREFIX: &[u8] = b"groth16-prover-nova-fold-v1";
 
 /// A Relaxed-R1CS instance `U = (x, u, W̄, Ē)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RelaxedR1csInstance {
+pub struct RelaxedR1csInstance<C: NovaCurve> {
     /// Public input (IVC state).
-    pub x: Vec<Fr>,
+    pub x: Vec<ScalarField<C>>,
     /// Slack scalar `u`.
-    pub u: Fr,
+    pub u: ScalarField<C>,
     /// Pedersen commitment to the witness `W`.
-    pub w_commit: G1Affine,
+    pub w_commit: C::G1Affine,
     /// Pedersen commitment to the error `E`.
-    pub e_commit: G1Affine,
+    pub e_commit: C::G1Affine,
 }
 
 /// The witness `W' = (W, E)` of a Relaxed-R1CS instance.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RelaxedR1csWitness {
+pub struct RelaxedR1csWitness<C: NovaCurve> {
     /// Witness assignment (full wire vector, including public inputs).
-    pub w: Vec<Fr>,
+    pub w: Vec<ScalarField<C>>,
     /// Error vector, length = number of constraints.
-    pub e: Vec<Fr>,
+    pub e: Vec<ScalarField<C>>,
 }
 
 /// Pedersen commitment parameters: the deterministic G1 bases for `W` and `E`.
 #[derive(Debug, Clone)]
-pub struct PedersenParams {
+pub struct PedersenParams<C: NovaCurve> {
     /// Basis for the witness commitment, one point per wire.
-    pub basis_w: Vec<G1Affine>,
+    pub basis_w: Vec<C::G1Affine>,
     /// Basis for the error commitment, one point per constraint.
-    pub basis_e: Vec<G1Affine>,
+    pub basis_e: Vec<C::G1Affine>,
 }
 
-impl PedersenParams {
+impl<C: NovaCurve> PedersenParams<C> {
     /// Derive the bases deterministically from a seed: each basis point is
     /// `H(seed ‖ domain ‖ index)` times the G1 generator.  No trusted setup.
     pub fn from_seed(seed: &[u8], n_wires: usize, n_constraints: usize) -> Self {
         Self {
-            basis_w: derive_basis(seed, b"witness", n_wires),
-            basis_e: derive_basis(seed, b"error", n_constraints),
+            basis_w: derive_basis::<C>(seed, b"witness", n_wires),
+            basis_e: derive_basis::<C>(seed, b"error", n_constraints),
         }
     }
 }
 
 /// Hash `(seed ‖ domain ‖ index)` to a G1 point via scalar multiplication.
-fn derive_basis(seed: &[u8], domain: &[u8], n: usize) -> Vec<G1Affine> {
+fn derive_basis<C: NovaCurve>(seed: &[u8], domain: &[u8], n: usize) -> Vec<C::G1Affine> {
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
         let mut h = Blake2b512::new();
         h.update(seed);
         h.update(domain);
         h.update(i.to_le_bytes());
-        let scalar = Fr::from_le_bytes_mod_order(&h.finalize());
-        out.push(G1Affine::from(G1Projective::generator() * scalar));
+        let scalar = ScalarField::<C>::from_le_bytes_mod_order(&h.finalize());
+        out.push(C::G1Affine::from(G1Projective::<C>::generator() * scalar));
     }
     out
 }
 
 /// Pedersen commitment `com(v) = Σ v_i·G_i`.
-pub fn commit(basis: &[G1Affine], values: &[Fr]) -> G1Affine {
+pub fn commit<C: NovaCurve>(basis: &[C::G1Affine], values: &[ScalarField<C>]) -> C::G1Affine {
     if values.is_empty() {
-        return G1Affine::zero();
+        return C::G1Affine::zero();
     }
     debug_assert_eq!(basis.len(), values.len(), "basis/values length mismatch");
-    G1Affine::from(G1Projective::msm(basis, values).expect("MSM length mismatch"))
+    C::G1Affine::from(
+        G1Projective::<C>::msm(basis, values).expect("MSM length mismatch"),
+    )
 }
 
 /// Serialize an instance to compressed bytes for the folding transcript.
-pub fn instance_to_bytes(u: &RelaxedR1csInstance) -> Result<Vec<u8>, SerializationError> {
+pub fn instance_to_bytes<C: NovaCurve>(
+    u: &RelaxedR1csInstance<C>,
+) -> Result<Vec<u8>, SerializationError> {
     let mut buf = Vec::new();
     for f in &u.x {
         f.serialize_compressed(&mut buf)?;
@@ -100,26 +105,26 @@ pub fn instance_to_bytes(u: &RelaxedR1csInstance) -> Result<Vec<u8>, Serializati
 }
 
 /// Evaluate the sparse matrix `m` at the assignment `z`.
-fn sparse_eval(m: &[Vec<(u32, Fr)>], z: &[Fr]) -> Vec<Fr> {
+fn sparse_eval<F: PrimeField>(m: &[Vec<(u32, F)>], z: &[F]) -> Vec<F> {
     m.iter()
         .map(|row| {
             row.iter()
-                .fold(Fr::zero(), |acc, &(i, v)| acc + v * z[i as usize])
+                .fold(F::zero(), |acc, &(i, v)| acc + v * z[i as usize])
         })
         .collect()
 }
 
 /// The NIFS cross-term vector (length = n_constraints):
 /// `E_cross = (AZ1)∘(BZ2) + (AZ2)∘(BZ1) − u1·(CZ2) − u2·(CZ1)`.
-fn cross_term(
-    l: &[Vec<(u32, Fr)>],
-    r: &[Vec<(u32, Fr)>],
-    o: &[Vec<(u32, Fr)>],
-    z1: &[Fr],
-    z2: &[Fr],
-    u1: Fr,
-    u2: Fr,
-) -> Vec<Fr> {
+fn cross_term<F: PrimeField>(
+    l: &[Vec<(u32, F)>],
+    r: &[Vec<(u32, F)>],
+    o: &[Vec<(u32, F)>],
+    z1: &[F],
+    z2: &[F],
+    u1: F,
+    u2: F,
+) -> Vec<F> {
     let az1 = sparse_eval(l, z1);
     let az2 = sparse_eval(l, z2);
     let bz1 = sparse_eval(r, z1);
@@ -133,15 +138,15 @@ fn cross_term(
 
 /// Parallel version of [`cross_term`]: each sparse_eval and the final row
 /// mapping run in parallel via rayon.  Identical output for identical input.
-pub fn cross_term_parallel(
-    l: &[Vec<(u32, Fr)>],
-    r: &[Vec<(u32, Fr)>],
-    o: &[Vec<(u32, Fr)>],
-    z1: &[Fr],
-    z2: &[Fr],
-    u1: Fr,
-    u2: Fr,
-) -> Vec<Fr> {
+pub fn cross_term_parallel<F: PrimeField>(
+    l: &[Vec<(u32, F)>],
+    r: &[Vec<(u32, F)>],
+    o: &[Vec<(u32, F)>],
+    z1: &[F],
+    z2: &[F],
+    u1: F,
+    u2: F,
+) -> Vec<F> {
     let az1 = sparse_eval(l, z1);
     let az2 = sparse_eval(l, z2);
     let bz1 = sparse_eval(r, z1);
@@ -157,30 +162,34 @@ pub fn cross_term_parallel(
 /// Fiat-Shamir folding challenge `r = H(FOLD_PREFIX ‖ acc ‖ U1 ‖ U2)`.
 ///
 /// Domain-separated from the `"chain"` state-chain transcript.
-pub fn fold_challenge(acc: &[u8], u1: &RelaxedR1csInstance, u2: &RelaxedR1csInstance) -> Fr {
+pub fn fold_challenge<C: NovaCurve>(
+    acc: &[u8],
+    u1: &RelaxedR1csInstance<C>,
+    u2: &RelaxedR1csInstance<C>,
+) -> ScalarField<C> {
     let mut h = Blake2b512::new();
     h.update(FOLD_PREFIX);
     h.update(acc);
-    h.update(instance_to_bytes(u1).expect("serialize U1"));
-    h.update(instance_to_bytes(u2).expect("serialize U2"));
-    Fr::from_le_bytes_mod_order(&h.finalize())
+    h.update(instance_to_bytes::<C>(u1).expect("serialize U1"));
+    h.update(instance_to_bytes::<C>(u2).expect("serialize U2"));
+    ScalarField::<C>::from_le_bytes_mod_order(&h.finalize())
 }
 
 /// Fold two Relaxed-R1CS instances (and their witnesses) into one.
 ///
 /// `l`, `r`, `o` are the step circuit's sparse A/B/C matrices.  The folded
 /// instance is satisfiable exactly when both inputs were.
-pub fn fold(
-    params: &PedersenParams,
-    l: &[Vec<(u32, Fr)>],
-    r: &[Vec<(u32, Fr)>],
-    o: &[Vec<(u32, Fr)>],
-    u1: &RelaxedR1csInstance,
-    w1: &RelaxedR1csWitness,
-    u2: &RelaxedR1csInstance,
-    w2: &RelaxedR1csWitness,
-    challenge: Fr,
-) -> (RelaxedR1csInstance, RelaxedR1csWitness) {
+pub fn fold<C: NovaCurve>(
+    params: &PedersenParams<C>,
+    l: &[Vec<(u32, ScalarField<C>)>],
+    r: &[Vec<(u32, ScalarField<C>)>],
+    o: &[Vec<(u32, ScalarField<C>)>],
+    u1: &RelaxedR1csInstance<C>,
+    w1: &RelaxedR1csWitness<C>,
+    u2: &RelaxedR1csInstance<C>,
+    w2: &RelaxedR1csWitness<C>,
+    challenge: ScalarField<C>,
+) -> (RelaxedR1csInstance<C>, RelaxedR1csWitness<C>) {
     fold_with_opts(params, l, r, o, u1, w1, u2, w2, challenge, false)
 }
 
@@ -188,31 +197,31 @@ pub fn fold(
 ///
 /// When `parallel` is true, the cross-term computation uses rayon for
 /// parallel row evaluation.
-pub fn fold_with_opts(
-    params: &PedersenParams,
-    l: &[Vec<(u32, Fr)>],
-    r: &[Vec<(u32, Fr)>],
-    o: &[Vec<(u32, Fr)>],
-    u1: &RelaxedR1csInstance,
-    w1: &RelaxedR1csWitness,
-    u2: &RelaxedR1csInstance,
-    w2: &RelaxedR1csWitness,
-    challenge: Fr,
+pub fn fold_with_opts<C: NovaCurve>(
+    params: &PedersenParams<C>,
+    l: &[Vec<(u32, ScalarField<C>)>],
+    r: &[Vec<(u32, ScalarField<C>)>],
+    o: &[Vec<(u32, ScalarField<C>)>],
+    u1: &RelaxedR1csInstance<C>,
+    w1: &RelaxedR1csWitness<C>,
+    u2: &RelaxedR1csInstance<C>,
+    w2: &RelaxedR1csWitness<C>,
+    challenge: ScalarField<C>,
     parallel: bool,
-) -> (RelaxedR1csInstance, RelaxedR1csWitness) {
+) -> (RelaxedR1csInstance<C>, RelaxedR1csWitness<C>) {
     assert_eq!(u1.x.len(), u2.x.len(), "public input widths must match");
     assert_eq!(w1.w.len(), w2.w.len(), "witness widths must match");
     assert_eq!(w1.e.len(), w2.e.len(), "error widths must match");
     assert_eq!(w1.e.len(), l.len(), "error length must equal n_constraints");
 
-    let x3: Vec<Fr> =
+    let x3: Vec<ScalarField<C>> =
         u1.x.iter()
             .zip(&u2.x)
             .map(|(a, b)| *a + challenge * *b)
             .collect();
     let u3 = u1.u + challenge * u2.u;
 
-    let w3: Vec<Fr> =
+    let w3: Vec<ScalarField<C>> =
         w1.w.iter()
             .zip(&w2.w)
             .map(|(a, b)| *a + challenge * *b)
@@ -223,7 +232,7 @@ pub fn fold_with_opts(
     } else {
         cross_term(l, r, o, &w1.w, &w2.w, u1.u, u2.u)
     };
-    let e3: Vec<Fr> =
+    let e3: Vec<ScalarField<C>> =
         w1.e.iter()
             .zip(&w2.e)
             .map(|(a, b)| *a + challenge * *b)
@@ -231,13 +240,13 @@ pub fn fold_with_opts(
             .map(|(s, c)| s + challenge * c)
             .collect();
 
-    let w_commit3 = G1Affine::from(
-        G1Projective::from(u1.w_commit) + G1Projective::from(u2.w_commit) * challenge,
+    let w_commit3 = C::G1Affine::from(
+        G1Projective::<C>::from(u1.w_commit) + G1Projective::<C>::from(u2.w_commit) * challenge,
     );
-    let e_commit3 = G1Affine::from(
-        G1Projective::from(u1.e_commit)
-            + G1Projective::from(u2.e_commit) * challenge
-            + G1Projective::from(commit(&params.basis_e, &e3_cross)) * challenge,
+    let e_commit3 = C::G1Affine::from(
+        G1Projective::<C>::from(u1.e_commit)
+            + G1Projective::<C>::from(u2.e_commit) * challenge
+            + G1Projective::<C>::from(commit::<C>(&params.basis_e, &e3_cross)) * challenge,
     );
 
     let u3 = RelaxedR1csInstance {
@@ -246,7 +255,7 @@ pub fn fold_with_opts(
         w_commit: w_commit3,
         e_commit: e_commit3,
     };
-    debug_assert_eq!(u3.w_commit, commit(&params.basis_w, &w3));
+    debug_assert_eq!(u3.w_commit, commit::<C>(&params.basis_w, &w3));
     (u3, RelaxedR1csWitness { w: w3, e: e3 })
 }
 
@@ -256,23 +265,24 @@ mod tests {
 
     #[test]
     fn basis_derivation_is_deterministic() {
-        let a = PedersenParams::from_seed(b"seed", 8, 4);
-        let b = PedersenParams::from_seed(b"seed", 8, 4);
+        let a = PedersenParams::<crate::curve::Bls12_381>::from_seed(b"seed", 8, 4);
+        let b = PedersenParams::<crate::curve::Bls12_381>::from_seed(b"seed", 8, 4);
         assert_eq!(a.basis_w, b.basis_w);
         assert_eq!(a.basis_e, b.basis_e);
         assert_eq!(a.basis_w.len(), 8);
         assert_eq!(a.basis_e.len(), 4);
 
-        let c = PedersenParams::from_seed(b"other", 8, 4);
+        let c = PedersenParams::<crate::curve::Bls12_381>::from_seed(b"other", 8, 4);
         assert_ne!(a.basis_w, c.basis_w);
     }
 
     #[test]
     fn commit_is_additive() {
-        let params = PedersenParams::from_seed(b"seed", 4, 1);
-        let a: Vec<Fr> = (1..=4).map(|i| Fr::from(i)).collect();
-        let b: Vec<Fr> = (5..=8).map(|i| Fr::from(i)).collect();
-        let sum: Vec<Fr> = a.iter().zip(&b).map(|(x, y)| *x + *y).collect();
+        use ark_ff::Field;
+        let params = PedersenParams::<crate::curve::Bls12_381>::from_seed(b"seed", 4, 1);
+        let a: Vec<ark_bls12_381::Fr> = (1..=4).map(|i| ark_bls12_381::Fr::from(i)).collect();
+        let b: Vec<ark_bls12_381::Fr> = (5..=8).map(|i| ark_bls12_381::Fr::from(i)).collect();
+        let sum: Vec<ark_bls12_381::Fr> = a.iter().zip(&b).map(|(x, y)| *x + *y).collect();
 
         assert_eq!(
             commit(&params.basis_w, &sum),
@@ -282,36 +292,36 @@ mod tests {
 
     #[test]
     fn commit_empty_is_zero() {
-        let params = PedersenParams::from_seed(b"seed", 0, 0);
-        assert!(commit(&params.basis_w, &[]).is_zero());
+        let params = PedersenParams::<crate::curve::Bls12_381>::from_seed(b"seed", 0, 0);
+        assert!(commit::<crate::curve::Bls12_381>(&params.basis_w, &[]).is_zero());
     }
 
     #[test]
     fn commit_zero_vector_is_zero() {
-        let params = PedersenParams::from_seed(b"seed", 4, 1);
-        let zeros = vec![Fr::zero(); 4];
+        let params = PedersenParams::<crate::curve::Bls12_381>::from_seed(b"seed", 4, 1);
+        let zeros = vec![ark_bls12_381::Fr::zero(); 4];
         assert!(commit(&params.basis_w, &zeros).is_zero());
     }
 
     /// One-constraint multiplier: `Z[1]·Z[2] = Z[3]`, wire 0 = constant 1.
     fn simple_r1cs() -> (
-        Vec<Vec<(u32, Fr)>>,
-        Vec<Vec<(u32, Fr)>>,
-        Vec<Vec<(u32, Fr)>>,
+        Vec<Vec<(u32, ark_bls12_381::Fr)>>,
+        Vec<Vec<(u32, ark_bls12_381::Fr)>>,
+        Vec<Vec<(u32, ark_bls12_381::Fr)>>,
     ) {
         (
-            vec![vec![(1, Fr::from(1u64))]],
-            vec![vec![(2, Fr::from(1u64))]],
-            vec![vec![(3, Fr::from(1u64))]],
+            vec![vec![(1, ark_bls12_381::Fr::from(1u64))]],
+            vec![vec![(2, ark_bls12_381::Fr::from(1u64))]],
+            vec![vec![(3, ark_bls12_381::Fr::from(1u64))]],
         )
     }
 
     fn make_instance(
-        params: &PedersenParams,
-        w: &[Fr],
-    ) -> (RelaxedR1csInstance, RelaxedR1csWitness) {
-        let e = vec![Fr::zero(); 1];
-        let u = Fr::from(1u64);
+        params: &PedersenParams<crate::curve::Bls12_381>,
+        w: &[ark_bls12_381::Fr],
+    ) -> (RelaxedR1csInstance<crate::curve::Bls12_381>, RelaxedR1csWitness<crate::curve::Bls12_381>) {
+        let e = vec![ark_bls12_381::Fr::zero(); 1];
+        let u = ark_bls12_381::Fr::from(1u64);
         (
             RelaxedR1csInstance {
                 x: w[1..3].to_vec(),
@@ -325,14 +335,14 @@ mod tests {
 
     #[test]
     fn fold_challenge_is_deterministic_and_distinct() {
-        let params = PedersenParams::from_seed(b"fold-test", 4, 1);
+        let params = PedersenParams::<crate::curve::Bls12_381>::from_seed(b"fold-test", 4, 1);
         let (u1, _) = make_instance(
             &params,
-            &[Fr::from(1), Fr::from(2), Fr::from(3), Fr::from(6)],
+            &[ark_bls12_381::Fr::from(1), ark_bls12_381::Fr::from(2), ark_bls12_381::Fr::from(3), ark_bls12_381::Fr::from(6)],
         );
         let (u2, _) = make_instance(
             &params,
-            &[Fr::from(1), Fr::from(5), Fr::from(7), Fr::from(35)],
+            &[ark_bls12_381::Fr::from(1), ark_bls12_381::Fr::from(5), ark_bls12_381::Fr::from(7), ark_bls12_381::Fr::from(35)],
         );
 
         assert_eq!(
@@ -352,16 +362,16 @@ mod tests {
     #[test]
     fn fold_combines_instances() {
         let (l, r, o) = simple_r1cs();
-        let params = PedersenParams::from_seed(b"fold-test", 4, 1);
+        let params = PedersenParams::<crate::curve::Bls12_381>::from_seed(b"fold-test", 4, 1);
         let (u1, w1) = make_instance(
             &params,
-            &[Fr::from(1), Fr::from(2), Fr::from(3), Fr::from(6)],
+            &[ark_bls12_381::Fr::from(1), ark_bls12_381::Fr::from(2), ark_bls12_381::Fr::from(3), ark_bls12_381::Fr::from(6)],
         );
         let (u2, w2) = make_instance(
             &params,
-            &[Fr::from(1), Fr::from(5), Fr::from(7), Fr::from(35)],
+            &[ark_bls12_381::Fr::from(1), ark_bls12_381::Fr::from(5), ark_bls12_381::Fr::from(7), ark_bls12_381::Fr::from(35)],
         );
-        let challenge = Fr::from(11u64);
+        let challenge = ark_bls12_381::Fr::from(11u64);
 
         let (u3, w3) = fold(&params, &l, &r, &o, &u1, &w1, &u2, &w2, challenge);
 
@@ -386,28 +396,28 @@ mod tests {
     fn chain_r1cs(
         k: usize,
     ) -> (
-        Vec<Vec<(u32, Fr)>>,
-        Vec<Vec<(u32, Fr)>>,
-        Vec<Vec<(u32, Fr)>>,
+        Vec<Vec<(u32, ark_bls12_381::Fr)>>,
+        Vec<Vec<(u32, ark_bls12_381::Fr)>>,
+        Vec<Vec<(u32, ark_bls12_381::Fr)>>,
     ) {
         let mut l = Vec::with_capacity(k);
         let mut r = Vec::with_capacity(k);
         let mut o = Vec::with_capacity(k);
         for i in 0..k {
-            l.push(vec![((1 + 3 * i) as u32, Fr::from(1u64))]);
-            r.push(vec![((2 + 3 * i) as u32, Fr::from(1u64))]);
-            o.push(vec![((3 + 3 * i) as u32, Fr::from(1u64))]);
+            l.push(vec![((1 + 3 * i) as u32, ark_bls12_381::Fr::from(1u64))]);
+            r.push(vec![((2 + 3 * i) as u32, ark_bls12_381::Fr::from(1u64))]);
+            o.push(vec![((3 + 3 * i) as u32, ark_bls12_381::Fr::from(1u64))]);
         }
         (l, r, o)
     }
 
     /// A random witness satisfying `chain_r1cs(k)`.
-    fn random_satisfying_witness(k: usize, rng: &mut impl rand::RngCore) -> Vec<Fr> {
+    fn random_satisfying_witness(k: usize, rng: &mut impl rand::RngCore) -> Vec<ark_bls12_381::Fr> {
         use ark_ff::UniformRand;
-        let mut w = vec![Fr::from(1u64)];
+        let mut w = vec![ark_bls12_381::Fr::from(1u64)];
         for _ in 0..k {
-            let a = Fr::rand(rng);
-            let b = Fr::rand(rng);
+            let a = ark_bls12_381::Fr::rand(rng);
+            let b = ark_bls12_381::Fr::rand(rng);
             w.push(a);
             w.push(b);
             w.push(a * b);
@@ -417,15 +427,15 @@ mod tests {
 
     /// Build an ordinary R1CS instance (`u = 1`, `E = 0`) from a witness.
     fn make_instance_chain(
-        params: &PedersenParams,
-        w: &[Fr],
+        params: &PedersenParams<crate::curve::Bls12_381>,
+        w: &[ark_bls12_381::Fr],
         k: usize,
-    ) -> (RelaxedR1csInstance, RelaxedR1csWitness) {
-        let e = vec![Fr::zero(); k];
+    ) -> (RelaxedR1csInstance<crate::curve::Bls12_381>, RelaxedR1csWitness<crate::curve::Bls12_381>) {
+        let e = vec![ark_bls12_381::Fr::zero(); k];
         (
             RelaxedR1csInstance {
                 x: w[1..].to_vec(),
-                u: Fr::from(1u64),
+                u: ark_bls12_381::Fr::from(1u64),
                 w_commit: commit(&params.basis_w, w),
                 e_commit: commit(&params.basis_e, &e),
             },
@@ -436,12 +446,12 @@ mod tests {
     /// Assert a relaxed instance is consistent with its witness and satisfies
     /// the relaxed equation.
     fn assert_valid(
-        l: &[Vec<(u32, Fr)>],
-        r: &[Vec<(u32, Fr)>],
-        o: &[Vec<(u32, Fr)>],
-        params: &PedersenParams,
-        u: &RelaxedR1csInstance,
-        w: &RelaxedR1csWitness,
+        l: &[Vec<(u32, ark_bls12_381::Fr)>],
+        r: &[Vec<(u32, ark_bls12_381::Fr)>],
+        o: &[Vec<(u32, ark_bls12_381::Fr)>],
+        params: &PedersenParams<crate::curve::Bls12_381>,
+        u: &RelaxedR1csInstance<crate::curve::Bls12_381>,
+        w: &RelaxedR1csWitness<crate::curve::Bls12_381>,
     ) {
         assert_eq!(u.w_commit, commit(&params.basis_w, &w.w));
         assert_eq!(u.e_commit, commit(&params.basis_e, &w.e));
@@ -458,7 +468,7 @@ mod tests {
         let k = 4;
         let n_wires = 1 + 3 * k;
         let (l, r, o) = chain_r1cs(k);
-        let params = PedersenParams::from_seed(b"chain-test", n_wires, k);
+        let params = PedersenParams::<crate::curve::Bls12_381>::from_seed(b"chain-test", n_wires, k);
         let mut rng = rand::thread_rng();
 
         let base_w = random_satisfying_witness(k, &mut rng);
@@ -485,8 +495,8 @@ mod tests {
         let mut rng = rand::thread_rng();
         let z1 = random_satisfying_witness(k, &mut rng);
         let z2 = random_satisfying_witness(k, &mut rng);
-        let u1 = Fr::from(3u64);
-        let u2 = Fr::from(7u64);
+        let u1 = ark_bls12_381::Fr::from(3u64);
+        let u2 = ark_bls12_381::Fr::from(7u64);
 
         let seq = cross_term(&l, &r, &o, &z1, &z2, u1, u2);
         let par = cross_term_parallel(&l, &r, &o, &z1, &z2, u1, u2);
@@ -498,7 +508,7 @@ mod tests {
         let k = 4;
         let n_wires = 1 + 3 * k;
         let (l, r, o) = chain_r1cs(k);
-        let params = PedersenParams::from_seed(b"opt-test", n_wires, k);
+        let params = PedersenParams::<crate::curve::Bls12_381>::from_seed(b"opt-test", n_wires, k);
         let mut rng = rand::thread_rng();
 
         let base_w = random_satisfying_witness(k, &mut rng);

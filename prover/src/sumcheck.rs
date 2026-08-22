@@ -31,8 +31,9 @@
 //! would provide information-theoretic opening proofs; this POC uses
 //! simplified opening verification.
 
-use ark_bls12_381::Fr;
 use ark_ff::{BigInteger, One, PrimeField, Zero};
+
+use crate::curve::{NovaCurve, ScalarField};
 use blake2::{Blake2b512, Digest};
 use blake2::digest::consts::U32;
 use rayon::prelude::*;
@@ -63,9 +64,9 @@ pub fn next_power_of_two(n: usize) -> usize {
 ///
 /// Row `i` of the sparse matrix is `[(wire_j, coeff_j), ...]`.  The MLE at
 /// `r` is `Σ coeff_j · r[wire_j]` (only the non-zero wires contribute).
-pub fn eval_row_mle(row: &[(u32, Fr)], r: &[Fr]) -> Fr {
+pub fn eval_row_mle<F: PrimeField>(row: &[(u32, F)], r: &[F]) -> F {
     row.iter()
-        .fold(Fr::zero(), |acc, &(w, c)| acc + c * r[w as usize])
+        .fold(F::zero(), |acc, &(w, c)| acc + c * r[w as usize])
 }
 
 /// Evaluate a dense vector as a multilinear extension at `r`.
@@ -73,16 +74,16 @@ pub fn eval_row_mle(row: &[(u32, Fr)], r: &[Fr]) -> Fr {
 /// `v` has length `2^k`; `r` has length `k`.
 /// `v_MLE(r) = Σ_{i∈{0,1}^k} v[i] · L_i(r)` where `L_i` are the
 /// multilinear basis polynomials.
-pub fn eval_dense_mle(v: &[Fr], r: &[Fr]) -> Fr {
+pub fn eval_dense_mle<F: PrimeField>(v: &[F], r: &[F]) -> F {
     let k = r.len();
     assert_eq!(v.len(), 1 << k, "v length must be 2^r.len()");
-    let mut result = Fr::zero();
+    let mut result = F::zero();
     for (i, &val) in v.iter().enumerate() {
         let mut term = val;
         for (bit, &r_bit) in r.iter().enumerate().take(k) {
             let b = (i >> bit) & 1;
             if b == 0 {
-                term *= Fr::one() - r_bit;
+                term *= F::one() - r_bit;
             } else {
                 term *= r_bit;
             }
@@ -99,27 +100,27 @@ pub fn eval_dense_mle(v: &[Fr], r: &[Fr]) -> Fr {
 /// One round message of the sumcheck protocol (univariate polynomial
 /// coefficients).  Degree ≤ 1 for MLE sumcheck (products of row MLEs
 /// produce degree-1 univariate polynomials in each round).
-pub type PolyCoeffs = Vec<Fr>;
+pub type PolyCoeffs<C> = Vec<ScalarField<C>>;
 
 /// The sumcheck proof: one polynomial per round.
 #[derive(Debug, Clone)]
-pub struct SumcheckProof {
+pub struct SumcheckProof<C: NovaCurve> {
     /// `claims[0]` = claimed sum; `claims[1..=num_rounds]` = evaluations at
     /// the round's random challenge.
-    pub claims: Vec<Fr>,
+    pub claims: Vec<ScalarField<C>>,
     /// Univariate polynomial coefficients for each round.
-    pub polys: Vec<PolyCoeffs>,
+    pub polys: Vec<PolyCoeffs<C>>,
 }
 
 /// Fiat-Shamir challenge from accumulated hash state.
-fn challenge_from_hash(hash: &[u8]) -> Fr {
-    Fr::from_le_bytes_mod_order(hash)
+fn challenge_from_hash<C: NovaCurve>(hash: &[u8]) -> ScalarField<C> {
+    ScalarField::<C>::from_le_bytes_mod_order(hash)
 }
 
 /// Hash a sequence of field elements (for Fiat-Shamir).
 ///
 /// Uses BLAKE2b-256 to match the Aiken on-chain verifier's built-in blake2b_256.
-fn hash_field_elements(elems: &[Fr]) -> Vec<u8> {
+fn hash_field_elements<C: NovaCurve>(elems: &[ScalarField<C>]) -> Vec<u8> {
     let mut h = blake2::Blake2b::<U32>::new();
     for e in elems {
         h.update(e.into_bigint().to_bytes_le());
@@ -135,14 +136,14 @@ fn hash_field_elements(elems: &[Fr]) -> Vec<u8> {
 ///
 /// Returns `(proof, r_challenges)` where `r_challenges` are the Fiat-Shamir
 /// random challenges derived during the protocol.
-pub fn prove(
-    l: &[Vec<(u32, Fr)>],
-    r_mat: &[Vec<(u32, Fr)>],
-    o: &[Vec<(u32, Fr)>],
-    z: &[Fr],
-    u: Fr,
-    e: &[Fr],
-) -> (SumcheckProof, Vec<Fr>) {
+pub fn prove<C: NovaCurve>(
+    l: &[Vec<(u32, ScalarField<C>)>],
+    r_mat: &[Vec<(u32, ScalarField<C>)>],
+    o: &[Vec<(u32, ScalarField<C>)>],
+    z: &[ScalarField<C>],
+    u: ScalarField<C>,
+    e: &[ScalarField<C>],
+) -> (SumcheckProof<C>, Vec<ScalarField<C>>) {
     prove_with_opts(l, r_mat, o, z, u, e, false)
 }
 
@@ -150,15 +151,15 @@ pub fn prove(
 ///
 /// When `parallel` is true, the per-row product computation uses rayon for
 /// parallel iteration over constraint rows.
-pub fn prove_with_opts(
-    l: &[Vec<(u32, Fr)>],
-    r_mat: &[Vec<(u32, Fr)>],
-    o: &[Vec<(u32, Fr)>],
-    z: &[Fr],
-    u: Fr,
-    e: &[Fr],
+pub fn prove_with_opts<C: NovaCurve>(
+    l: &[Vec<(u32, ScalarField<C>)>],
+    r_mat: &[Vec<(u32, ScalarField<C>)>],
+    o: &[Vec<(u32, ScalarField<C>)>],
+    z: &[ScalarField<C>],
+    u: ScalarField<C>,
+    e: &[ScalarField<C>],
     parallel: bool,
-) -> (SumcheckProof, Vec<Fr>) {
+) -> (SumcheckProof<C>, Vec<ScalarField<C>>) {
     let n = l.len();
     assert_eq!(r_mat.len(), n);
     assert_eq!(o.len(), n);
@@ -181,7 +182,7 @@ pub fn prove_with_opts(
     }
 
     // Compute per-row products: P(j) = (AZ)_j · (BZ)_j − u · (CZ)_j − e[j].
-    let mut current: Vec<Fr> = if parallel {
+    let mut current: Vec<ScalarField<C>> = if parallel {
         (0..n)
             .into_par_iter()
             .map(|j| {
@@ -201,24 +202,24 @@ pub fn prove_with_opts(
             })
             .collect()
     };
-    current.resize(n_padded, Fr::zero());
+    current.resize(n_padded, ScalarField::<C>::zero());
 
     let mut claims = Vec::with_capacity(num_rounds + 1);
-    let mut polys: Vec<PolyCoeffs> = Vec::with_capacity(num_rounds);
-    let mut r_challenges: Vec<Fr> = Vec::with_capacity(num_rounds);
+    let mut polys: Vec<PolyCoeffs<C>> = Vec::with_capacity(num_rounds);
+    let mut r_challenges: Vec<ScalarField<C>> = Vec::with_capacity(num_rounds);
 
     for _round in 0..num_rounds {
         let half = current.len() / 2;
 
         // Claimed sum: Σ_{x∈{0,1}} g(x, ...)
-        let claimed: Fr = current.iter().sum();
+        let claimed: ScalarField<C> = current.iter().sum();
         claims.push(claimed);
 
         // Build degree-1 polynomial: f(x) = Σ_j [g(2j)·(1-x) + g(2j+1)·x]
         //   f(0) = Σ_j g(2j) = sum_base
         //   f(1) = Σ_j g(2j+1) = sum_one
-        let mut sum_base = Fr::zero();
-        let mut sum_one = Fr::zero();
+        let mut sum_base = ScalarField::<C>::zero();
+        let mut sum_one = ScalarField::<C>::zero();
         for j in 0..half {
             sum_base += current[2 * j];
             sum_one += current[2 * j + 1];
@@ -232,8 +233,8 @@ pub fn prove_with_opts(
         for c in polys.last().unwrap() {
             hash_input.push(*c);
         }
-        let h = hash_field_elements(&hash_input);
-        let ri = challenge_from_hash(&h);
+        let h = hash_field_elements::<C>(&hash_input);
+        let ri = challenge_from_hash::<C>(&h);
         r_challenges.push(ri);
 
         // Fold: g'(j) = g(2j) + r_i · (g(2j+1) - g(2j))
@@ -257,7 +258,7 @@ pub fn prove_with_opts(
 ///
 /// where `az_r`, `bz_r`, `cz_r`, `e_r` are the prover's claimed MLE
 /// evaluations at `r`.
-pub fn verify(proof: &SumcheckProof) -> (bool, Vec<Fr>, Fr) {
+pub fn verify<C: NovaCurve>(proof: &SumcheckProof<C>) -> (bool, Vec<ScalarField<C>>, ScalarField<C>) {
     let claimed_sum = proof.claims[0];
     let num_rounds = proof.polys.len();
     if num_rounds == 0 {
@@ -266,19 +267,19 @@ pub fn verify(proof: &SumcheckProof) -> (bool, Vec<Fr>, Fr) {
 
     // Verify each round.
     let mut current_sum = claimed_sum;
-    let mut r_challenges: Vec<Fr> = Vec::with_capacity(num_rounds);
+    let mut r_challenges: Vec<ScalarField<C>> = Vec::with_capacity(num_rounds);
 
     for round in 0..num_rounds {
         let poly = &proof.polys[round];
 
         // Check: f(0) + f(1) == current_sum
         if poly.len() < 2 {
-            return (false, vec![], Fr::zero());
+            return (false, vec![], ScalarField::<C>::zero());
         }
         let s0 = poly[0];
         let s1 = poly[0] + poly[1];
         if s0 + s1 != current_sum {
-            return (false, vec![], Fr::zero());
+            return (false, vec![], ScalarField::<C>::zero());
         }
 
         // Fiat-Shamir (must match prover).
@@ -286,8 +287,8 @@ pub fn verify(proof: &SumcheckProof) -> (bool, Vec<Fr>, Fr) {
         for c in poly {
             hash_input.push(*c);
         }
-        let h = hash_field_elements(&hash_input);
-        let ri = challenge_from_hash(&h);
+        let h = hash_field_elements::<C>(&hash_input);
+        let ri = challenge_from_hash::<C>(&h);
         r_challenges.push(ri);
 
         // Next claimed sum = f(r_i).
@@ -306,11 +307,11 @@ pub fn verify(proof: &SumcheckProof) -> (bool, Vec<Fr>, Fr) {
 /// (MLE at all Boolean hypercube points) plus a Pedersen commitment
 /// to the coefficient vector.
 #[derive(Debug, Clone)]
-pub struct PolyCommitment {
+pub struct PolyCommitment<C: NovaCurve> {
     /// Hash of the truth table (BLAKE2b-512).
     pub hash: Vec<u8>,
     /// Pedersen commitment to the original coefficient vector.
-    pub pedersen: ark_bls12_381::G1Affine,
+    pub pedersen: C::G1Affine,
 }
 
 /// Build the truth table (MLE at all `{0,1}^k` points) for a vector.
@@ -318,18 +319,18 @@ pub struct PolyCommitment {
 /// For a multilinear extension, MLE at a Boolean point is just the value
 /// at that point.  The truth table is the vector padded to the next power
 /// of two.
-pub fn truth_table(v: &[Fr]) -> Vec<Fr> {
+pub fn truth_table<F: PrimeField>(v: &[F]) -> Vec<F> {
     let n = next_power_of_two(v.len());
     let mut padded = v.to_vec();
-    padded.resize(n, Fr::zero());
+    padded.resize(n, F::zero());
     padded
 }
 
 /// Commit to a vector: hash its truth table + Pedersen commitment.
-pub fn poly_commit(
-    v: &[Fr],
-    pedersen_basis: &[ark_bls12_381::G1Affine],
-) -> (Vec<u8>, ark_bls12_381::G1Affine) {
+pub fn poly_commit<C: NovaCurve>(
+    v: &[ScalarField<C>],
+    pedersen_basis: &[C::G1Affine],
+) -> (Vec<u8>, C::G1Affine) {
     let tt = truth_table(v);
     let hash: Vec<u8> = {
         let mut h = Blake2b512::new();
@@ -338,7 +339,7 @@ pub fn poly_commit(
         }
         h.finalize().to_vec()
     };
-    let ped = nifs::commit(pedersen_basis, v);
+    let ped = nifs::commit::<C>(pedersen_basis, v);
     (hash, ped)
 }
 
@@ -347,14 +348,14 @@ pub fn poly_commit(
 /// Contains the full truth table (so the verifier can reconstruct the MLE
 /// and check the hash).
 #[derive(Debug, Clone)]
-pub struct OpeningProof {
+pub struct OpeningProof<C: NovaCurve> {
     /// The truth table evaluations (full MLE table).
-    pub table: Vec<Fr>,
+    pub table: Vec<ScalarField<C>>,
 }
 
 /// Create an opening proof for a vector.
-pub fn create_opening(v: &[Fr]) -> OpeningProof {
-    OpeningProof {
+pub fn create_opening<C: NovaCurve>(v: &[ScalarField<C>]) -> OpeningProof<C> {
+    OpeningProof::<crate::curve::Bls12_381> {
         table: truth_table(v),
     }
 }
@@ -364,11 +365,11 @@ pub fn create_opening(v: &[Fr]) -> OpeningProof {
 /// Checks:
 /// 1. Hash of the truth table matches the committed hash.
 /// 2. `table_MLE(r) == claimed_eval`.
-pub fn verify_opening(
+pub fn verify_opening<C: NovaCurve>(
     commitment_hash: &[u8],
-    proof: &OpeningProof,
-    claimed_eval: &Fr,
-    r: &[Fr],
+    proof: &OpeningProof<C>,
+    claimed_eval: &ScalarField<C>,
+    r: &[ScalarField<C>],
 ) -> bool {
     // 1. Hash check.
     let actual_hash: Vec<u8> = {
@@ -388,7 +389,7 @@ pub fn verify_opening(
 }
 
 /// Hash a `SumcheckProof` to produce a deterministic digest for tests.
-pub fn proof_hash(p: &SumcheckProof) -> Vec<u8> {
+pub fn proof_hash<C: NovaCurve>(p: &SumcheckProof<C>) -> Vec<u8> {
     let mut h = Blake2b512::new();
     for c in &p.claims {
         h.update(c.into_bigint().to_bytes_le());
@@ -405,6 +406,7 @@ pub fn proof_hash(p: &SumcheckProof) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::nifs::PedersenParams;
+    use ark_bls12_381::Fr;
 
     /// One-constraint multiplier: Z[1]·Z[2] = Z[3], wire 0 = constant 1.
     fn simple_r1cs() -> (
@@ -497,7 +499,7 @@ mod tests {
         let (proof, r_challenges) = prove(l, r_mat, o, z, u, e);
 
         // Verifier side: check sumcheck.
-        let (sc_ok, verifier_r, final_claim) = verify(&proof);
+        let (sc_ok, verifier_r, final_claim) = verify::<crate::curve::Bls12_381>(&proof);
         if !sc_ok {
             return false;
         }
@@ -654,7 +656,7 @@ mod tests {
         let u = Fr::from(1u64);
         let e = vec![Fr::zero()];
 
-        let (proof, r_challenges) = prove(&l, &r_mat, &o, &z, u, &e);
+        let (proof, r_challenges) = prove::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e);
 
         // 1 constraint → 0 sumcheck rounds (trivial case).
         assert_eq!(proof.polys.len(), 0, "1-constraint must have 0 rounds");
@@ -672,14 +674,14 @@ mod tests {
         );
 
         // Verify passes.
-        let (ok, v_r, final_claim) = verify(&proof);
+        let (ok, v_r, final_claim) = verify::<crate::curve::Bls12_381>(&proof);
         assert!(ok, "sumcheck verification must pass");
         assert!(v_r.is_empty());
         assert_eq!(final_claim, Fr::zero());
 
         // Golden snapshot: the proof hash must match.
         let golden_hash = "9ab7a73a97a1a3031406b6c169634a9c06cfb81dec3323bb4de5ce6f4b7ca107de534442a7eaeafbaf366ccfdde1cb97d7c884e4344cd0a23039de71a56d630a";
-        let h = hex::encode(proof_hash(&proof));
+        let h = hex::encode(proof_hash::<crate::curve::Bls12_381>(&proof));
         assert_eq!(
             h, golden_hash,
             "golden hash mismatch — proof has changed since this snapshot was recorded"
@@ -711,7 +713,7 @@ mod tests {
         let u = Fr::from(1u64);
         let e = vec![Fr::zero(); 2];
 
-        let (proof, r_challenges) = prove(&l, &r_mat, &o, &z, u, &e);
+        let (proof, r_challenges) = prove::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e);
 
         // 2 constraints → 1 round.
         assert_eq!(proof.polys.len(), 1, "2-constraint must have 1 round");
@@ -723,14 +725,14 @@ mod tests {
         assert_eq!(proof.claims[1], Fr::zero());
 
         // Verify passes.
-        let (ok, v_r, final_claim) = verify(&proof);
+        let (ok, v_r, final_claim) = verify::<crate::curve::Bls12_381>(&proof);
         assert!(ok);
         assert_eq!(v_r.len(), 1);
         assert_eq!(final_claim, Fr::zero());
 
         // Golden snapshot.
         let golden_hash = "865939e120e6805438478841afb739ae4250cf372653078a065cdcfffca4caf798e6d462b65d658fc165782640eded70963449ae1500fb0f24981d7727e22c41";
-        let h = hex::encode(proof_hash(&proof));
+        let h = hex::encode(proof_hash::<crate::curve::Bls12_381>(&proof));
         assert_eq!(
             h, golden_hash,
             "golden hash mismatch — proof has changed since this snapshot was recorded"
@@ -756,8 +758,8 @@ mod tests {
             Fr::from(30u64),
             Fr::from(40u64),
         ];
-        let params = PedersenParams::from_seed(b"golden-test", 4, 1);
-        let (hash, _point) = poly_commit(&v, &params.basis_w);
+        let params = PedersenParams::<crate::curve::Bls12_381>::from_seed(b"golden-test", 4, 1);
+        let (hash, _point) = poly_commit::<crate::curve::Bls12_381>(&v, &params.basis_w);
 
         // BLAKE2b-512 truth-table hash of [10,20,30,40].
         let golden_hash_hex = "98ffc304e408f37324d82098fd13b60d603a4428c1113a45d748e4737ae90f43ada23f608676b3ab02ed2a3b0d7b8da7c010f37f57e825f8ef8734df1bf69174";
@@ -768,7 +770,7 @@ mod tests {
         );
 
         // Opening proof.
-        let opening = create_opening(&v);
+        let opening = create_opening::<crate::curve::Bls12_381>(&v);
         assert_eq!(
             opening.table, v,
             "opening truth table must equal the vector"
@@ -777,7 +779,7 @@ mod tests {
         // Verify opening.
         let r = vec![Fr::from(3u64), Fr::from(7u64)];
         let claimed = eval_dense_mle(&v, &r);
-        assert!(verify_opening(&hash, &opening, &claimed, &r));
+        assert!(verify_opening::<crate::curve::Bls12_381>(&hash, &opening, &claimed, &r));
     }
 
     #[test]
@@ -841,9 +843,9 @@ mod tests {
             Fr::from(3u64),
             Fr::from(4u64),
         ];
-        let params = PedersenParams::from_seed(b"test", 4, 1);
-        let (h1, p1) = poly_commit(&v, &params.basis_w);
-        let (h2, p2) = poly_commit(&v, &params.basis_w);
+        let params = PedersenParams::<crate::curve::Bls12_381>::from_seed(b"test", 4, 1);
+        let (h1, p1) = poly_commit::<crate::curve::Bls12_381>(&v, &params.basis_w);
+        let (h2, p2) = poly_commit::<crate::curve::Bls12_381>(&v, &params.basis_w);
         assert_eq!(h1, h2);
         assert_eq!(p1, p2);
     }
@@ -856,14 +858,14 @@ mod tests {
             Fr::from(30u64),
             Fr::from(40u64),
         ];
-        let params = PedersenParams::from_seed(b"test", 4, 1);
-        let (hash, _) = poly_commit(&v, &params.basis_w);
+        let params = PedersenParams::<crate::curve::Bls12_381>::from_seed(b"test", 4, 1);
+        let (hash, _) = poly_commit::<crate::curve::Bls12_381>(&v, &params.basis_w);
 
-        let proof = create_opening(&v);
+        let proof = create_opening::<crate::curve::Bls12_381>(&v);
         let r = vec![Fr::from(7u64), Fr::from(11u64)];
         let claimed = eval_dense_mle(&v, &r);
 
-        assert!(verify_opening(&hash, &proof, &claimed, &r));
+        assert!(verify_opening::<crate::curve::Bls12_381>(&hash, &proof, &claimed, &r));
     }
 
     #[test]
@@ -874,16 +876,16 @@ mod tests {
             Fr::from(30u64),
             Fr::from(40u64),
         ];
-        let params = PedersenParams::from_seed(b"test", 4, 1);
-        let (hash, _) = poly_commit(&v, &params.basis_w);
+        let params = PedersenParams::<crate::curve::Bls12_381>::from_seed(b"test", 4, 1);
+        let (hash, _) = poly_commit::<crate::curve::Bls12_381>(&v, &params.basis_w);
 
-        let mut proof = create_opening(&v);
+        let mut proof = create_opening::<crate::curve::Bls12_381>(&v);
         proof.table[0] += Fr::from(1u64);
 
         let r = vec![Fr::from(7u64), Fr::from(11u64)];
         let claimed = eval_dense_mle(&v, &r);
 
-        assert!(!verify_opening(&hash, &proof, &claimed, &r));
+        assert!(!verify_opening::<crate::curve::Bls12_381>(&hash, &proof, &claimed, &r));
     }
 
     #[test]
@@ -894,10 +896,10 @@ mod tests {
             Fr::from(30u64),
             Fr::from(40u64),
         ];
-        let params = PedersenParams::from_seed(b"test", 4, 1);
-        let (hash, _) = poly_commit(&v, &params.basis_w);
+        let params = PedersenParams::<crate::curve::Bls12_381>::from_seed(b"test", 4, 1);
+        let (hash, _) = poly_commit::<crate::curve::Bls12_381>(&v, &params.basis_w);
 
-        let proof = create_opening(&v);
+        let proof = create_opening::<crate::curve::Bls12_381>(&v);
         let r = vec![Fr::from(7u64), Fr::from(11u64)];
         let wrong_eval = Fr::from(999u64);
 
@@ -908,19 +910,19 @@ mod tests {
 
     #[test]
     fn hashpc_empty_vector() {
-        let params = PedersenParams::from_seed(b"empty", 0, 0);
+        let params = PedersenParams::<crate::curve::Bls12_381>::from_seed(b"empty", 0, 0);
         let v: Vec<Fr> = vec![];
-        let (hash, pt) = poly_commit(&v, &params.basis_w);
-        assert_eq!(hash, poly_commit(&v, &params.basis_w).0);
+        let (hash, pt) = poly_commit::<crate::curve::Bls12_381>(&v, &params.basis_w);
+        assert_eq!(hash, poly_commit::<crate::curve::Bls12_381>(&v, &params.basis_w).0);
         assert_eq!(pt, ark_bls12_381::G1Affine::identity());
     }
 
     #[test]
     fn hashpc_single_element() {
         let v = vec![Fr::from(42u64)];
-        let params = PedersenParams::from_seed(b"single", 1, 1);
-        let (hash, _) = poly_commit(&v, &params.basis_w);
-        let opening = create_opening(&v);
+        let params = PedersenParams::<crate::curve::Bls12_381>::from_seed(b"single", 1, 1);
+        let (hash, _) = poly_commit::<crate::curve::Bls12_381>(&v, &params.basis_w);
+        let opening = create_opening::<crate::curve::Bls12_381>(&v);
         let r: Vec<Fr> = vec![];
         assert!(verify_opening(&hash, &opening, &Fr::from(42u64), &r));
     }
@@ -933,13 +935,13 @@ mod tests {
             Fr::from(30u64),
             Fr::from(40u64),
         ];
-        let params = PedersenParams::from_seed(b"tamper-hash", 4, 1);
-        let (hash, _) = poly_commit(&v, &params.basis_w);
-        let mut opening = create_opening(&v);
+        let params = PedersenParams::<crate::curve::Bls12_381>::from_seed(b"tamper-hash", 4, 1);
+        let (hash, _) = poly_commit::<crate::curve::Bls12_381>(&v, &params.basis_w);
+        let mut opening = create_opening::<crate::curve::Bls12_381>(&v);
         opening.table[0] += Fr::from(1u64);
         let r = vec![Fr::from(7u64), Fr::from(11u64)];
         let claimed = eval_dense_mle(&v, &r);
-        assert!(!verify_opening(&hash, &opening, &claimed, &r));
+        assert!(!verify_opening::<crate::curve::Bls12_381>(&hash, &opening, &claimed, &r));
     }
 
     #[test]
@@ -973,7 +975,7 @@ mod tests {
         let (proof, r_challenges) = prove(&l, &r_mat, &o, &z, Fr::from(1u64), &[Fr::zero()]);
         assert_eq!(proof.polys.len(), 0);
         assert!(r_challenges.is_empty());
-        let (ok, _, final_claim) = verify(&proof);
+        let (ok, _, final_claim) = verify::<crate::curve::Bls12_381>(&proof);
         assert!(ok);
         assert_eq!(final_claim, Fr::zero());
     }
@@ -1026,8 +1028,8 @@ mod proptests {
             let u = Fr::from(1u64);
             let e = vec![Fr::zero(); 2];
 
-            let (proof, r_challenges) = prove(&l, &r_mat, &o, &z, u, &e);
-            let (ok, v_r, final_claim) = verify(&proof);
+            let (proof, r_challenges) = prove::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e);
+            let (ok, v_r, final_claim) = verify::<crate::curve::Bls12_381>(&proof);
             prop_assert!(ok, "sumcheck verifier rejected for satisfying witness");
             prop_assert_eq!(&v_r, &r_challenges);
 
@@ -1066,8 +1068,8 @@ mod proptests {
             let u = Fr::from(1u64);
             let e = vec![Fr::zero()];
 
-            let (proof, _) = prove(&l, &r_mat, &o, &z, u, &e);
-            let (ok, _, _) = verify(&proof);
+            let (proof, _) = prove::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e);
+            let (ok, _, _) = verify::<crate::curve::Bls12_381>(&proof);
             prop_assert!(ok);
         }
 
@@ -1097,7 +1099,7 @@ mod proptests {
             let e = vec![e_actual];
 
             let (proof, _) = prove(&l, &r_mat, &o, &z, Fr::from(u_val), &e);
-            let (ok, _, _) = verify(&proof);
+            let (ok, _, _) = verify::<crate::curve::Bls12_381>(&proof);
             prop_assert!(ok);
         }
 
@@ -1134,7 +1136,7 @@ mod proptests {
             let u = Fr::from(1u64);
             let e = vec![Fr::zero(); 2];
 
-            let (proof, _) = prove(&l, &r_mat, &o, &z, u, &e);
+            let (proof, _) = prove::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e);
             let mut bad_proof = proof.clone();
             // Flip claimed sum.
             bad_proof.claims[0] += Fr::from(flip_val);
@@ -1149,7 +1151,7 @@ mod proptests {
             v2 in proptest::collection::vec(arb_fr(), 4),
         ) {
             prop_assume!(v1 != v2, "need distinct vectors");
-            let params = PedersenParams::from_seed(b"binding-test", 4, 1);
+            let params = PedersenParams::<crate::curve::Bls12_381>::from_seed(b"binding-test", 4, 1);
             let (h1, _) = poly_commit(&v1, &params.basis_w);
             let (h2, _) = poly_commit(&v2, &params.basis_w);
             prop_assert_ne!(h1, h2, "different vectors must produce different commitments");
@@ -1160,9 +1162,9 @@ mod proptests {
         fn prop_hashpc_deterministic(
             v in proptest::collection::vec(arb_fr(), 4),
         ) {
-            let params = PedersenParams::from_seed(b"det-test", 4, 1);
-            let (h1, p1) = poly_commit(&v, &params.basis_w);
-            let (h2, p2) = poly_commit(&v, &params.basis_w);
+            let params = PedersenParams::<crate::curve::Bls12_381>::from_seed(b"det-test", 4, 1);
+            let (h1, p1) = poly_commit::<crate::curve::Bls12_381>(&v, &params.basis_w);
+            let (h2, p2) = poly_commit::<crate::curve::Bls12_381>(&v, &params.basis_w);
             prop_assert_eq!(h1, h2);
             prop_assert_eq!(p1, p2);
         }
@@ -1172,12 +1174,12 @@ mod proptests {
         fn prop_hashpc_opening_verifies(
             v in proptest::collection::vec(arb_fr(), 4),
         ) {
-            let params = PedersenParams::from_seed(b"opening-test", 4, 1);
-            let (hash, _) = poly_commit(&v, &params.basis_w);
-            let proof = create_opening(&v);
+            let params = PedersenParams::<crate::curve::Bls12_381>::from_seed(b"opening-test", 4, 1);
+            let (hash, _) = poly_commit::<crate::curve::Bls12_381>(&v, &params.basis_w);
+            let proof = create_opening::<crate::curve::Bls12_381>(&v);
             let r = vec![Fr::from(3u64), Fr::from(5u64)];
             let claimed = eval_dense_mle(&v, &r);
-            prop_assert!(verify_opening(&hash, &proof, &claimed, &r));
+            prop_assert!(verify_opening::<crate::curve::Bls12_381>(&hash, &proof, &claimed, &r));
         }
 
         /// Property: HashPC opening rejects tampered table.
@@ -1186,13 +1188,13 @@ mod proptests {
             v in proptest::collection::vec(arb_fr(), 4),
             flip in 1u64..1000,
         ) {
-            let params = PedersenParams::from_seed(b"tamper-test", 4, 1);
-            let (hash, _) = poly_commit(&v, &params.basis_w);
-            let mut proof = create_opening(&v);
+            let params = PedersenParams::<crate::curve::Bls12_381>::from_seed(b"tamper-test", 4, 1);
+            let (hash, _) = poly_commit::<crate::curve::Bls12_381>(&v, &params.basis_w);
+            let mut proof = create_opening::<crate::curve::Bls12_381>(&v);
             proof.table[0] += Fr::from(flip);
             let r = vec![Fr::from(3u64), Fr::from(5u64)];
             let claimed = eval_dense_mle(&v, &r);
-            prop_assert!(!verify_opening(&hash, &proof, &claimed, &r));
+            prop_assert!(!verify_opening::<crate::curve::Bls12_381>(&hash, &proof, &claimed, &r));
         }
 
         /// Property: eval_dense_mle at a Boolean point matches direct index access.

@@ -30,15 +30,31 @@ pub trait NovaCurve: 'static + Sized + Clone + Copy {
 /// Convenience alias for the projective group associated with a curve's G1.
 pub type G1Projective<C> = <<C as NovaCurve>::G1Affine as AffineRepr>::Group;
 
+/// Convenience alias for the scalar field associated with a curve.
+pub type ScalarField<C> = <C as NovaCurve>::ScalarField;
+
 // ────────────────────────────────────────────────────────────────────
 // Concrete implementations
 // ────────────────────────────────────────────────────────────────────
 
 /// BLS12-381 — the Cardano-native curve.
+#[cfg(feature = "bls12-381")]
 #[derive(Debug, Clone, Copy)]
 pub struct Bls12_381;
 
+#[cfg(feature = "bls12-381")]
 impl NovaCurve for Bls12_381 {
     type ScalarField = ark_bls12_381::Fr;
     type G1Affine = ark_bls12_381::G1Affine;
+}
+
+/// BN254 — widely used in Ethereum zk-rollups.
+#[cfg(feature = "bn254")]
+#[derive(Debug, Clone, Copy)]
+pub struct Bn254;
+
+#[cfg(feature = "bn254")]
+impl NovaCurve for Bn254 {
+    type ScalarField = ark_bn254::Fr;
+    type G1Affine = ark_bn254::G1Affine;
 }
