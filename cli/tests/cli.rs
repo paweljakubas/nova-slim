@@ -541,9 +541,9 @@ fn cardano_ed25519_ownership_nova_verify_rejects_tampered_bundle() {
     compress.assert().success();
 
     let mut bundle: prover::NifsBundle =
-        prover::NifsBundle::from_cbor(&fs::read(ivc.path()).unwrap()).unwrap();
+        prover::NifsBundle::from_cbor::<ark_bls12_381::Fr>(&fs::read(ivc.path()).unwrap()).unwrap();
     bundle.final_instance.u = "999".to_string();
-    fs::write(ivc.path(), bundle.to_cbor().unwrap()).unwrap();
+    fs::write(ivc.path(), bundle.to_cbor::<ark_bls12_381::Fr>().unwrap()).unwrap();
 
     let mut verify = Command::cargo_bin("nova-slim").unwrap();
     verify
@@ -651,7 +651,7 @@ fn fold_nifs_end_to_end() {
     cmd.assert().success();
 
     let bundle: prover::NifsBundle =
-        prover::NifsBundle::from_cbor(&fs::read(bundle_file.path()).unwrap()).unwrap();
+        prover::NifsBundle::from_cbor::<ark_bls12_381::Fr>(&fs::read(bundle_file.path()).unwrap()).unwrap();
     assert_eq!(bundle.n_steps, 3);
     assert_eq!(bundle.initial_state, serde_json::json!(["2"]).as_array().unwrap()
         .iter().map(|v| v.as_str().unwrap().to_string()).collect::<Vec<_>>());
@@ -677,7 +677,7 @@ fn fold_nifs_end_to_end() {
         .arg(rerun.path());
     cmd.assert().success();
     let bundle2: prover::NifsBundle =
-        prover::NifsBundle::from_cbor(&fs::read(rerun.path()).unwrap()).unwrap();
+        prover::NifsBundle::from_cbor::<ark_bls12_381::Fr>(&fs::read(rerun.path()).unwrap()).unwrap();
     assert_eq!(bundle, bundle2);
 }
 
@@ -810,10 +810,10 @@ fn nifs_compress_verify_end_to_end() {
 
     // 4. tampering the bundle's instance must fail verification
     let mut tampered: prover::NifsBundle =
-        prover::NifsBundle::from_cbor(&fs::read(bundle_file.path()).unwrap()).unwrap();
+        prover::NifsBundle::from_cbor::<ark_bls12_381::Fr>(&fs::read(bundle_file.path()).unwrap()).unwrap();
     tampered.final_instance.x[0] = (state + 1).to_string();
     let tampered_file = tempfile::NamedTempFile::new().unwrap();
-    fs::write(tampered_file.path(), tampered.to_cbor().unwrap()).unwrap();
+    fs::write(tampered_file.path(), tampered.to_cbor::<ark_bls12_381::Fr>().unwrap()).unwrap();
     let mut verify2 = Command::cargo_bin("nova-slim").unwrap();
     verify2
         .arg("verify")
