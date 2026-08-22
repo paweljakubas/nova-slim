@@ -355,7 +355,7 @@ pub struct OpeningProof<C: NovaCurve> {
 
 /// Create an opening proof for a vector.
 pub fn create_opening<C: NovaCurve>(v: &[ScalarField<C>]) -> OpeningProof<C> {
-    OpeningProof::<crate::curve::Bls12_381> {
+    OpeningProof::<C> {
         table: truth_table(v),
     }
 }

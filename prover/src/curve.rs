@@ -23,8 +23,9 @@ pub trait NovaCurve: 'static + Sized + Clone + Copy {
     type ScalarField: PrimeField;
 
     /// G1 affine group — hosts Pedersen commitment bases and commitment
-    /// values.
-    type G1Affine: AffineRepr;
+    /// values.  Its scalar field must match `Self::ScalarField` so that
+    /// Pedersen MSMs are well-typed.
+    type G1Affine: AffineRepr<ScalarField = Self::ScalarField>;
 }
 
 /// Convenience alias for the projective group associated with a curve's G1.

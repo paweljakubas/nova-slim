@@ -11,10 +11,11 @@ ark-bn254 = { version = "0.4", optional = true }
 ark-ec = "0.4"
 ark-ff = "0.4"
 ark-serialize = "0.4"
+ark-std = "0.4"
 blake2 = "0.10"
 ciborium = "0.2"
-groth16-prover = { git = "https://github.com/cardano-foundation/bls.git" }
 hex = "0.4"
+nom = "7"
 rand = "0.8"
 rayon = "1.10"
 serde = { version = "1", features = ["derive"] }

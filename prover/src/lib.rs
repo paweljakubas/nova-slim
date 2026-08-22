@@ -22,16 +22,17 @@
 //! `groth16-prover` crate; this crate adds the IVC folding layer on top.
 //! The `nova-slim` CLI (`cli`) wraps the operations in this crate.
 
-use ark_bls12_381::{Fr, G1Affine};
 use ark_ec::AffineRepr;
 use ark_ff::{PrimeField, Zero};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use blake2::{Blake2b512, Digest};
-use groth16_prover::circom_adapter::SparseCircomCircuit;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use crate::circuit::SparseCircuit;
+use crate::curve::{NovaCurve, ScalarField};
 
 /// Optimization flags for folding and compression.
 ///
@@ -78,6 +79,9 @@ impl OptFlags {
 /// challenge hash to prevent cross-context challenge reuse.
 pub const NIFS_PARAMS_SEED: &[u8] = b"groth16-prover-nova-nifs-params-v1";
 pub const NIFS_TRANSCRIPT_PREFIX: &[u8] = b"groth16-prover-nova-nifs-transcript-v1";
+
+/// Generic sparse R1CS circuit parser.
+pub mod circuit;
 
 /// Curve abstraction — makes the folding scheme curve-agnostic.
 pub mod curve;
@@ -140,7 +144,6 @@ pub struct NifsBundle {
 /// stale artifacts.
 pub mod codec {
     use super::{NifsBundle, NifsFinalInstance, NifsSlimProof, NifsSumcheckProof};
-    use ark_bls12_381::Fr;
     use ark_ff::PrimeField;
     use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
     use serde::{Deserialize, Serialize};
@@ -159,10 +162,11 @@ pub mod codec {
         Wide(#[serde(with = "serde_bytes")] Box<[u8]>),
     }
 
-    fn fr_enc(f: &Fr) -> FrCbor {
+    fn fr_enc<F: PrimeField>(f: &F) -> FrCbor {
         let big = f.into_bigint();
-        if big.0[1] == 0 && big.0[2] == 0 && big.0[3] == 0 {
-            FrCbor::Small(big.0[0])
+        let limbs = big.as_ref();
+        if limbs.len() > 1 && limbs[1..].iter().all(|&x| x == 0) {
+            FrCbor::Small(limbs[0])
         } else {
             let mut buf = Vec::with_capacity(32);
             f.serialize_compressed(&mut buf).expect("Fr serialize");
@@ -170,25 +174,25 @@ pub mod codec {
         }
     }
 
-    fn fr_dec(v: &FrCbor) -> Result<Fr, Box<dyn Error>> {
+    fn fr_dec<F: PrimeField>(v: &FrCbor) -> Result<F, Box<dyn Error>> {
         match v {
-            FrCbor::Small(x) => Ok(Fr::from(*x)),
-            FrCbor::Wide(b) => Ok(Fr::deserialize_compressed(b.as_ref())?),
+            FrCbor::Small(x) => Ok(F::from(*x)),
+            FrCbor::Wide(b) => Ok(F::deserialize_compressed(b.as_ref())?),
         }
     }
 
-    fn fr_parse(s: &str) -> Result<Fr, Box<dyn Error>> {
-        s.parse::<Fr>()
-            .map_err(|e| format!("invalid field element '{s}': {e:?}").into())
+    fn fr_parse<F: PrimeField>(s: &str) -> Result<F, Box<dyn Error>> {
+        s.parse::<F>()
+            .map_err(|_| format!("invalid field element '{s}'").into())
     }
 
-    fn frs_enc(strs: &[String]) -> Result<Vec<FrCbor>, Box<dyn Error>> {
-        strs.iter().map(|s| Ok(fr_enc(&fr_parse(s)?))).collect()
+    fn frs_enc<F: PrimeField>(strs: &[String]) -> Result<Vec<FrCbor>, Box<dyn Error>> {
+        strs.iter().map(|s| Ok(fr_enc(&fr_parse::<F>(s)?))).collect()
     }
 
-    fn frs_dec(vs: &[FrCbor]) -> Result<Vec<String>, Box<dyn Error>> {
+    fn frs_dec<F: PrimeField>(vs: &[FrCbor]) -> Result<Vec<String>, Box<dyn Error>> {
         vs.iter()
-            .map(|v| Ok(super::fr_to_string(&fr_dec(v)?)))
+            .map(|v| Ok(super::fr_to_string(&fr_dec::<F>(v)?)))
             .collect()
     }
 
@@ -196,19 +200,19 @@ pub mod codec {
         Ok(ByteBuf::from(hex::decode(hex_str)?))
     }
 
-    fn instance_enc(i: &NifsFinalInstance) -> Result<InstanceCbor, Box<dyn Error>> {
+    fn instance_enc<F: PrimeField>(i: &NifsFinalInstance) -> Result<InstanceCbor, Box<dyn Error>> {
         Ok(InstanceCbor {
-            x: frs_enc(&i.x)?,
-            u: fr_enc(&fr_parse(&i.u)?),
+            x: frs_enc::<F>(&i.x)?,
+            u: fr_enc(&fr_parse::<F>(&i.u)?),
             w_commit: ByteBuf::from(hex::decode(&i.w_commit)?),
             e_commit: ByteBuf::from(hex::decode(&i.e_commit)?),
         })
     }
 
-    fn instance_dec(c: &InstanceCbor) -> Result<NifsFinalInstance, Box<dyn Error>> {
+    fn instance_dec<F: PrimeField>(c: &InstanceCbor) -> Result<NifsFinalInstance, Box<dyn Error>> {
         Ok(NifsFinalInstance {
-            x: frs_dec(&c.x)?,
-            u: super::fr_to_string(&fr_dec(&c.u)?),
+            x: frs_dec::<F>(&c.x)?,
+            u: super::fr_to_string(&fr_dec::<F>(&c.u)?),
             w_commit: hex::encode(&c.w_commit),
             e_commit: hex::encode(&c.e_commit),
         })
@@ -282,20 +286,20 @@ pub mod codec {
         }
     }
 
-    pub fn bundle_encode(b: &NifsBundle) -> Result<Vec<u8>, Box<dyn Error>> {
+    pub fn bundle_encode<F: PrimeField>(b: &NifsBundle) -> Result<Vec<u8>, Box<dyn Error>> {
         let dto = BundleCbor {
             v: FORMAT_VERSION,
             circuit: b.circuit.clone(),
             dims: Dims([b.n_wires, b.n_constraints, b.n_pub_out, b.n_pub_in]),
-            initial_state: frs_enc(&b.initial_state)?,
+            initial_state: frs_enc::<F>(&b.initial_state)?,
             n_steps: b.n_steps as u64,
-            final_instance: instance_enc(&b.final_instance)?,
+            final_instance: instance_enc::<F>(&b.final_instance)?,
             transcript_final: hash_enc(&b.transcript_final)?,
         };
         write(&dto)
     }
 
-    pub fn bundle_decode(bytes: &[u8]) -> Result<NifsBundle, Box<dyn Error>> {
+    pub fn bundle_decode<F: PrimeField>(bytes: &[u8]) -> Result<NifsBundle, Box<dyn Error>> {
         let d: BundleCbor =
             ciborium::from_reader(bytes).map_err(|e| format!("invalid CBOR bundle: {e}"))?;
         check_version(d.v)?;
@@ -306,42 +310,42 @@ pub mod codec {
             n_constraints: nc,
             n_pub_out: npo,
             n_pub_in: npi,
-            initial_state: frs_dec(&d.initial_state)?,
+            initial_state: frs_dec::<F>(&d.initial_state)?,
             n_steps: d.n_steps as usize,
-            final_instance: instance_dec(&d.final_instance)?,
+            final_instance: instance_dec::<F>(&d.final_instance)?,
             transcript_final: hex::encode(&d.transcript_final),
         })
     }
 
-    pub fn slim_proof_encode(p: &NifsSlimProof) -> Result<Vec<u8>, Box<dyn Error>> {
+    pub fn slim_proof_encode<F: PrimeField>(p: &NifsSlimProof) -> Result<Vec<u8>, Box<dyn Error>> {
         let (circuit, dims) =
             (p.circuit.clone(), Dims([p.n_wires, p.n_constraints, p.n_pub_out, p.n_pub_in]));
         let dto = ProofCoreCbor {
             v: FORMAT_VERSION,
             circuit,
             dims,
-            final_instance: instance_enc(&p.final_instance)?,
+            final_instance: instance_enc::<F>(&p.final_instance)?,
             polys: p
                 .sumcheck_polys
                 .iter()
-                .map(|row| frs_enc(row))
+                .map(|row| frs_enc::<F>(row))
                 .collect::<Result<_, _>>()?,
-            claims: frs_enc(&p.sumcheck_claims)?,
-            r_challenges: frs_enc(&p.r_challenges)?,
-            product_at_r: fr_enc(&fr_parse(&p.claimed_product_at_r)?),
+            claims: frs_enc::<F>(&p.sumcheck_claims)?,
+            r_challenges: frs_enc::<F>(&p.r_challenges)?,
+            product_at_r: fr_enc(&fr_parse::<F>(&p.claimed_product_at_r)?),
             w_hash: hash_enc(&p.w_commit_hash)?,
             e_hash: hash_enc(&p.e_commit_hash)?,
         };
         write(&dto)
     }
 
-    pub fn slim_proof_decode(bytes: &[u8]) -> Result<NifsSlimProof, Box<dyn Error>> {
+    pub fn slim_proof_decode<F: PrimeField>(bytes: &[u8]) -> Result<NifsSlimProof, Box<dyn Error>> {
         let d: ProofCoreCbor =
             ciborium::from_reader(bytes).map_err(|e| format!("invalid CBOR proof: {e}"))?;
-        proof_core_to_slim(d)
+        proof_core_to_slim::<F>(d)
     }
 
-    fn proof_core_to_slim(d: ProofCoreCbor) -> Result<NifsSlimProof, Box<dyn Error>> {
+    fn proof_core_to_slim<F: PrimeField>(d: ProofCoreCbor) -> Result<NifsSlimProof, Box<dyn Error>> {
         check_version(d.v)?;
         let [nw, nc, npo, npi] = d.dims.0;
         Ok(NifsSlimProof {
@@ -350,46 +354,46 @@ pub mod codec {
             n_constraints: nc,
             n_pub_out: npo,
             n_pub_in: npi,
-            final_instance: instance_dec(&d.final_instance)?,
+            final_instance: instance_dec::<F>(&d.final_instance)?,
             sumcheck_polys: d
                 .polys
                 .iter()
-                .map(|row| frs_dec(row))
+                .map(|row| frs_dec::<F>(row))
                 .collect::<Result<_, _>>()?,
-            sumcheck_claims: frs_dec(&d.claims)?,
-            r_challenges: frs_dec(&d.r_challenges)?,
-            claimed_product_at_r: super::fr_to_string(&fr_dec(&d.product_at_r)?),
+            sumcheck_claims: frs_dec::<F>(&d.claims)?,
+            r_challenges: frs_dec::<F>(&d.r_challenges)?,
+            claimed_product_at_r: super::fr_to_string(&fr_dec::<F>(&d.product_at_r)?),
             w_commit_hash: hex::encode(&d.w_hash),
             e_commit_hash: hex::encode(&d.e_hash),
         })
     }
 
-    pub fn sumcheck_proof_encode(p: &NifsSumcheckProof) -> Result<Vec<u8>, Box<dyn Error>> {
+    pub fn sumcheck_proof_encode<F: PrimeField>(p: &NifsSumcheckProof) -> Result<Vec<u8>, Box<dyn Error>> {
         let (circuit, dims) = core_of(p)?;
         let dto = SumcheckProofCbor {
             core: ProofCoreCbor {
                 v: FORMAT_VERSION,
                 circuit,
                 dims,
-                final_instance: instance_enc(&p.final_instance)?,
+                final_instance: instance_enc::<F>(&p.final_instance)?,
                 polys: p
                     .sumcheck_polys
                     .iter()
-                    .map(|row| frs_enc(row))
+                    .map(|row| frs_enc::<F>(row))
                     .collect::<Result<_, _>>()?,
-                claims: frs_enc(&p.sumcheck_claims)?,
-                r_challenges: frs_enc(&p.r_challenges)?,
-                product_at_r: fr_enc(&fr_parse(&p.claimed_product_at_r)?),
+                claims: frs_enc::<F>(&p.sumcheck_claims)?,
+                r_challenges: frs_enc::<F>(&p.r_challenges)?,
+                product_at_r: fr_enc(&fr_parse::<F>(&p.claimed_product_at_r)?),
                 w_hash: hash_enc(&p.w_commit_hash)?,
                 e_hash: hash_enc(&p.e_commit_hash)?,
             },
-            w_opening: frs_enc(&p.w_opening)?,
-            e_opening: frs_enc(&p.e_opening)?,
+            w_opening: frs_enc::<F>(&p.w_opening)?,
+            e_opening: frs_enc::<F>(&p.e_opening)?,
         };
         write(&dto)
     }
 
-    pub fn sumcheck_proof_decode(bytes: &[u8]) -> Result<NifsSumcheckProof, Box<dyn Error>> {
+    pub fn sumcheck_proof_decode<F: PrimeField>(bytes: &[u8]) -> Result<NifsSumcheckProof, Box<dyn Error>> {
         let d: SumcheckProofCbor =
             ciborium::from_reader(bytes).map_err(|e| format!("invalid CBOR proof: {e}"))?;
         let c = &d.core;
@@ -401,48 +405,48 @@ pub mod codec {
             n_constraints: nc,
             n_pub_out: npo,
             n_pub_in: npi,
-            final_instance: instance_dec(&c.final_instance)?,
+            final_instance: instance_dec::<F>(&c.final_instance)?,
             sumcheck_polys: c
                 .polys
                 .iter()
-                .map(|row| frs_dec(row))
+                .map(|row| frs_dec::<F>(row))
                 .collect::<Result<_, _>>()?,
-            sumcheck_claims: frs_dec(&c.claims)?,
-            r_challenges: frs_dec(&c.r_challenges)?,
-            claimed_product_at_r: super::fr_to_string(&fr_dec(&c.product_at_r)?),
+            sumcheck_claims: frs_dec::<F>(&c.claims)?,
+            r_challenges: frs_dec::<F>(&c.r_challenges)?,
+            claimed_product_at_r: super::fr_to_string(&fr_dec::<F>(&c.product_at_r)?),
             w_commit_hash: hex::encode(&c.w_hash),
             e_commit_hash: hex::encode(&c.e_hash),
-            w_opening: frs_dec(&d.w_opening)?,
-            e_opening: frs_dec(&d.e_opening)?,
+            w_opening: frs_dec::<F>(&d.w_opening)?,
+            e_opening: frs_dec::<F>(&d.e_opening)?,
         })
     }
 
     impl NifsBundle {
         /// Compact binary encoding (CBOR).
-        pub fn to_cbor(&self) -> Result<Vec<u8>, Box<dyn Error>> {
-            bundle_encode(self)
+        pub fn to_cbor<F: PrimeField>(&self) -> Result<Vec<u8>, Box<dyn Error>> {
+            bundle_encode::<F>(self)
         }
         /// Decode a compact binary (CBOR) bundle.
-        pub fn from_cbor(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
-            bundle_decode(bytes)
+        pub fn from_cbor<F: PrimeField>(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
+            bundle_decode::<F>(bytes)
         }
     }
 
     impl NifsSlimProof {
-        pub fn to_cbor(&self) -> Result<Vec<u8>, Box<dyn Error>> {
-            slim_proof_encode(self)
+        pub fn to_cbor<F: PrimeField>(&self) -> Result<Vec<u8>, Box<dyn Error>> {
+            slim_proof_encode::<F>(self)
         }
-        pub fn from_cbor(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
-            slim_proof_decode(bytes)
+        pub fn from_cbor<F: PrimeField>(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
+            slim_proof_decode::<F>(bytes)
         }
     }
 
     impl NifsSumcheckProof {
-        pub fn to_cbor(&self) -> Result<Vec<u8>, Box<dyn Error>> {
-            sumcheck_proof_encode(self)
+        pub fn to_cbor<F: PrimeField>(&self) -> Result<Vec<u8>, Box<dyn Error>> {
+            sumcheck_proof_encode::<F>(self)
         }
-        pub fn from_cbor(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
-            sumcheck_proof_decode(bytes)
+        pub fn from_cbor<F: PrimeField>(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
+            sumcheck_proof_decode::<F>(bytes)
         }
     }
 }
@@ -450,10 +454,10 @@ pub mod codec {
 /// Output of [`run_fold_nifs`]: the public bundle plus the private final
 /// instance/witness (consumed by the compression prover).
 #[derive(Debug, Clone)]
-pub struct NifsFoldOutput {
+pub struct NifsFoldOutput<C: NovaCurve> {
     pub bundle: NifsBundle,
-    pub final_instance: nifs::RelaxedR1csInstance,
-    pub final_witness: nifs::RelaxedR1csWitness,
+    pub final_instance: nifs::RelaxedR1csInstance<C>,
+    pub final_witness: nifs::RelaxedR1csWitness<C>,
 }
 
 /// Sumcheck-based compression proof.
@@ -500,8 +504,8 @@ pub struct VerifyOutput {
 }
 
 /// Load a step circuit from a `.r1cs` file.
-pub fn load_circuit(path: &Path) -> Result<SparseCircomCircuit, Box<dyn Error>> {
-    SparseCircomCircuit::from_r1cs(
+pub fn load_circuit<C: NovaCurve>(path: &Path) -> Result<SparseCircuit<ScalarField<C>>, Box<dyn Error>> {
+    SparseCircuit::from_r1cs(
         path.to_str()
             .ok_or_else(|| format!("circuit path is not valid UTF-8: {path:?}"))?,
     )
@@ -510,7 +514,7 @@ pub fn load_circuit(path: &Path) -> Result<SparseCircomCircuit, Box<dyn Error>> 
 
 /// Enforce the step-chain invariant: the public-input block (state in)
 /// must have the same width as the public-output block (state out).
-pub fn check_step_circuit(c: &SparseCircomCircuit) -> Result<(), Box<dyn Error>> {
+pub fn check_step_circuit<C: NovaCurve>(c: &SparseCircuit<ScalarField<C>>) -> Result<(), Box<dyn Error>> {
     if c.n_pub_in != c.n_pub_out {
         return Err(format!(
             "not a valid step circuit: n_pub_in ({}) != n_pub_out ({}) — \
@@ -524,7 +528,7 @@ pub fn check_step_circuit(c: &SparseCircomCircuit) -> Result<(), Box<dyn Error>>
 }
 
 /// Build the JSON descriptor for a step circuit.
-pub fn circuit_descriptor(c: &SparseCircomCircuit) -> CircuitDescriptor {
+pub fn circuit_descriptor<C: NovaCurve>(c: &SparseCircuit<ScalarField<C>>) -> CircuitDescriptor {
     CircuitDescriptor {
         n_wires: c.n_wires,
         n_constraints: c.n_constraints,
@@ -538,10 +542,10 @@ pub fn circuit_descriptor(c: &SparseCircomCircuit) -> CircuitDescriptor {
 ///
 /// Loads the step circuit from a `.r1cs` file and validates that it
 /// satisfies the IVC invariant (`n_pub_in == n_pub_out`).
-pub fn run_params(circuit: &Path) -> Result<CircuitDescriptor, Box<dyn Error>> {
-    let c = load_circuit(circuit)?;
-    check_step_circuit(&c)?;
-    Ok(circuit_descriptor(&c))
+pub fn run_params<C: NovaCurve>(circuit: &Path) -> Result<CircuitDescriptor, Box<dyn Error>> {
+    let c = load_circuit::<C>(circuit)?;
+    check_step_circuit::<C>(&c)?;
+    Ok(circuit_descriptor::<C>(&c))
 }
 
 /// `fold` — fold step witnesses into a single Relaxed-R1CS instance.
@@ -551,37 +555,37 @@ pub fn run_params(circuit: &Path) -> Result<CircuitDescriptor, Box<dyn Error>> {
 /// running accumulator via the NIFS.  Folding is linear-time and needs no
 /// proving key.  Returns the O(1) [`NifsBundle`] (final instance + transcript)
 /// plus the private final instance/witness for the compression proof.
-pub fn run_fold_nifs(circuit: &Path, steps: &Path) -> Result<NifsFoldOutput, Box<dyn Error>> {
+pub fn run_fold_nifs<C: NovaCurve>(circuit: &Path, steps: &Path) -> Result<NifsFoldOutput<C>, Box<dyn Error>> {
     fold_nifs(circuit, steps, OptFlags::NONE)
 }
 
 /// Like [`run_fold_nifs`] but with optimization flags.
-pub fn run_fold_nifs_opt(
+pub fn run_fold_nifs_opt<C: NovaCurve>(
     circuit: &Path,
     steps: &Path,
     opts: OptFlags,
-) -> Result<NifsFoldOutput, Box<dyn Error>> {
+) -> Result<NifsFoldOutput<C>, Box<dyn Error>> {
     fold_nifs(circuit, steps, opts)
 }
 
 /// Core folding routine shared by [`run_fold_nifs`] and [`run_compress`]
 /// (which re-folds deterministically to recover the private final witness).
-fn fold_nifs(
+fn fold_nifs<C: NovaCurve>(
     circuit: &Path,
     steps: &Path,
     opts: OptFlags,
-) -> Result<NifsFoldOutput, Box<dyn Error>> {
+) -> Result<NifsFoldOutput<C>, Box<dyn Error>> {
     let circuit_path_str = circuit.to_string_lossy().into_owned();
-    let mut circuit = load_circuit(circuit)?;
-    check_step_circuit(&circuit)?;
+    let mut circuit = load_circuit::<C>(circuit)?;
+    check_step_circuit::<C>(&circuit)?;
 
     let n_pub_out = circuit.n_pub_out as usize;
     let n_pub_in = circuit.n_pub_in as usize;
     let n_wires = circuit.n_wires as usize;
     let n_constraints = circuit.n_constraints as usize;
 
-    let params = nifs::PedersenParams::from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints);
-    let zero_e = vec![Fr::zero(); n_constraints];
+    let params = nifs::PedersenParams::<C>::from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints);
+    let zero_e = vec![ScalarField::<C>::zero(); n_constraints];
 
     let mut wtns_paths: Vec<PathBuf> = Vec::new();
     for entry in fs::read_dir(steps)
@@ -607,8 +611,8 @@ fn fold_nifs(
     let mut acc_hash: Option<Vec<u8>> = None;
     let mut prev_out: Option<Vec<String>> = None;
     let mut initial_state: Vec<String> = Vec::new();
-    let mut acc_u: Option<nifs::RelaxedR1csInstance> = None;
-    let mut acc_w: Option<nifs::RelaxedR1csWitness> = None;
+    let mut acc_u: Option<nifs::RelaxedR1csInstance<C>> = None;
+    let mut acc_w: Option<nifs::RelaxedR1csWitness<C>> = None;
 
     for (i, p) in wtns_paths.iter().enumerate() {
         circuit
@@ -635,15 +639,15 @@ fn fold_nifs(
             }
         } else {
             initial_state = state_in.clone();
-            acc_hash = Some(transcript_nifs_init(in_fr));
+            acc_hash = Some(transcript_nifs_init::<C>(in_fr));
         }
 
-        let x: Vec<Fr> = w[1..1 + n_pub_out + n_pub_in].to_vec();
+        let x: Vec<ScalarField<C>> = w[1..1 + n_pub_out + n_pub_in].to_vec();
         let step_u = nifs::RelaxedR1csInstance {
             x,
-            u: Fr::from(1u64),
-            w_commit: nifs::commit(&params.basis_w, w),
-            e_commit: G1Affine::zero(),
+            u: ScalarField::<C>::from(1u64),
+            w_commit: nifs::commit::<C>(&params.basis_w, w),
+            e_commit: C::G1Affine::zero(),
         };
         let step_w = nifs::RelaxedR1csWitness {
             w: w.to_vec(),
@@ -658,8 +662,8 @@ fn fold_nifs(
             Some(u_acc) => {
                 let w_acc = acc_w.take().expect("running witness must exist");
                 let acc = acc_hash.as_ref().expect("transcript initialized");
-                let challenge = nifs::fold_challenge(acc, &u_acc, &step_u);
-                let (u3, w3) = nifs::fold_with_opts(
+                let challenge = nifs::fold_challenge::<C>(acc, &u_acc, &step_u);
+                let (u3, w3) = nifs::fold_with_opts::<C>(
                     &params, &circuit.l, &circuit.r, &circuit.o, &u_acc, &w_acc, &step_u, &step_w,
                     challenge,
                     opts.parallel,
@@ -695,8 +699,8 @@ fn fold_nifs(
         final_instance: NifsFinalInstance {
             x: final_u.x.iter().map(fr_to_string).collect(),
             u: fr_to_string(&final_u.u),
-            w_commit: g1_hex(&final_u.w_commit),
-            e_commit: g1_hex(&final_u.e_commit),
+            w_commit: g1_hex::<C>(&final_u.w_commit),
+            e_commit: g1_hex::<C>(&final_u.e_commit),
         },
         transcript_final,
     };
@@ -713,29 +717,29 @@ fn fold_nifs(
 /// No proving key is needed — the sumcheck protocol is transparent.  Folds
 /// the step witnesses, builds the sumcheck compression proof (one sumcheck
 /// argument + HashPC openings), and writes the JSON proof to `out`.
-pub fn run_compress_sumcheck(
+pub fn run_compress_sumcheck<C: NovaCurve>(
     circuit: &Path,
     steps: &Path,
     out: &Path,
 ) -> Result<CompressOutput, Box<dyn Error>> {
-    run_compress_sumcheck_opt(circuit, steps, out, OptFlags::NONE)
+    run_compress_sumcheck_opt::<C>(circuit, steps, out, OptFlags::NONE)
 }
 
 /// Like [`run_compress_sumcheck`] but with optimization flags.
-pub fn run_compress_sumcheck_opt(
+pub fn run_compress_sumcheck_opt<C: NovaCurve>(
     circuit: &Path,
     steps: &Path,
     out: &Path,
     opts: OptFlags,
 ) -> Result<CompressOutput, Box<dyn Error>> {
-    let c = load_circuit(circuit)?;
-    check_step_circuit(&c)?;
+    let c = load_circuit::<C>(circuit)?;
+    check_step_circuit::<C>(&c)?;
 
-    let folded = fold_nifs(circuit, steps, opts)?;
+    let folded = fold_nifs::<C>(circuit, steps, opts)?;
     let mut rng = rand::thread_rng();
-    let cproof = prove_sumcheck_compression_opt(&c, &folded, &mut rng, opts)?;
+    let cproof = prove_sumcheck_compression_opt::<C>(&c, &folded, &mut rng, opts)?;
 
-    let cbor = codec::sumcheck_proof_encode(&cproof)
+    let cbor = codec::sumcheck_proof_encode::<ScalarField<C>>(&cproof)
         .map_err(|e| format!("failed to serialize sumcheck proof: {e}"))?;
     fs::write(out, &cbor)
         .map_err(|e| format!("failed to write sumcheck proof to {}: {e}", out.display()))?;
@@ -755,13 +759,13 @@ pub fn run_compress_sumcheck_opt(
 ///
 /// Loads the NIFS bundle and the compact CBOR sumcheck proof, then runs
 /// [`verify_sumcheck_compression`].  No verifying key is needed.
-pub fn run_verify_sumcheck(
+pub fn run_verify_sumcheck<C: NovaCurve>(
     ivc: &Path,
     sumcheck_proof: &Path,
 ) -> Result<VerifyOutput, Box<dyn Error>> {
     let bundle_bytes =
         fs::read(ivc).map_err(|e| format!("failed to read IVC bundle {}: {e}", ivc.display()))?;
-    let bundle: NifsBundle = codec::bundle_decode(&bundle_bytes)
+    let bundle: NifsBundle = codec::bundle_decode::<ScalarField<C>>(&bundle_bytes)
         .map_err(|e| format!("failed to parse IVC bundle as NIFS bundle: {e}"))?;
 
     let proof_bytes = fs::read(sumcheck_proof).map_err(|e| {
@@ -770,13 +774,13 @@ pub fn run_verify_sumcheck(
             sumcheck_proof.display()
         )
     })?;
-    let sc_proof: NifsSumcheckProof = codec::sumcheck_proof_decode(&proof_bytes)
+    let sc_proof: NifsSumcheckProof = codec::sumcheck_proof_decode::<ScalarField<C>>(&proof_bytes)
         .map_err(|e| format!("failed to parse sumcheck proof: {e}"))?;
 
-    verify_sumcheck_compression(&bundle, &sc_proof)
+    verify_sumcheck_compression::<C>(&bundle, &sc_proof)
 }
 
-fn circuit_path_display(_c: &SparseCircomCircuit) -> String {
+fn circuit_path_display<C: NovaCurve>(_c: &SparseCircuit<ScalarField<C>>) -> String {
     // The circuit's source path is only known to the file-based loaders; the
     // in-memory path records the step circuit's provenance as its identity is
     // carried by the bundle instead.
@@ -796,24 +800,24 @@ pub struct CompressOutput {
 /// Produces a sumcheck proof over the relaxed R1CS equation plus HashPC
 /// opening proofs.  The proof size is O(log(n_constraints)) field elements
 /// (the sumcheck messages), independent of the step width.
-pub fn prove_sumcheck_compression(
-    circuit: &SparseCircomCircuit,
-    folded: &NifsFoldOutput,
+pub fn prove_sumcheck_compression<C: NovaCurve>(
+    circuit: &SparseCircuit<ScalarField<C>>,
+    folded: &NifsFoldOutput<C>,
     _rng: &mut impl rand::RngCore,
 ) -> Result<NifsSumcheckProof, Box<dyn Error>> {
-    prove_sumcheck_compression_opt(circuit, folded, _rng, OptFlags::NONE)
+    prove_sumcheck_compression_opt::<C>(circuit, folded, _rng, OptFlags::NONE)
 }
 
 /// Like [`prove_sumcheck_compression`] but with optimization flags.
-pub fn prove_sumcheck_compression_opt(
-    circuit: &SparseCircomCircuit,
-    folded: &NifsFoldOutput,
+pub fn prove_sumcheck_compression_opt<C: NovaCurve>(
+    circuit: &SparseCircuit<ScalarField<C>>,
+    folded: &NifsFoldOutput<C>,
     _rng: &mut impl rand::RngCore,
     opts: OptFlags,
 ) -> Result<NifsSumcheckProof, Box<dyn Error>> {
     let n_wires = circuit.n_wires as usize;
     let n_constraints = circuit.n_constraints as usize;
-    let params = nifs::PedersenParams::from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints);
+    let params = nifs::PedersenParams::<C>::from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints);
 
     // Build the full witness: Z = folded wire vector, E = error vector.
     let z = &folded.final_witness.w;
@@ -821,7 +825,7 @@ pub fn prove_sumcheck_compression_opt(
     let u = folded.final_instance.u;
 
     // Run sumcheck prover.
-    let (proof, r_challenges) = sumcheck::prove_with_opts(
+    let (proof, r_challenges) = sumcheck::prove_with_opts::<C>(
         &circuit.l,
         &circuit.r,
         &circuit.o,
@@ -833,7 +837,7 @@ pub fn prove_sumcheck_compression_opt(
 
     // Build product vector and evaluate its MLE at r (for the final check).
     let n_padded = sumcheck::next_power_of_two(n_constraints);
-    let products: Vec<Fr> = (0..n_constraints)
+    let products: Vec<ScalarField<C>> = (0..n_constraints)
         .map(|j| {
             let az = sumcheck::eval_row_mle(&circuit.l[j], z);
             let bz = sumcheck::eval_row_mle(&circuit.r[j], z);
@@ -842,7 +846,7 @@ pub fn prove_sumcheck_compression_opt(
         })
         .collect();
     let mut products_padded = products;
-    products_padded.resize(n_padded, Fr::zero());
+    products_padded.resize(n_padded, ScalarField::<C>::zero());
 
     let claimed_product_at_r = if r_challenges.is_empty() {
         products_padded[0]
@@ -851,15 +855,15 @@ pub fn prove_sumcheck_compression_opt(
     };
 
     // HashPC commitments for W and E.
-    let (w_hash, _) = sumcheck::poly_commit(z, &params.basis_w);
-    let (e_hash, _) = sumcheck::poly_commit(e, &params.basis_e);
+    let (w_hash, _) = sumcheck::poly_commit::<C>(z, &params.basis_w);
+    let (e_hash, _) = sumcheck::poly_commit::<C>(e, &params.basis_e);
 
     // HashPC opening proofs.
-    let w_opening = sumcheck::create_opening(z);
-    let e_opening = sumcheck::create_opening(e);
+    let w_opening = sumcheck::create_opening::<C>(z);
+    let e_opening = sumcheck::create_opening::<C>(e);
 
     Ok(NifsSumcheckProof {
-        circuit: circuit_path_display(circuit),
+        circuit: circuit_path_display::<C>(circuit),
         n_wires: circuit.n_wires,
         n_constraints: circuit.n_constraints,
         n_pub_out: circuit.n_pub_out,
@@ -892,7 +896,7 @@ pub fn prove_sumcheck_compression_opt(
 ///   4. the HashPC opening proofs for W and E are consistent with the
 ///      committed hashes and the claimed evaluations at `r`
 ///   5. the Pedersen commitments to W and E match the bundle's final instance
-pub fn verify_sumcheck_compression(
+pub fn verify_sumcheck_compression<C: NovaCurve>(
     bundle: &NifsBundle,
     proof: &NifsSumcheckProof,
 ) -> Result<VerifyOutput, Box<dyn Error>> {
@@ -911,23 +915,23 @@ pub fn verify_sumcheck_compression(
     let n_constraints = bundle.n_constraints as usize;
 
     // 1. Reconstruct the sumcheck proof.
-    let sc_proof = sumcheck::SumcheckProof {
-        claims: frs_from_strings(&proof.sumcheck_claims)?,
+    let sc_proof = sumcheck::SumcheckProof::<C> {
+        claims: frs_from_strings::<ScalarField<C>>(&proof.sumcheck_claims)?,
         polys: proof
             .sumcheck_polys
             .iter()
-            .map(|p| frs_from_strings(p))
+            .map(|p| frs_from_strings::<ScalarField<C>>(p))
             .collect::<Result<Vec<_>, _>>()?,
     };
 
     // 2. Verify the sumcheck.
-    let (sc_ok, verifier_r, final_claim) = sumcheck::verify(&sc_proof);
+    let (sc_ok, verifier_r, final_claim) = sumcheck::verify::<C>(&sc_proof);
     if !sc_ok {
         return Err("sumcheck proof failed: round polynomials are inconsistent".into());
     }
 
     // Verify Fiat-Shamir challenges match.
-    let claimed_r = frs_from_strings(&proof.r_challenges)?;
+    let claimed_r = frs_from_strings::<ScalarField<C>>(&proof.r_challenges)?;
     if verifier_r != claimed_r {
         return Err("sumcheck Fiat-Shamir challenges do not match".into());
     }
@@ -944,24 +948,25 @@ pub fn verify_sumcheck_compression(
     // 4. Verify HashPC opening proofs.
     let claimed_product = proof
         .claimed_product_at_r
-        .parse::<Fr>()
-        .map_err(|e| format!("invalid claimed_product_at_r: {e:?}"))?;
+        .parse::<ScalarField<C>>()
+        .map_err(|_| format!("invalid claimed_product_at_r"))?;
     if claimed_product != final_claim {
         return Err("claimed product MLE evaluation does not match sumcheck final claim".into());
     }
 
     // Verify W opening: check hash matches and MLE evaluation at r.
-    let w_opening = sumcheck::OpeningProof {
-        table: frs_from_strings(&proof.w_opening)?,
+    let w_opening = sumcheck::OpeningProof::<C> {
+        table: frs_from_strings::<ScalarField<C>>(&proof.w_opening)?,
     };
     let w_hash =
         hex::decode(&proof.w_commit_hash).map_err(|e| format!("invalid w_commit_hash hex: {e}"))?;
     // Verify the W opening truth table hashes to the committed value.
     let actual_w_hash: Vec<u8> = {
-        use ark_ff::BigInteger;
         let mut h = Blake2b512::new();
         for val in &w_opening.table {
-            h.update(val.into_bigint().to_bytes_le());
+            let mut buf = Vec::new();
+            val.serialize_compressed(&mut buf).unwrap();
+            h.update(&buf);
         }
         h.finalize().to_vec()
     };
@@ -970,16 +975,17 @@ pub fn verify_sumcheck_compression(
     }
 
     // Verify E opening similarly.
-    let e_opening = sumcheck::OpeningProof {
-        table: frs_from_strings(&proof.e_opening)?,
+    let e_opening = sumcheck::OpeningProof::<C> {
+        table: frs_from_strings::<ScalarField<C>>(&proof.e_opening)?,
     };
     let e_hash =
         hex::decode(&proof.e_commit_hash).map_err(|e| format!("invalid e_commit_hash hex: {e}"))?;
     let actual_e_hash: Vec<u8> = {
-        use ark_ff::BigInteger;
         let mut h = Blake2b512::new();
         for val in &e_opening.table {
-            h.update(val.into_bigint().to_bytes_le());
+            let mut buf = Vec::new();
+            val.serialize_compressed(&mut buf).unwrap();
+            h.update(&buf);
         }
         h.finalize().to_vec()
     };
@@ -988,13 +994,13 @@ pub fn verify_sumcheck_compression(
     }
 
     // 5. Verify Pedersen commitments match the bundle.
-    let params = nifs::PedersenParams::from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints);
+    let params = nifs::PedersenParams::<C>::from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints);
     let w_vec = &w_opening.table[..n_wires.min(w_opening.table.len())];
-    if nifs::commit(&params.basis_w, w_vec) != deserialize_g1(&bundle.final_instance.w_commit)? {
+    if nifs::commit::<C>(&params.basis_w, w_vec) != deserialize_g1::<C>(&bundle.final_instance.w_commit)? {
         return Err("W Pedersen commitment does not match the NIFS bundle".into());
     }
     let e_vec = &e_opening.table[..n_constraints.min(e_opening.table.len())];
-    if nifs::commit(&params.basis_e, e_vec) != deserialize_g1(&bundle.final_instance.e_commit)? {
+    if nifs::commit::<C>(&params.basis_e, e_vec) != deserialize_g1::<C>(&bundle.final_instance.e_commit)? {
         return Err("E Pedersen commitment does not match the NIFS bundle".into());
     }
 
@@ -1064,7 +1070,7 @@ impl NifsSumcheckProof {
 ///
 /// Full soundness (including commitment binding) requires an off-chain
 /// verifier to check the opening proofs against `w_commit_hash`/`e_commit_hash`.
-pub fn verify_slim(
+pub fn verify_slim<C: NovaCurve>(
     bundle: &NifsBundle,
     proof: &NifsSlimProof,
 ) -> Result<VerifyOutput, Box<dyn Error>> {
@@ -1080,23 +1086,23 @@ pub fn verify_slim(
     }
 
     // 1. Reconstruct the sumcheck proof.
-    let sc_proof = sumcheck::SumcheckProof {
-        claims: frs_from_strings(&proof.sumcheck_claims)?,
+    let sc_proof = sumcheck::SumcheckProof::<C> {
+        claims: frs_from_strings::<ScalarField<C>>(&proof.sumcheck_claims)?,
         polys: proof
             .sumcheck_polys
             .iter()
-            .map(|p| frs_from_strings(p))
+            .map(|p| frs_from_strings::<ScalarField<C>>(p))
             .collect::<Result<Vec<_>, _>>()?,
     };
 
     // 2. Verify the sumcheck.
-    let (sc_ok, verifier_r, final_claim) = sumcheck::verify(&sc_proof);
+    let (sc_ok, verifier_r, final_claim) = sumcheck::verify::<C>(&sc_proof);
     if !sc_ok {
         return Err("sumcheck proof failed: round polynomials are inconsistent".into());
     }
 
     // Verify Fiat-Shamir challenges match.
-    let claimed_r = frs_from_strings(&proof.r_challenges)?;
+    let claimed_r = frs_from_strings::<ScalarField<C>>(&proof.r_challenges)?;
     if verifier_r != claimed_r {
         return Err("sumcheck Fiat-Shamir challenges do not match".into());
     }
@@ -1113,8 +1119,8 @@ pub fn verify_slim(
     // 4. Consistency check: claimed_product_at_r must match the sumcheck final claim.
     let claimed_product = proof
         .claimed_product_at_r
-        .parse::<Fr>()
-        .map_err(|e| format!("invalid claimed_product_at_r: {e:?}"))?;
+        .parse::<ScalarField<C>>()
+        .map_err(|_| format!("invalid claimed_product_at_r"))?;
     if claimed_product != final_claim {
         return Err("claimed product MLE evaluation does not match sumcheck final claim".into());
     }
@@ -1132,13 +1138,13 @@ pub fn verify_slim(
 ///
 /// Loads the NIFS bundle and the compact CBOR slim proof, then runs
 /// [`verify_slim`].  No verifying key is needed.
-pub fn run_verify_slim(
+pub fn run_verify_slim<C: NovaCurve>(
     ivc: &Path,
     slim_proof: &Path,
 ) -> Result<VerifyOutput, Box<dyn Error>> {
     let bundle_bytes =
         fs::read(ivc).map_err(|e| format!("failed to read IVC bundle {}: {e}", ivc.display()))?;
-    let bundle: NifsBundle = codec::bundle_decode(&bundle_bytes)
+    let bundle: NifsBundle = codec::bundle_decode::<ScalarField<C>>(&bundle_bytes)
         .map_err(|e| format!("failed to parse IVC bundle as NIFS bundle: {e}"))?;
 
     let proof_bytes = fs::read(slim_proof).map_err(|e| {
@@ -1147,10 +1153,10 @@ pub fn run_verify_slim(
             slim_proof.display()
         )
     })?;
-    let sp: NifsSlimProof = codec::slim_proof_decode(&proof_bytes)
+    let sp: NifsSlimProof = codec::slim_proof_decode::<ScalarField<C>>(&proof_bytes)
         .map_err(|e| format!("failed to parse slim proof: {e}"))?;
 
-    verify_slim(&bundle, &sp)
+    verify_slim::<C>(&bundle, &sp)
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -1158,46 +1164,46 @@ pub fn run_verify_slim(
 // ────────────────────────────────────────────────────────────────────
 
 /// Serialize a field element to its compressed bytes.
-fn fr_bytes(f: &Fr) -> Vec<u8> {
+fn fr_bytes<F: PrimeField>(f: &F) -> Vec<u8> {
     let mut buf = Vec::new();
     f.serialize_compressed(&mut buf).expect("Fr serialize");
     buf
 }
 
 /// Serialize a slice of field elements to concatenated compressed bytes.
-fn frs_bytes(frs: &[Fr]) -> Vec<u8> {
+fn frs_bytes<F: PrimeField>(frs: &[F]) -> Vec<u8> {
     frs.iter().flat_map(fr_bytes).collect()
 }
 
 /// Hex of a compressed G1 point.
-fn g1_hex(p: &G1Affine) -> String {
+fn g1_hex<C: NovaCurve>(p: &C::G1Affine) -> String {
     let mut buf = Vec::new();
     p.serialize_compressed(&mut buf).expect("G1 serialize");
     hex::encode(buf)
 }
 
 /// Initialize the NIFS transcript: `H(NIFS_TRANSCRIPT_PREFIX ‖ initial_state)`.
-fn transcript_nifs_init(initial_state: &[Fr]) -> Vec<u8> {
+fn transcript_nifs_init<C: NovaCurve>(initial_state: &[ScalarField<C>]) -> Vec<u8> {
     let mut h = Blake2b512::new();
     h.update(NIFS_TRANSCRIPT_PREFIX);
-    h.update(frs_bytes(initial_state));
+    h.update(frs_bytes::<ScalarField<C>>(initial_state));
     h.finalize().to_vec()
 }
 
 /// Extend the NIFS transcript with the running instance after a fold:
 /// `H(acc ‖ instance_bytes)`.  The folding challenge (`nifs::fold_challenge`)
 /// is domain-separated via `FOLD_PREFIX`.
-fn transcript_nifs_step(acc_hash: &[u8], u: &nifs::RelaxedR1csInstance) -> Vec<u8> {
+fn transcript_nifs_step<C: NovaCurve>(acc_hash: &[u8], u: &nifs::RelaxedR1csInstance<C>) -> Vec<u8> {
     let mut h = Blake2b512::new();
     h.update(NIFS_TRANSCRIPT_PREFIX);
     h.update(acc_hash);
-    h.update(nifs::instance_to_bytes(u).expect("serialize instance"));
+    h.update(nifs::instance_to_bytes::<C>(u).expect("serialize instance"));
     h.finalize().to_vec()
 }
 
-fn deserialize_g1(hex: &str) -> Result<G1Affine, Box<dyn Error>> {
+fn deserialize_g1<C: NovaCurve>(hex: &str) -> Result<C::G1Affine, Box<dyn Error>> {
     let bytes = hex::decode(hex).map_err(|e| format!("invalid G1 hex: {e}"))?;
-    G1Affine::deserialize_compressed(&bytes[..])
+    C::G1Affine::deserialize_compressed(&bytes[..])
         .map_err(|e| format!("failed to deserialize G1 point: {e:?}").into())
 }
 
@@ -1205,16 +1211,16 @@ fn deserialize_g1(hex: &str) -> Result<G1Affine, Box<dyn Error>> {
 ///
 /// arkworks' `Display` for BLS12-381 `Fr` emits an empty string for the
 /// zero element, so serialize via the canonical bigint instead.
-pub fn fr_to_string(f: &Fr) -> String {
+pub fn fr_to_string<F: PrimeField>(f: &F) -> String {
     f.into_bigint().to_string()
 }
 
 /// Parse decimal field-element strings back into `Fr`.
-pub fn frs_from_strings(strs: &[String]) -> Result<Vec<Fr>, Box<dyn Error>> {
+pub fn frs_from_strings<F: PrimeField>(strs: &[String]) -> Result<Vec<F>, Box<dyn Error>> {
     strs.iter()
         .map(|s| {
-            s.parse::<Fr>()
-                .map_err(|e| format!("invalid field element '{s}': {e:?}").into())
+            s.parse::<F>()
+                .map_err(|_| format!("invalid field element '{s}'").into())
         })
         .collect()
 }
