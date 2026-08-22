@@ -12,10 +12,8 @@ nova-slim compress → sumcheck compression (--slim for the on-chain variant)
 nova-slim verify   → check bundle + proof (slim: ~0.5 ms)
 ```
 
-Step circuits come from the [cardano-foundation/bls](https://github.com/cardano-foundation/bls)
-repo (`circom/CardanoKeyOwnership`, `circom/Ed25519Verify`, …). Clone it next
-to this repository (`../bls`) or point `BLS_REPO_DIR` at a checkout — tests,
-e2e runs and benchmarks all resolve fixtures from there.
+Step circuits are bundled locally in `circom/CardanoKeyOwnership` and
+`circom/Ed25519Verify` (originally from [cardano-foundation/bls](https://github.com/cardano-foundation/bls)).
 
 ## Layout
 
@@ -36,8 +34,8 @@ Prerequisites: Rust, [circom](https://github.com/iden3/circom) (only if the
 cargo build --release --manifest-path cli/Cargo.toml
 NOVA=cli/target/release/nova-slim
 
-# 2. Compile the step circuit (once; skip if ../bls already ships the .r1cs)
-cd ../bls/circom/CardanoKeyOwnership
+# 2. Compile the step circuit (once; pre-compiled .r1cs is shipped in circom/)
+cd circom/CardanoKeyOwnership
 circom --prime bls12381 -l ../Ed25519Verify/node_modules/circomlib/circuits \
     cardano_ed25519_ownership_nova.circom --r1cs --wasm --sym
 cd -
@@ -45,10 +43,10 @@ cd -
 # 3. Generate chained step witnesses (see benchmarks/gen_step_witnesses.py)
 
 # 4. Inspect the step circuit — must report n_pub_in == n_pub_out == 24
-$NOVA params --circuit ../bls/circom/CardanoKeyOwnership/cardano_ed25519_ownership_nova.r1cs
+$NOVA params --circuit circom/CardanoKeyOwnership/cardano_ed25519_ownership_nova.r1cs
 
 # 5. Fold 255 steps into one transparent bundle (~2 min)
-$NOVA fold --circuit ../bls/circom/CardanoKeyOwnership/cardano_ed25519_ownership_nova.r1cs \
+$NOVA fold --circuit circom/CardanoKeyOwnership/cardano_ed25519_ownership_nova.r1cs \
     --steps <witness-dir> --out cko.ivc.cbor
 
 # 6a. On-chain path: slim proof (~2.5 KiB CBOR, no openings)
@@ -77,13 +75,8 @@ Notes:
 
 - **Use `--release`** — debug builds are impractically slow on the real
   7,724-constraint step circuits (>10 min vs ~90 s).
-- Fixture resolution: `$BLS_REPO_DIR` if set, otherwise the sibling checkout
-  `../bls` (i.e. `cardano-foundation/bls` cloned next to this repo).
-  Tests needing missing fixtures skip themselves gracefully.
 - Witness generation inside tests uses `snarkjs`; without it only the
   synthetic-circuit tests run.
-- The monolithic-circuit rejection test loads a 267 MB `.r1cs`; it needs the
-  pre-compiled `cardano_ed25519_ownership.r1cs` from the bls checkout.
 
 </details>
 
@@ -113,9 +106,9 @@ python3 benchmarks/run_benchmarks.py --family cardano_ed25519_ownership_nova
 python3 benchmarks/run_benchmarks.py --steps 32         # shorter chains
 ```
 
-The harness locates the bls checkout, compiles circuits if needed, generates
-(resumable) step witnesses via snarkjs, then measures baseline and parallel
-passes of `benchmark_nova --release`. Raw logs land in
+The harness uses the bundled circuits in `circom/`, compiles them if needed,
+generates (resumable) step witnesses via snarkjs, then measures baseline and
+parallel passes of `benchmark_nova --release`. Raw logs land in
 `benchmarks/results/<timestamp>/`.
 
 </details>

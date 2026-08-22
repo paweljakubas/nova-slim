@@ -108,10 +108,9 @@ for on-chain soundness.
 <details>
 <summary><b>Measured numbers and how to reproduce them</b></summary>
 
-Measured with `benchmark_nova-slim --release` on real step circuits from
-[cardano-foundation/bls](https://github.com/cardano-foundation/bls) via
-`benchmarks/run_benchmarks.py`. Latest run (2026-08-21, 4-core desktop,
-release build, 255 chained steps):
+Measured with `benchmark_nova --release` on the bundled step circuits in
+`circom/` via `benchmarks/run_benchmarks.py`. Latest run (2026-08-21, 4-core
+desktop, release build, 255 chained steps):
 
 | Step circuit | Constraints | Steps | Fold total | Fold/step | Compress | Verify (full) | Verify (slim) | Slim proof | Bundle |
 |---|---|---|---|---|---|---|---|---|---|
@@ -127,10 +126,9 @@ Re-run after any folding/compression change and paste the new summary here:
 python3 benchmarks/run_benchmarks.py   # from the repository root
 ```
 
-The harness resolves the bls checkout (`$BLS_REPO_DIR` or sibling `../bls`),
-compiles circuits if needed, generates chained witnesses with snarkjs
-(resumable), and measures baseline + parallel passes; raw logs land in
-`benchmarks/results/<timestamp>/`.
+The harness uses the bundled circuits in `circom/`, compiles them if needed,
+generates chained witnesses with snarkjs (resumable), and measures baseline +
+parallel passes; raw logs land in `benchmarks/results/<timestamp>/`.
 
 </details>
 

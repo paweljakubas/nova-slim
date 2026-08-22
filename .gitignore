@@ -14,3 +14,9 @@ Thumbs.db
 
 # Benchmark artifacts (witnesses, compiled circuits)
 benchmarks/work/
+
+# Generated circom artifacts (keep committed .r1cs / _js, ignore recompiled junk)
+circom/**/*.sym
+circom/**/*.wtns
+circom/**/witness*.json
+circom/**/input_*.json

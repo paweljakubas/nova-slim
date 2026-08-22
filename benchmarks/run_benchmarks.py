@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 """NovaSlim benchmark runner — measures the slim IVC flow on real circuits.
 
-Inspired by circom/benchmarks_compare.py in cardano-foundation/bls.  For each
-circuit family it:
+For each circuit family it:
 
-  1. locates the bls checkout ($BLS_REPO_DIR or the sibling ../bls),
-  2. compiles the step circuit with circom if the .r1cs/.wasm are missing,
-  3. generates (or resumes) chained step witnesses with snarkjs,
-  4. builds `benchmark_nova --release`,
-  5. runs baseline and --opt-parallel passes,
-  6. writes raw logs plus a markdown summary under benchmarks/results/.
+  1. compiles the step circuit with circom if the .r1cs/.wasm are missing,
+  2. generates (or resumes) chained step witnesses with snarkjs,
+  3. builds `benchmark_nova --release`,
+  4. runs baseline and --opt-parallel passes,
+  5. writes raw logs plus a markdown summary under benchmarks/results/.
 
 Usage:
     python3 benchmarks/run_benchmarks.py                 # all families, 255 steps
@@ -31,8 +29,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_DIR = os.path.dirname(SCRIPT_DIR)
 RESULTS_DIR = os.path.join(SCRIPT_DIR, "results")
 WORK_DIR = os.path.join(SCRIPT_DIR, "work")
-
-BLS_REPO_URL = "https://github.com/cardano-foundation/bls.git"
+CIRCOM_DIR = os.path.join(REPO_DIR, "circom")
 
 # Curve25519 base point G in extended coordinates, base-2^85 limbs, and the
 # Edwards identity — the initial IVC state of both Ed25519 step circuits.
@@ -73,26 +70,15 @@ FAMILIES = {
 }
 
 
-def find_bls_repo():
-    bls = os.environ.get("BLS_REPO_DIR") or os.path.join(REPO_DIR, "..", "bls")
-    bls = os.path.abspath(bls)
-    if os.path.isdir(os.path.join(bls, "circom")):
-        return bls
-    sys.exit(
-        f"bls checkout not found at {bls}\n"
-        f"Clone it ({BLS_REPO_URL}) or point BLS_REPO_DIR at an existing checkout."
-    )
-
-
-def ensure_compiled(bls, family, name, steps_dir):
+def ensure_compiled(family, name, steps_dir):
     r1cs = os.path.join(steps_dir, f"{name}.r1cs")
     wasm = os.path.join(steps_dir, f"{name}_js", f"{name}.wasm")
     if os.path.exists(r1cs) and os.path.exists(wasm):
         return r1cs, wasm
-    src = os.path.join(bls, "circom", family["dir"], f"{name}.circom")
+    src = os.path.join(CIRCOM_DIR, family["dir"], f"{name}.circom")
     if not os.path.exists(src):
         sys.exit(f"circuit source missing: {src}")
-    inc = os.path.join(bls, "circom", "Ed25519Verify", "node_modules", "circomlib", "circuits")
+    inc = os.path.join(CIRCOM_DIR, "Ed25519Verify", "node_modules", "circomlib", "circuits")
     cmd = ["circom", "--prime", "bls12381"]
     if os.path.isdir(inc):
         cmd += ["-l", inc]
@@ -154,7 +140,6 @@ def main():
     ap.add_argument("--skip-witness-gen", action="store_true")
     args = ap.parse_args()
 
-    bls = find_bls_repo()
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     out_dir = os.path.join(RESULTS_DIR, stamp)
     os.makedirs(out_dir, exist_ok=True)
@@ -171,7 +156,7 @@ def main():
         work = os.path.join(WORK_DIR, name)
         os.makedirs(work, exist_ok=True)
 
-        r1cs, wasm = ensure_compiled(bls, fam, name, work)
+        r1cs, wasm = ensure_compiled(fam, name, work)
 
         steps_dir = os.path.join(work, "steps")
         if not args.skip_witness_gen:

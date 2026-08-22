@@ -173,25 +173,12 @@ fn write_step_wtns(dir: &std::path::Path, idx: usize, st_in: u64, x: u64) -> u64
 // are not present.
 // ------------------------------------------------------------------
 
-/// Circom fixtures from the cardano-foundation/bls repo
-/// (https://github.com/cardano-foundation/bls — circom/CardanoKeyOwnership).
-///
-/// Resolution order:
-///   1. `$BLS_REPO_DIR` if set (must contain circom/CardanoKeyOwnership),
-///   2. the sibling checkout `../../bls` next to this repository.
+/// Circom fixtures bundled locally in `circom/CardanoKeyOwnership`.
 fn cardano_key_ownership_dir() -> std::path::PathBuf {
-    if let Ok(dir) = std::env::var("BLS_REPO_DIR") {
-        return std::path::PathBuf::from(dir).join("circom/CardanoKeyOwnership");
-    }
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("bls/circom/CardanoKeyOwnership")
+        .join("circom/CardanoKeyOwnership")
 }
 
 /// True if the user compiled the Nova step circuit (r1cs + wasm).
