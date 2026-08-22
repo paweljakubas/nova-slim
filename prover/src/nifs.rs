@@ -285,8 +285,8 @@ mod tests {
         let sum: Vec<ark_bls12_381::Fr> = a.iter().zip(&b).map(|(x, y)| *x + *y).collect();
 
         assert_eq!(
-            commit(&params.basis_w, &sum),
-            commit(&params.basis_w, &a) + commit(&params.basis_w, &b)
+            commit::<crate::curve::Bls12_381>(&params.basis_w, &sum),
+            commit::<crate::curve::Bls12_381>(&params.basis_w, &a) + commit::<crate::curve::Bls12_381>(&params.basis_w, &b)
         );
     }
 
@@ -300,7 +300,7 @@ mod tests {
     fn commit_zero_vector_is_zero() {
         let params = PedersenParams::<crate::curve::Bls12_381>::from_seed(b"seed", 4, 1);
         let zeros = vec![ark_bls12_381::Fr::zero(); 4];
-        assert!(commit(&params.basis_w, &zeros).is_zero());
+        assert!(commit::<crate::curve::Bls12_381>(&params.basis_w, &zeros).is_zero());
     }
 
     /// One-constraint multiplier: `Z[1]·Z[2] = Z[3]`, wire 0 = constant 1.
@@ -326,8 +326,8 @@ mod tests {
             RelaxedR1csInstance {
                 x: w[1..3].to_vec(),
                 u,
-                w_commit: commit(&params.basis_w, w),
-                e_commit: commit(&params.basis_e, &e),
+                w_commit: commit::<crate::curve::Bls12_381>(&params.basis_w, w),
+                e_commit: commit::<crate::curve::Bls12_381>(&params.basis_e, &e),
             },
             RelaxedR1csWitness { w: w.to_vec(), e },
         )
@@ -379,8 +379,8 @@ mod tests {
         assert_eq!(u3.x, vec![w3.w[1], w3.w[2]]);
 
         // Commitments are consistent with the folded witness.
-        assert_eq!(u3.w_commit, commit(&params.basis_w, &w3.w));
-        assert_eq!(u3.e_commit, commit(&params.basis_e, &w3.e));
+        assert_eq!(u3.w_commit, commit::<crate::curve::Bls12_381>(&params.basis_w, &w3.w));
+        assert_eq!(u3.e_commit, commit::<crate::curve::Bls12_381>(&params.basis_e, &w3.e));
 
         // The folded instance satisfies the relaxed equation.
         let az = sparse_eval(&l, &w3.w);
@@ -436,8 +436,8 @@ mod tests {
             RelaxedR1csInstance {
                 x: w[1..].to_vec(),
                 u: ark_bls12_381::Fr::from(1u64),
-                w_commit: commit(&params.basis_w, w),
-                e_commit: commit(&params.basis_e, &e),
+                w_commit: commit::<crate::curve::Bls12_381>(&params.basis_w, w),
+                e_commit: commit::<crate::curve::Bls12_381>(&params.basis_e, &e),
             },
             RelaxedR1csWitness { w: w.to_vec(), e },
         )
@@ -453,8 +453,8 @@ mod tests {
         u: &RelaxedR1csInstance<crate::curve::Bls12_381>,
         w: &RelaxedR1csWitness<crate::curve::Bls12_381>,
     ) {
-        assert_eq!(u.w_commit, commit(&params.basis_w, &w.w));
-        assert_eq!(u.e_commit, commit(&params.basis_e, &w.e));
+        assert_eq!(u.w_commit, commit::<crate::curve::Bls12_381>(&params.basis_w, &w.w));
+        assert_eq!(u.e_commit, commit::<crate::curve::Bls12_381>(&params.basis_e, &w.e));
         let az = sparse_eval(l, &w.w);
         let bz = sparse_eval(r, &w.w);
         let cz = sparse_eval(o, &w.w);

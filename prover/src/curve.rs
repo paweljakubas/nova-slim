@@ -17,7 +17,7 @@ use ark_ff::PrimeField;
 /// Implement this trait for any curve you want to support (e.g. BLS12-381,
 /// BN254, Pallas, secp256k1). The folding and compression logic are then
 /// completely generic over the curve.
-pub trait NovaCurve: 'static + Sized + Clone + Copy {
+pub trait NovaCurve: 'static + Sized + Clone + Copy + PartialEq + Eq {
     /// Scalar field — hosts R1CS constraints, witnesses, Fiat-Shamir
     /// challenges, and all sumcheck arithmetic.
     type ScalarField: PrimeField;
@@ -40,7 +40,7 @@ pub type ScalarField<C> = <C as NovaCurve>::ScalarField;
 
 /// BLS12-381 — the Cardano-native curve.
 #[cfg(feature = "bls12-381")]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bls12_381;
 
 #[cfg(feature = "bls12-381")]
@@ -51,7 +51,7 @@ impl NovaCurve for Bls12_381 {
 
 /// BN254 — widely used in Ethereum zk-rollups.
 #[cfg(feature = "bn254")]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bn254;
 
 #[cfg(feature = "bn254")]

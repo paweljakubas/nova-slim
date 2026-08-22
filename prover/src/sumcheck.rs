@@ -496,7 +496,7 @@ mod tests {
         let n = l.len();
 
         // Prover side.
-        let (proof, r_challenges) = prove(l, r_mat, o, z, u, e);
+        let (proof, r_challenges) = prove::<crate::curve::Bls12_381>(l, r_mat, o, z, u, e);
 
         // Verifier side: check sumcheck.
         let (sc_ok, verifier_r, final_claim) = verify::<crate::curve::Bls12_381>(&proof);
@@ -794,9 +794,9 @@ mod tests {
         let u = Fr::from(1u64);
         let e = vec![Fr::zero()];
 
-        let (p1, _) = prove(&l, &r, &o, &z, u, &e);
-        let (p2, _) = prove(&l, &r, &o, &z, u, &e);
-        assert_eq!(proof_hash(&p1), proof_hash(&p2));
+        let (p1, _) = prove::<crate::curve::Bls12_381>(&l, &r, &o, &z, u, &e);
+        let (p2, _) = prove::<crate::curve::Bls12_381>(&l, &r, &o, &z, u, &e);
+        assert_eq!(proof_hash::<crate::curve::Bls12_381>(&p1), proof_hash::<crate::curve::Bls12_381>(&p2));
     }
 
     #[test]
@@ -818,7 +818,7 @@ mod tests {
                 z.push(Fr::from(((i + 2) * (i + 3)) as u64));
             }
             let e = vec![Fr::zero(); k];
-            let (proof, _) = prove(&l, &r, &o, &z, Fr::from(1u64), &e);
+            let (proof, _) = prove::<crate::curve::Bls12_381>(&l, &r, &o, &z, Fr::from(1u64), &e);
             proof
         };
 
@@ -903,7 +903,7 @@ mod tests {
         let r = vec![Fr::from(7u64), Fr::from(11u64)];
         let wrong_eval = Fr::from(999u64);
 
-        assert!(!verify_opening(&hash, &proof, &wrong_eval, &r));
+        assert!(!verify_opening::<crate::curve::Bls12_381>(&hash, &proof, &wrong_eval, &r));
     }
 
     // ── HashPC boundary / edge cases ────────────────────────────────
@@ -924,7 +924,7 @@ mod tests {
         let (hash, _) = poly_commit::<crate::curve::Bls12_381>(&v, &params.basis_w);
         let opening = create_opening::<crate::curve::Bls12_381>(&v);
         let r: Vec<Fr> = vec![];
-        assert!(verify_opening(&hash, &opening, &Fr::from(42u64), &r));
+        assert!(verify_opening::<crate::curve::Bls12_381>(&hash, &opening, &Fr::from(42u64), &r));
     }
 
     #[test]
@@ -972,7 +972,7 @@ mod tests {
             Fr::from(5u64),
             Fr::from(15u64),
         ];
-        let (proof, r_challenges) = prove(&l, &r_mat, &o, &z, Fr::from(1u64), &[Fr::zero()]);
+        let (proof, r_challenges) = prove::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, Fr::from(1u64), &[Fr::zero()]);
         assert_eq!(proof.polys.len(), 0);
         assert!(r_challenges.is_empty());
         let (ok, _, final_claim) = verify::<crate::curve::Bls12_381>(&proof);
@@ -987,6 +987,7 @@ mod tests {
 mod proptests {
     use super::*;
     use crate::nifs::PedersenParams;
+    use ark_bls12_381::Fr;
     use proptest::prelude::*;
 
     fn arb_fr() -> impl Strategy<Value = Fr> {
@@ -1098,7 +1099,7 @@ mod proptests {
             ];
             let e = vec![e_actual];
 
-            let (proof, _) = prove(&l, &r_mat, &o, &z, Fr::from(u_val), &e);
+            let (proof, _) = prove::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, Fr::from(u_val), &e);
             let (ok, _, _) = verify::<crate::curve::Bls12_381>(&proof);
             prop_assert!(ok);
         }
@@ -1140,7 +1141,7 @@ mod proptests {
             let mut bad_proof = proof.clone();
             // Flip claimed sum.
             bad_proof.claims[0] += Fr::from(flip_val);
-            let (ok, _, _) = verify(&bad_proof);
+            let (ok, _, _) = verify::<crate::curve::Bls12_381>(&bad_proof);
             prop_assert!(!ok, "tampered sumcheck proof must be rejected");
         }
 
@@ -1152,8 +1153,8 @@ mod proptests {
         ) {
             prop_assume!(v1 != v2, "need distinct vectors");
             let params = PedersenParams::<crate::curve::Bls12_381>::from_seed(b"binding-test", 4, 1);
-            let (h1, _) = poly_commit(&v1, &params.basis_w);
-            let (h2, _) = poly_commit(&v2, &params.basis_w);
+            let (h1, _) = poly_commit::<crate::curve::Bls12_381>(&v1, &params.basis_w);
+            let (h2, _) = poly_commit::<crate::curve::Bls12_381>(&v2, &params.basis_w);
             prop_assert_ne!(h1, h2, "different vectors must produce different commitments");
         }
 
@@ -1236,7 +1237,7 @@ mod proptests {
                 z.push(a * b);
             }
             let e = vec![Fr::zero(); n_constraints];
-            let (proof, _) = prove(&l, &r_mat, &o, &z, Fr::from(1u64), &e);
+            let (proof, _) = prove::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, Fr::from(1u64), &e);
 
             let expected_rounds = log2ceil(next_power_of_two(n_constraints));
             prop_assert_eq!(proof.polys.len(), expected_rounds);
@@ -1274,14 +1275,14 @@ mod proptests {
             let u = Fr::from(1u64);
             let e = vec![Fr::zero(); 2];
 
-            let (seq_proof, seq_r) = prove_with_opts(&l, &r_mat, &o, &z, u, &e, false);
-            let (par_proof, par_r) = prove_with_opts(&l, &r_mat, &o, &z, u, &e, true);
+            let (seq_proof, seq_r) = prove_with_opts::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e, false);
+            let (par_proof, par_r) = prove_with_opts::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e, true);
 
-            prop_assert_eq!(proof_hash(&seq_proof), proof_hash(&par_proof));
+            prop_assert_eq!(proof_hash::<crate::curve::Bls12_381>(&seq_proof), proof_hash::<crate::curve::Bls12_381>(&par_proof));
             prop_assert_eq!(seq_r, par_r);
 
-            let (ok_seq, _, _) = verify(&seq_proof);
-            let (ok_par, _, _) = verify(&par_proof);
+            let (ok_seq, _, _) = verify::<crate::curve::Bls12_381>(&seq_proof);
+            let (ok_par, _, _) = verify::<crate::curve::Bls12_381>(&par_proof);
             prop_assert!(ok_seq, "sequential proof must verify");
             prop_assert!(ok_par, "parallel proof must verify");
         }

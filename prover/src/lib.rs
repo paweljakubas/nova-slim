@@ -1228,7 +1228,8 @@ pub fn frs_from_strings<F: PrimeField>(strs: &[String]) -> Result<Vec<F>, Box<dy
 #[cfg(test)]
 mod tests {
     use super::*;
-    use groth16_prover::circom_adapter::{r1cs_to_bytes_sparse, wtns_to_bytes};
+    use crate::circuit::{r1cs_to_bytes_sparse, wtns_to_bytes};
+    use ark_bls12_381::Fr;
 
     /// One-constraint step circuit `out = in · x` (wires `[1, out, in, x]`).
     fn step_r1cs_bytes() -> Vec<u8> {
@@ -1262,7 +1263,7 @@ mod tests {
     fn fr_to_string_roundtrip() {
         let f = Fr::from(123456789u64);
         let s = fr_to_string(&f);
-        let back = frs_from_strings(&[s]).unwrap();
+        let back = frs_from_strings::<ark_bls12_381::Fr>(&[s]).unwrap();
         assert_eq!(back, vec![f]);
     }
 
@@ -1282,24 +1283,24 @@ mod tests {
         assert_eq!(state, 210);
 
         // 1. fold -> bundle + private final instance/witness
-        let fold_out = run_fold_nifs(&r1cs_path, &steps_dir).unwrap();
+        let fold_out = run_fold_nifs::<crate::curve::Bls12_381>(&r1cs_path, &steps_dir).unwrap();
         assert_eq!(fold_out.bundle.n_steps, 3);
         assert_ne!(fold_out.final_instance.u, Fr::from(1u64));
 
         // 2. sumcheck compression proof (transparent — no trusted setup)
-        let c = load_circuit(&r1cs_path).unwrap();
+        let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
         let mut rng = rand::thread_rng();
-        let sc_proof = prove_sumcheck_compression(&c, &fold_out, &mut rng).unwrap();
+        let sc_proof = prove_sumcheck_compression::<crate::curve::Bls12_381>(&c, &fold_out, &mut rng).unwrap();
 
         // 3. Verify the sumcheck compression proof against the bundle.
-        let vout = verify_sumcheck_compression(&fold_out.bundle, &sc_proof).unwrap();
+        let vout = verify_sumcheck_compression::<crate::curve::Bls12_381>(&fold_out.bundle, &sc_proof).unwrap();
         assert_eq!(vout.steps, 3);
 
         // 4. Tamper resistance: flip a sumcheck claim → verification fails.
         let mut bad_proof = sc_proof.clone();
         bad_proof.sumcheck_claims[0] = fr_to_string(&(Fr::from(42u64)));
         assert!(
-            verify_sumcheck_compression(&fold_out.bundle, &bad_proof).is_err(),
+            verify_sumcheck_compression::<crate::curve::Bls12_381>(&fold_out.bundle, &bad_proof).is_err(),
             "tampered sumcheck claim must fail verification"
         );
 
@@ -1307,7 +1308,7 @@ mod tests {
         let mut bad_bundle = fold_out.bundle.clone();
         bad_bundle.final_instance.u = fr_to_string(&(fold_out.final_instance.u + Fr::from(1u64)));
         assert!(
-            verify_sumcheck_compression(&bad_bundle, &sc_proof).is_err(),
+            verify_sumcheck_compression::<crate::curve::Bls12_381>(&bad_bundle, &sc_proof).is_err(),
             "wrong bundle instance must fail verification"
         );
     }
@@ -1327,15 +1328,15 @@ mod tests {
             state = write_step_wtns(&steps_dir, i, state, *x);
         }
 
-        let fold_out = run_fold_nifs(&r1cs_path, &steps_dir).unwrap();
-        let c = load_circuit(&r1cs_path).unwrap();
+        let fold_out = run_fold_nifs::<crate::curve::Bls12_381>(&r1cs_path, &steps_dir).unwrap();
+        let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
         let mut rng = rand::thread_rng();
-        let sc_proof = prove_sumcheck_compression(&c, &fold_out, &mut rng).unwrap();
+        let sc_proof = prove_sumcheck_compression::<crate::curve::Bls12_381>(&c, &fold_out, &mut rng).unwrap();
 
         // Serialize → deserialize → verify.
         let json = serde_json::to_string(&sc_proof).unwrap();
         let restored: NifsSumcheckProof = serde_json::from_str(&json).unwrap();
-        let vout = verify_sumcheck_compression(&fold_out.bundle, &restored).unwrap();
+        let vout = verify_sumcheck_compression::<crate::curve::Bls12_381>(&fold_out.bundle, &restored).unwrap();
         assert_eq!(vout.steps, 2);
         assert_eq!(json.len(), sc_proof_json_size(&sc_proof));
     }
@@ -1356,13 +1357,13 @@ mod tests {
                 state = write_step_wtns(&steps_dir, i, state, (i as u64) + 3);
             }
 
-            let fold_out = run_fold_nifs(&r1cs_path, &steps_dir).unwrap();
+            let fold_out = run_fold_nifs::<crate::curve::Bls12_381>(&r1cs_path, &steps_dir).unwrap();
             assert_eq!(fold_out.bundle.n_steps, n_steps);
 
-            let c = load_circuit(&r1cs_path).unwrap();
+            let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
             let mut rng = rand::thread_rng();
-            let sc_proof = prove_sumcheck_compression(&c, &fold_out, &mut rng).unwrap();
-            let vout = verify_sumcheck_compression(&fold_out.bundle, &sc_proof).unwrap();
+            let sc_proof = prove_sumcheck_compression::<crate::curve::Bls12_381>(&c, &fold_out, &mut rng).unwrap();
+            let vout = verify_sumcheck_compression::<crate::curve::Bls12_381>(&fold_out.bundle, &sc_proof).unwrap();
             assert_eq!(vout.steps, n_steps);
         }
     }
@@ -1385,8 +1386,8 @@ mod tests {
             state = write_step_wtns(&steps_dir, i, state, *x);
         }
 
-        let seq = run_fold_nifs_opt(&r1cs_path, &steps_dir, OptFlags::NONE).unwrap();
-        let par = run_fold_nifs_opt(&r1cs_path, &steps_dir, OptFlags::PARALLEL).unwrap();
+        let seq = run_fold_nifs_opt::<crate::curve::Bls12_381>(&r1cs_path, &steps_dir, OptFlags::NONE).unwrap();
+        let par = run_fold_nifs_opt::<crate::curve::Bls12_381>(&r1cs_path, &steps_dir, OptFlags::PARALLEL).unwrap();
 
         assert_eq!(seq.bundle, par.bundle);
         assert_eq!(seq.final_instance, par.final_instance);
@@ -1407,21 +1408,21 @@ mod tests {
             state = write_step_wtns(&steps_dir, i, state, *x);
         }
 
-        let c = load_circuit(&r1cs_path).unwrap();
+        let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
 
         // Sequential fold
-        let fold_seq = run_fold_nifs_opt(&r1cs_path, &steps_dir, OptFlags::NONE).unwrap();
+        let fold_seq = run_fold_nifs_opt::<crate::curve::Bls12_381>(&r1cs_path, &steps_dir, OptFlags::NONE).unwrap();
         let mut rng = rand::thread_rng();
-        let sc_seq = prove_sumcheck_compression_opt(&c, &fold_seq, &mut rng, OptFlags::NONE).unwrap();
+        let sc_seq = prove_sumcheck_compression_opt::<crate::curve::Bls12_381>(&c, &fold_seq, &mut rng, OptFlags::NONE).unwrap();
 
         // Parallel fold
-        let fold_par = run_fold_nifs_opt(&r1cs_path, &steps_dir, OptFlags::PARALLEL).unwrap();
+        let fold_par = run_fold_nifs_opt::<crate::curve::Bls12_381>(&r1cs_path, &steps_dir, OptFlags::PARALLEL).unwrap();
         let mut rng = rand::thread_rng();
-        let sc_par = prove_sumcheck_compression_opt(&c, &fold_par, &mut rng, OptFlags::PARALLEL).unwrap();
+        let sc_par = prove_sumcheck_compression_opt::<crate::curve::Bls12_381>(&c, &fold_par, &mut rng, OptFlags::PARALLEL).unwrap();
 
         // Both must verify
-        let v1 = verify_sumcheck_compression(&fold_seq.bundle, &sc_seq).unwrap();
-        let v2 = verify_sumcheck_compression(&fold_par.bundle, &sc_par).unwrap();
+        let v1 = verify_sumcheck_compression::<crate::curve::Bls12_381>(&fold_seq.bundle, &sc_seq).unwrap();
+        let v2 = verify_sumcheck_compression::<crate::curve::Bls12_381>(&fold_par.bundle, &sc_par).unwrap();
         assert_eq!(v1.steps, v2.steps);
         assert_eq!(v1.transcript_final, v2.transcript_final);
 
@@ -1443,13 +1444,13 @@ mod tests {
             state = write_step_wtns(&steps_dir, i, state, *x);
         }
 
-        let fold_out = run_fold_nifs_opt(&r1cs_path, &steps_dir, OptFlags::ALL).unwrap();
+        let fold_out = run_fold_nifs_opt::<crate::curve::Bls12_381>(&r1cs_path, &steps_dir, OptFlags::ALL).unwrap();
         assert_eq!(fold_out.bundle.n_steps, 3);
 
         // Verify the fold produced a valid instance
-        let c = load_circuit(&r1cs_path).unwrap();
-        let params = nifs::PedersenParams::from_seed(NIFS_PARAMS_SEED, c.n_wires as usize, c.n_constraints as usize);
-        let w_commit = nifs::commit(&params.basis_w, &fold_out.final_witness.w);
+        let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
+        let params = nifs::PedersenParams::<crate::curve::Bls12_381>::from_seed(NIFS_PARAMS_SEED, c.n_wires as usize, c.n_constraints as usize);
+        let w_commit = nifs::commit::<crate::curve::Bls12_381>(&params.basis_w, &fold_out.final_witness.w);
         assert_eq!(fold_out.final_instance.w_commit, w_commit);
     }
 
@@ -1468,10 +1469,10 @@ mod tests {
             state = write_step_wtns(&steps_dir, i, state, *x);
         }
 
-        let fold_out = run_fold_nifs(&r1cs_path, &steps_dir).unwrap();
-        let c = load_circuit(&r1cs_path).unwrap();
+        let fold_out = run_fold_nifs::<crate::curve::Bls12_381>(&r1cs_path, &steps_dir).unwrap();
+        let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
         let mut rng = rand::thread_rng();
-        let sc = prove_sumcheck_compression(&c, &fold_out, &mut rng).unwrap();
+        let sc = prove_sumcheck_compression::<crate::curve::Bls12_381>(&c, &fold_out, &mut rng).unwrap();
         let slim = sc.to_slim();
 
         let full_json = serde_json::to_string(&sc).unwrap();
@@ -1514,14 +1515,14 @@ mod tests {
             state = write_step_wtns(&steps_dir, i, state, *x);
         }
 
-        let fold_out = run_fold_nifs(&r1cs_path, &steps_dir).unwrap();
-        let c = load_circuit(&r1cs_path).unwrap();
+        let fold_out = run_fold_nifs::<crate::curve::Bls12_381>(&r1cs_path, &steps_dir).unwrap();
+        let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
         let mut rng = rand::thread_rng();
-        let sc = prove_sumcheck_compression(&c, &fold_out, &mut rng).unwrap();
+        let sc = prove_sumcheck_compression::<crate::curve::Bls12_381>(&c, &fold_out, &mut rng).unwrap();
         let slim = sc.to_slim();
 
-        let v_full = verify_sumcheck_compression(&fold_out.bundle, &sc).unwrap();
-        let v_slim = verify_slim(&fold_out.bundle, &slim).unwrap();
+        let v_full = verify_sumcheck_compression::<crate::curve::Bls12_381>(&fold_out.bundle, &sc).unwrap();
+        let v_slim = verify_slim::<crate::curve::Bls12_381>(&fold_out.bundle, &slim).unwrap();
         assert_eq!(v_full.steps, v_slim.steps);
         assert_eq!(v_full.transcript_final, v_slim.transcript_final);
     }
@@ -1539,15 +1540,15 @@ mod tests {
             state = write_step_wtns(&steps_dir, i, state, *x);
         }
 
-        let fold_out = run_fold_nifs(&r1cs_path, &steps_dir).unwrap();
-        let c = load_circuit(&r1cs_path).unwrap();
+        let fold_out = run_fold_nifs::<crate::curve::Bls12_381>(&r1cs_path, &steps_dir).unwrap();
+        let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
         let mut rng = rand::thread_rng();
-        let mut slim = prove_sumcheck_compression(&c, &fold_out, &mut rng)
+        let mut slim = prove_sumcheck_compression::<crate::curve::Bls12_381>(&c, &fold_out, &mut rng)
             .unwrap()
             .to_slim();
 
         slim.sumcheck_claims[0] = fr_to_string(&(Fr::from(42u64)));
-        assert!(verify_slim(&fold_out.bundle, &slim).is_err());
+        assert!(verify_slim::<crate::curve::Bls12_381>(&fold_out.bundle, &slim).is_err());
     }
 
     #[test]
@@ -1563,15 +1564,15 @@ mod tests {
             state = write_step_wtns(&steps_dir, i, state, *x);
         }
 
-        let fold_out = run_fold_nifs(&r1cs_path, &steps_dir).unwrap();
-        let c = load_circuit(&r1cs_path).unwrap();
+        let fold_out = run_fold_nifs::<crate::curve::Bls12_381>(&r1cs_path, &steps_dir).unwrap();
+        let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
         let mut rng = rand::thread_rng();
-        let mut slim = prove_sumcheck_compression(&c, &fold_out, &mut rng)
+        let mut slim = prove_sumcheck_compression::<crate::curve::Bls12_381>(&c, &fold_out, &mut rng)
             .unwrap()
             .to_slim();
 
         slim.final_instance.u = fr_to_string(&(Fr::from(999u64)));
-        assert!(verify_slim(&fold_out.bundle, &slim).is_err());
+        assert!(verify_slim::<crate::curve::Bls12_381>(&fold_out.bundle, &slim).is_err());
     }
 
     #[test]
@@ -1589,10 +1590,10 @@ mod tests {
             state = write_step_wtns(&steps_dir, i, state, *x);
         }
 
-        let fold_out = run_fold_nifs(&r1cs_path, &steps_dir).unwrap();
-        let c = load_circuit(&r1cs_path).unwrap();
+        let fold_out = run_fold_nifs::<crate::curve::Bls12_381>(&r1cs_path, &steps_dir).unwrap();
+        let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
         let mut rng = rand::thread_rng();
-        let mut slim = prove_sumcheck_compression(&c, &fold_out, &mut rng)
+        let mut slim = prove_sumcheck_compression::<crate::curve::Bls12_381>(&c, &fold_out, &mut rng)
             .unwrap()
             .to_slim();
 
@@ -1600,7 +1601,7 @@ mod tests {
         slim.e_commit_hash = "00".repeat(64);
 
         assert!(
-            verify_slim(&fold_out.bundle, &slim).is_ok(),
+            verify_slim::<crate::curve::Bls12_381>(&fold_out.bundle, &slim).is_ok(),
             "slim verifier must not inspect commitment hashes"
         );
     }
@@ -1618,16 +1619,16 @@ mod tests {
             state = write_step_wtns(&steps_dir, i, state, *x);
         }
 
-        let fold_out = run_fold_nifs(&r1cs_path, &steps_dir).unwrap();
-        let c = load_circuit(&r1cs_path).unwrap();
+        let fold_out = run_fold_nifs::<crate::curve::Bls12_381>(&r1cs_path, &steps_dir).unwrap();
+        let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
         let mut rng = rand::thread_rng();
-        let mut slim = prove_sumcheck_compression(&c, &fold_out, &mut rng)
+        let mut slim = prove_sumcheck_compression::<crate::curve::Bls12_381>(&c, &fold_out, &mut rng)
             .unwrap()
             .to_slim();
 
         if !slim.r_challenges.is_empty() {
             slim.r_challenges[0] = fr_to_string(&(Fr::from(12345u64)));
-            assert!(verify_slim(&fold_out.bundle, &slim).is_err());
+            assert!(verify_slim::<crate::curve::Bls12_381>(&fold_out.bundle, &slim).is_err());
         }
     }
 
@@ -1644,7 +1645,7 @@ mod tests {
         let state = 2u64;
         write_step_wtns(&steps_dir, 0, state, 3u64);
 
-        let fold_out = run_fold_nifs(&r1cs_path, &steps_dir).unwrap();
+        let fold_out = run_fold_nifs::<crate::curve::Bls12_381>(&r1cs_path, &steps_dir).unwrap();
         assert_eq!(fold_out.bundle.n_steps, 1);
         assert_eq!(fold_out.final_instance.u, Fr::from(1u64));
         assert!(fold_out.final_witness.e.iter().all(|x| x.is_zero()));
@@ -1658,7 +1659,7 @@ mod tests {
         fs::write(&r1cs_path, step_r1cs_bytes()).unwrap();
         fs::create_dir(&steps_dir).unwrap();
 
-        assert!(run_fold_nifs(&r1cs_path, &steps_dir).is_err());
+        assert!(run_fold_nifs::<crate::curve::Bls12_381>(&r1cs_path, &steps_dir).is_err());
     }
 
     #[test]
@@ -1673,7 +1674,7 @@ mod tests {
         let state1 = write_step_wtns(&steps_dir, 0, state0, 3u64);
         let _ = write_step_wtns(&steps_dir, 1, state1 + 1, 5u64); // break chain
 
-        let err = fold_nifs(&r1cs_path, &steps_dir, OptFlags::NONE).unwrap_err();
+        let err = fold_nifs::<crate::curve::Bls12_381>(&r1cs_path, &steps_dir, OptFlags::NONE).unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("state_in does not chain"),
@@ -1696,14 +1697,14 @@ mod tests {
             state = write_step_wtns(&steps_dir, i, state, *x);
         }
 
-        let fold_out = run_fold_nifs(&r1cs_path, &steps_dir).unwrap();
-        let c = load_circuit(&r1cs_path).unwrap();
+        let fold_out = run_fold_nifs::<crate::curve::Bls12_381>(&r1cs_path, &steps_dir).unwrap();
+        let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
         let mut rng = rand::thread_rng();
-        let sc = prove_sumcheck_compression(&c, &fold_out, &mut rng).unwrap();
+        let sc = prove_sumcheck_compression::<crate::curve::Bls12_381>(&c, &fold_out, &mut rng).unwrap();
 
         let mut bad_bundle = fold_out.bundle.clone();
         bad_bundle.n_constraints += 1;
-        assert!(verify_sumcheck_compression(&bad_bundle, &sc).is_err());
+        assert!(verify_sumcheck_compression::<crate::curve::Bls12_381>(&bad_bundle, &sc).is_err());
     }
 
     #[test]
@@ -1719,13 +1720,13 @@ mod tests {
             state = write_step_wtns(&steps_dir, i, state, *x);
         }
 
-        let fold_out = run_fold_nifs(&r1cs_path, &steps_dir).unwrap();
-        let c = load_circuit(&r1cs_path).unwrap();
+        let fold_out = run_fold_nifs::<crate::curve::Bls12_381>(&r1cs_path, &steps_dir).unwrap();
+        let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
         let mut rng = rand::thread_rng();
-        let mut sc = prove_sumcheck_compression(&c, &fold_out, &mut rng).unwrap();
+        let mut sc = prove_sumcheck_compression::<crate::curve::Bls12_381>(&c, &fold_out, &mut rng).unwrap();
 
         sc.claimed_product_at_r = "not_a_number".to_string();
-        assert!(verify_sumcheck_compression(&fold_out.bundle, &sc).is_err());
+        assert!(verify_sumcheck_compression::<crate::curve::Bls12_381>(&fold_out.bundle, &sc).is_err());
     }
 
     // ── Boundary step-count E2E tests for sumcheck ────────────────────
@@ -1744,12 +1745,12 @@ mod tests {
                 state = write_step_wtns(&steps_dir, i, state, (i as u64) + 3);
             }
 
-            let fold_out = run_fold_nifs(&r1cs_path, &steps_dir).unwrap();
-            let c = load_circuit(&r1cs_path).unwrap();
+            let fold_out = run_fold_nifs::<crate::curve::Bls12_381>(&r1cs_path, &steps_dir).unwrap();
+            let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
             let mut rng = rand::thread_rng();
-            let sc = prove_sumcheck_compression(&c, &fold_out, &mut rng).unwrap();
+            let sc = prove_sumcheck_compression::<crate::curve::Bls12_381>(&c, &fold_out, &mut rng).unwrap();
             assert!(
-                verify_sumcheck_compression(&fold_out.bundle, &sc).is_ok(),
+                verify_sumcheck_compression::<crate::curve::Bls12_381>(&fold_out.bundle, &sc).is_ok(),
                 "failed for n={n}"
             );
         }
@@ -1771,11 +1772,11 @@ mod tests {
             state = write_step_wtns(&steps_dir, i, state, (i as u64) + 3);
         }
 
-        let fold_out = run_fold_nifs(&r1cs_path, &steps_dir).unwrap();
-        let c = load_circuit(&r1cs_path).unwrap();
+        let fold_out = run_fold_nifs::<crate::curve::Bls12_381>(&r1cs_path, &steps_dir).unwrap();
+        let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
         let mut rng = rand::thread_rng();
-        let sc = prove_sumcheck_compression(&c, &fold_out, &mut rng).unwrap();
-        assert!(verify_sumcheck_compression(&fold_out.bundle, &sc).is_ok());
+        let sc = prove_sumcheck_compression::<crate::curve::Bls12_381>(&c, &fold_out, &mut rng).unwrap();
+        assert!(verify_sumcheck_compression::<crate::curve::Bls12_381>(&fold_out.bundle, &sc).is_ok());
     }
 
     #[test]
@@ -1791,22 +1792,22 @@ mod tests {
             state = write_step_wtns(&steps_dir, i, state, *x);
         }
 
-        let c = load_circuit(&r1cs_path).unwrap();
+        let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
 
-        let fold_seq = run_fold_nifs_opt(&r1cs_path, &steps_dir, OptFlags::NONE).unwrap();
-        let fold_par = run_fold_nifs_opt(&r1cs_path, &steps_dir, OptFlags::PARALLEL).unwrap();
+        let fold_seq = run_fold_nifs_opt::<crate::curve::Bls12_381>(&r1cs_path, &steps_dir, OptFlags::NONE).unwrap();
+        let fold_par = run_fold_nifs_opt::<crate::curve::Bls12_381>(&r1cs_path, &steps_dir, OptFlags::PARALLEL).unwrap();
 
         let mut rng = rand::thread_rng();
-        let slim_seq = prove_sumcheck_compression_opt(&c, &fold_seq, &mut rng, OptFlags::NONE)
+        let slim_seq = prove_sumcheck_compression_opt::<crate::curve::Bls12_381>(&c, &fold_seq, &mut rng, OptFlags::NONE)
             .unwrap()
             .to_slim();
         let mut rng = rand::thread_rng();
-        let slim_par = prove_sumcheck_compression_opt(&c, &fold_par, &mut rng, OptFlags::PARALLEL)
+        let slim_par = prove_sumcheck_compression_opt::<crate::curve::Bls12_381>(&c, &fold_par, &mut rng, OptFlags::PARALLEL)
             .unwrap()
             .to_slim();
 
-        let v_seq = verify_slim(&fold_seq.bundle, &slim_seq).unwrap();
-        let v_par = verify_slim(&fold_par.bundle, &slim_par).unwrap();
+        let v_seq = verify_slim::<crate::curve::Bls12_381>(&fold_seq.bundle, &slim_seq).unwrap();
+        let v_par = verify_slim::<crate::curve::Bls12_381>(&fold_par.bundle, &slim_par).unwrap();
         assert_eq!(v_seq.steps, v_par.steps);
         assert_eq!(v_seq.transcript_final, v_par.transcript_final);
         assert_eq!(fold_seq.bundle, fold_par.bundle);
