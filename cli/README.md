@@ -1,4 +1,4 @@
-# nova-cli
+# nova-slim-cli
 
 Command-line interface for NovaSlim — IVC folding on BLS12-381 with slim
 on-chain proofs.
@@ -26,18 +26,18 @@ the thin CLI wrapper.
 
 ```bash
 # 1. Inspect the step circuit (must satisfy n_pub_in == n_pub_out)
-nova params --circuit step_circuit.r1cs
+nova-slim params --circuit step_circuit.r1cs
 
 # 2. Fold step witnesses into a single Relaxed-R1CS instance
-nova fold --circuit step_circuit.r1cs \
+nova-slim fold --circuit step_circuit.r1cs \
   --steps ./step_witnesses/ --out bundle.ivc.cbor
 
 # 3. Compress into a slim on-chain proof (~2.5 KiB)
-nova compress --slim --circuit step_circuit.r1cs \
+nova-slim compress --slim --circuit step_circuit.r1cs \
   --steps ./step_witnesses/ --out slim.proof.cbor
 
 # 4. Verify (no verifying key needed)
-nova verify --ivc bundle.ivc.cbor --slim-proof slim.proof.cbor
+nova-slim verify --ivc bundle.ivc.cbor --slim-proof slim.proof.cbor
 # → Verified N steps: slim sumcheck proof OK
 ```
 
@@ -49,8 +49,8 @@ for an off-chain audit trail.
 ### With parallel optimization
 
 ```bash
-nova fold --opt parallel --circuit step_circuit.r1cs --steps ./step_witnesses/ --out bundle.ivc.cbor
-nova compress --slim --opt parallel --circuit step_circuit.r1cs --steps ./step_witnesses/ --out slim.proof.cbor
+nova-slim fold --opt parallel --circuit step_circuit.r1cs --steps ./step_witnesses/ --out bundle.ivc.cbor
+nova-slim compress --slim --opt parallel --circuit step_circuit.r1cs --steps ./step_witnesses/ --out slim.proof.cbor
 ```
 
 ### Full sumcheck proof (with openings, for audit)
@@ -58,8 +58,8 @@ nova compress --slim --opt parallel --circuit step_circuit.r1cs --steps ./step_w
 Omit `--slim` to keep the HashPC opening proofs:
 
 ```bash
-nova compress --circuit step_circuit.r1cs --steps ./step_witnesses/ --out sumcheck.proof.cbor
-nova verify --ivc bundle.ivc.cbor --sumcheck-proof sumcheck.proof.cbor
+nova-slim compress --circuit step_circuit.r1cs --steps ./step_witnesses/ --out sumcheck.proof.cbor
+nova-slim verify --ivc bundle.ivc.cbor --sumcheck-proof sumcheck.proof.cbor
 ```
 
 ---
@@ -69,11 +69,11 @@ nova verify --ivc bundle.ivc.cbor --sumcheck-proof sumcheck.proof.cbor
 Run any command with `--help` for full flag details:
 
 ```bash
-nova --help
-nova params --help
-nova fold --help
-nova compress --help
-nova verify --help
+nova-slim --help
+nova-slim params --help
+nova-slim fold --help
+nova-slim compress --help
+nova-slim verify --help
 ```
 
 Top-level help:
@@ -81,7 +81,7 @@ Top-level help:
 ```
 NovaSlim — folding + slim on-chain proofs CLI
 
-Usage: nova <COMMAND>
+Usage: nova-slim <COMMAND>
 
 Commands:
   params    Inspect a step circuit and emit a JSON descriptor
@@ -96,8 +96,8 @@ Commands:
 Validates the IVC invariant `n_pub_in == n_pub_out`.
 
 ```bash
-nova params --circuit step_circuit.r1cs
-nova params --circuit step_circuit.r1cs --out step_circuit.desc.json
+nova-slim params --circuit step_circuit.r1cs
+nova-slim params --circuit step_circuit.r1cs --out step_circuit.desc.json
 ```
 
 ### `fold` — fold step witnesses
@@ -105,7 +105,7 @@ nova params --circuit step_circuit.r1cs --out step_circuit.desc.json
 Transparent folding, no proving key, O(1) bundle.
 
 ```bash
-nova fold --circuit step_circuit.r1cs \
+nova-slim fold --circuit step_circuit.r1cs \
   --steps ./step_witnesses/ --out bundle.ivc.cbor
 ```
 
@@ -117,13 +117,13 @@ Add `--opt parallel` for rayon-parallelized cross-term computation.
 for off-chain audit).
 
 ```bash
-nova compress --circuit step_circuit.r1cs --steps ./step_witnesses/ --out sumcheck.proof.cbor
+nova-slim compress --circuit step_circuit.r1cs --steps ./step_witnesses/ --out sumcheck.proof.cbor
 ```
 
 **Slim on-chain proof:** strips HashPC openings (~98% smaller).
 
 ```bash
-nova compress --slim --circuit step_circuit.r1cs --steps ./step_witnesses/ --out slim.proof.cbor
+nova-slim compress --slim --circuit step_circuit.r1cs --steps ./step_witnesses/ --out slim.proof.cbor
 ```
 
 ### `verify` — verify a folded bundle
@@ -131,13 +131,13 @@ nova compress --slim --circuit step_circuit.r1cs --steps ./step_witnesses/ --out
 **Slim proof (on-chain path):**
 
 ```bash
-nova verify --ivc bundle.ivc.cbor --slim-proof slim.proof.cbor
+nova-slim verify --ivc bundle.ivc.cbor --slim-proof slim.proof.cbor
 ```
 
 **Full sumcheck proof (audit-grade):**
 
 ```bash
-nova verify --ivc bundle.ivc.cbor --sumcheck-proof sumcheck.proof.cbor
+nova-slim verify --ivc bundle.ivc.cbor --sumcheck-proof sumcheck.proof.cbor
 ```
 
 ---
@@ -146,13 +146,13 @@ nova verify --ivc bundle.ivc.cbor --sumcheck-proof sumcheck.proof.cbor
 
 ```bash
 # 1. Fold (transparent, no proving key)
-nova fold --circuit step_circuit.r1cs --steps ./step_witnesses/ --out bundle.ivc.cbor
+nova-slim fold --circuit step_circuit.r1cs --steps ./step_witnesses/ --out bundle.ivc.cbor
 
 # 2. Compress to slim proof (~2.5 KiB)
-nova compress --slim --circuit step_circuit.r1cs --steps ./step_witnesses/ --out slim.proof.cbor
+nova-slim compress --slim --circuit step_circuit.r1cs --steps ./step_witnesses/ --out slim.proof.cbor
 
 # 3. Verify (pairing-free, no VK)
-nova verify --ivc bundle.ivc.cbor --slim-proof slim.proof.cbor
+nova-slim verify --ivc bundle.ivc.cbor --slim-proof slim.proof.cbor
 ```
 
 ---
@@ -167,10 +167,10 @@ This circuit decomposes Ed25519 base-point scalar multiplication into 255 steps
 of 7,724 constraints each (24 public inputs / 24 public outputs).
 
 ```bash
-nova params --circuit cardano_ed25519_ownership_nova.r1cs
-nova fold --circuit cardano_ed25519_ownership_nova.r1cs --steps <witness-dir> --out bundle.ivc.cbor
-nova compress --slim --circuit cardano_ed25519_ownership_nova.r1cs --steps <witness-dir> --out slim.proof.cbor
-nova verify --ivc bundle.ivc.cbor --slim-proof slim.proof.cbor
+nova-slim params --circuit cardano_ed25519_ownership_nova.r1cs
+nova-slim fold --circuit cardano_ed25519_ownership_nova.r1cs --steps <witness-dir> --out bundle.ivc.cbor
+nova-slim compress --slim --circuit cardano_ed25519_ownership_nova.r1cs --steps <witness-dir> --out slim.proof.cbor
+nova-slim verify --ivc bundle.ivc.cbor --slim-proof slim.proof.cbor
 ```
 
 ---

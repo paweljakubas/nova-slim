@@ -31,7 +31,7 @@ pub enum Command {
     ///
     /// Example:
     ///
-    ///   $ nova params --circuit step_circuit.r1cs
+    ///   $ nova-slim params --circuit step_circuit.r1cs
     Params(cmd::params::Args),
 
     /// Fold step witnesses into a single Relaxed-R1CS instance
@@ -47,7 +47,7 @@ pub enum Command {
     ///
     /// Example:
     ///
-    ///   $ nova fold --circuit step_circuit.r1cs --steps ./step_witnesses/ --out bundle.ivc.cbor
+    ///   $ nova-slim fold --circuit step_circuit.r1cs --steps ./step_witnesses/ --out bundle.ivc.cbor
     Fold(cmd::fold::Args),
 
     /// Compress a NIFS bundle into a single constant-size proof
@@ -58,12 +58,12 @@ pub enum Command {
     /// produce the on-chain-friendly slim proof (~2.4 KiB for
     /// 7,724-constraint steps).  Artifacts are compact CBOR.
     ///
-    /// The result is consumed by `nova verify` on the NIFS bundle.
+    /// The result is consumed by `nova-slim verify` on the NIFS bundle.
     ///
     /// Examples:
     ///
-    ///   $ nova compress --circuit step_circuit.r1cs --steps ./step_witnesses/ --out sumcheck.proof.cbor
-    ///   $ nova compress --slim --circuit step_circuit.r1cs --steps ./step_witnesses/ --out slim.proof.cbor
+    ///   $ nova-slim compress --circuit step_circuit.r1cs --steps ./step_witnesses/ --out sumcheck.proof.cbor
+    ///   $ nova-slim compress --slim --circuit step_circuit.r1cs --steps ./step_witnesses/ --out slim.proof.cbor
     Compress(cmd::compress::Args),
 
     /// Verify a folded NIFS bundle against its compression proof
@@ -74,13 +74,13 @@ pub enum Command {
     ///
     /// Examples:
     ///
-    ///   $ nova verify --ivc bundle.ivc.cbor --sumcheck-proof sumcheck.proof.cbor
-    ///   $ nova verify --ivc bundle.ivc.cbor --slim-proof slim.proof.cbor
+    ///   $ nova-slim verify --ivc bundle.ivc.cbor --sumcheck-proof sumcheck.proof.cbor
+    ///   $ nova-slim verify --ivc bundle.ivc.cbor --slim-proof slim.proof.cbor
     Verify(cmd::verify::Args),
 }
 
 #[derive(Parser)]
-#[clap(bin_name = "nova")]
+#[clap(bin_name = "nova-slim")]
 #[clap(author = "HAL Team <hal@cardanofoundation.org>")]
 #[clap(version = env!("CARGO_PKG_VERSION"))]
 #[clap(

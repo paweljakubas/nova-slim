@@ -6,10 +6,10 @@ with a sumcheck argument, and verify a **~2.5 KiB** proof with **no pairing,
 no trusted setup, and sub-millisecond verification**.
 
 ```
-nova params   → inspect a step circuit (n_pub_in must equal n_pub_out)
-nova fold     → NIFS-fold N step witnesses into one O(1) bundle
-nova compress → sumcheck compression (--slim for the on-chain variant)
-nova verify   → check bundle + proof (slim: ~0.5 ms)
+nova-slim params   → inspect a step circuit (n_pub_in must equal n_pub_out)
+nova-slim fold     → NIFS-fold N step witnesses into one O(1) bundle
+nova-slim compress → sumcheck compression (--slim for the on-chain variant)
+nova-slim verify   → check bundle + proof (slim: ~0.5 ms)
 ```
 
 Step circuits come from the [cardano-foundation/bls](https://github.com/cardano-foundation/bls)
@@ -22,7 +22,7 @@ e2e runs and benchmarks all resolve fixtures from there.
 | Path | What |
 |---|---|
 | `prover/` | Core library: R1CS loading, NIFS folding, sumcheck compression, slim proofs ([README](prover/README.md)) |
-| `clis/nova/` | The `nova` CLI ([README](clis/nova/README.md)) |
+| `cli/` | The `nova-slim` CLI ([README](cli/README.md)) |
 | `benchmarks/` | Benchmark harness over real bls-repo circuits |
 | `docs/article.md` | NovaSlim paper draft |
 
@@ -33,8 +33,8 @@ Prerequisites: Rust, [circom](https://github.com/iden3/circom) (only if the
 
 ```bash
 # 1. Build the CLI
-cargo build --release --manifest-path clis/nova/Cargo.toml
-NOVA=clis/nova/target/release/nova
+cargo build --release --manifest-path cli/Cargo.toml
+NOVA=cli/target/release/nova-slim
 
 # 2. Compile the step circuit (once; skip if ../bls already ships the .r1cs)
 cd ../bls/circom/CardanoKeyOwnership
@@ -70,7 +70,7 @@ $NOVA verify --ivc cko.ivc.cbor --sumcheck-proof cko_full.proof.cbor
 cargo test --release --manifest-path prover/Cargo.toml
 
 # CLI integration tests (15 tests; includes real-circuit end-to-end flows)
-cargo test --release --manifest-path clis/nova/Cargo.toml
+cargo test --release --manifest-path cli/Cargo.toml
 ```
 
 Notes:

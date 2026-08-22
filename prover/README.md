@@ -20,7 +20,7 @@ slim proof.
 | On-chain size | ~473 KiB | **~2.5 KiB** (CBOR) |
 
 The R1CS parsing / circom adapter lives in the `groth16-prover` crate; this
-crate adds the IVC folding layer. The `nova` CLI (`clis/nova`) wraps this
+crate adds the IVC folding layer. The `nova-slim` CLI (`cli`) wraps this
 crate's operations.
 
 ---
@@ -40,18 +40,18 @@ crate's operations.
 
 ```bash
 # 1. Inspect the step circuit (must satisfy n_pub_in == n_pub_out)
-nova params --circuit step_circuit.r1cs
+nova-slim params --circuit step_circuit.r1cs
 
 # 2. Fold step witnesses into a single Relaxed-R1CS instance
-nova fold --circuit step_circuit.r1cs \
+nova-slim fold --circuit step_circuit.r1cs \
   --steps ./step_witnesses/ --out bundle.ivc.json
 
 # 3. Compress into a slim on-chain proof (~2.5 KiB, no trusted setup)
-nova compress --slim --circuit step_circuit.r1cs \
+nova-slim compress --slim --circuit step_circuit.r1cs \
   --steps ./step_witnesses/ --out slim.proof.json
 
 # 4. Verify (no verifying key needed)
-nova verify --ivc bundle.ivc.json --slim-proof slim.proof.json
+nova-slim verify --ivc bundle.ivc.json --slim-proof slim.proof.json
 # → Verified N steps: sumcheck OK, state chain OK
 # → Final transcript: <64-byte hex>
 ```
@@ -67,8 +67,8 @@ Omit `--slim` to produce the full sumcheck proof (includes HashPC opening
 proofs for off-chain verification):
 
 ```bash
-nova compress --circuit step_circuit.r1cs --steps ./step_witnesses/ --out sumcheck.proof.json
-nova verify --ivc bundle.ivc.json --sumcheck-proof sumcheck.proof.json
+nova-slim compress --circuit step_circuit.r1cs --steps ./step_witnesses/ --out sumcheck.proof.json
+nova-slim verify --ivc bundle.ivc.json --sumcheck-proof sumcheck.proof.json
 ```
 
 ### Parallel mode
@@ -77,8 +77,8 @@ Add `--opt parallel` to the fold or compress phases for rayon-parallelized
 cross-term and sumcheck row computation:
 
 ```bash
-nova fold --opt parallel --circuit step_circuit.r1cs --steps ./step_witnesses/ --out bundle.ivc.json
-nova compress --slim --opt parallel --circuit step_circuit.r1cs --steps ./step_witnesses/ --out slim.proof.json
+nova-slim fold --opt parallel --circuit step_circuit.r1cs --steps ./step_witnesses/ --out bundle.ivc.json
+nova-slim compress --slim --opt parallel --circuit step_circuit.r1cs --steps ./step_witnesses/ --out slim.proof.json
 ```
 
 ---
@@ -108,7 +108,7 @@ for on-chain soundness.
 <details>
 <summary><b>Measured numbers and how to reproduce them</b></summary>
 
-Measured with `benchmark_nova --release` on real step circuits from
+Measured with `benchmark_nova-slim --release` on real step circuits from
 [cardano-foundation/bls](https://github.com/cardano-foundation/bls) via
 `benchmarks/run_benchmarks.py`. Latest run (2026-08-21, 4-core desktop,
 release build, 255 chained steps):

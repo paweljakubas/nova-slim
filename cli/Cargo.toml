@@ -1,20 +1,20 @@
 [package]
-name = "nova"
+name = "nova-slim"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "NovaSlim CLI — curve-agnostic Nova IVC folding with slim proofs"
 
 [lib]
-name = "nova"
+name = "nova_slim"
 path = "src/lib.rs"
 
 [[bin]]
-name = "nova"
+name = "nova-slim"
 path = "src/main.rs"
 
 [dependencies]
-prover = { path = "../../prover" }
+prover = { path = "../prover" }
 clap = { version = "4.5", features = ["derive"] }
 serde_json = "1"
 

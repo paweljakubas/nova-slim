@@ -20,7 +20,7 @@
 //!
 //! The proof-system core (R1CS parsing, circom adapter) lives in the
 //! `groth16-prover` crate; this crate adds the IVC folding layer on top.
-//! The `nova` CLI (`clis/nova`) wraps the operations in this crate.
+//! The `nova-slim` CLI (`cli`) wraps the operations in this crate.
 
 use ark_bls12_381::{Fr, G1Affine};
 use ark_ec::AffineRepr;
@@ -115,7 +115,7 @@ pub struct NifsFinalInstance {
 /// The NIFS bundle produced by [`run_fold_nifs`] — O(1) in the step count.
 ///
 /// Consumed by the sumcheck compression ([`run_compress_sumcheck`]) and by
-/// `nova verify`.  `n_wires`/`n_constraints` are included so the verifier can
+/// `nova-slim verify`.  `n_wires`/`n_constraints` are included so the verifier can
 /// derive the transparent Pedersen basis for the commitment check without
 /// re-loading the step circuit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

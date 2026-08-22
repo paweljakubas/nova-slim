@@ -8,17 +8,17 @@ use std::path::PathBuf;
 /// Arguments for the `verify` subcommand
 #[derive(Debug, Parser)]
 pub struct Args {
-    /// Path to the NIFS bundle produced by `nova fold`
+    /// Path to the NIFS bundle produced by `nova-slim fold`
     #[arg(long, value_name = "FILE")]
     pub ivc: PathBuf,
 
-    /// Path to the full sumcheck compression proof from `nova compress`
+    /// Path to the full sumcheck compression proof from `nova-slim compress`
     /// (default).  Verifies the sumcheck protocol plus the HashPC opening
     /// proofs and Pedersen commitments (audit-grade).
     #[arg(long, value_name = "FILE", conflicts_with_all = ["slim_proof"])]
     pub sumcheck_proof: Option<PathBuf>,
 
-    /// Path to the slim on-chain proof from `nova compress --slim`.
+    /// Path to the slim on-chain proof from `nova-slim compress --slim`.
     /// Verifies the sumcheck protocol without the HashPC opening proofs
     /// (lightweight, Plutus-ready).
     #[arg(long, value_name = "FILE", conflicts_with_all = ["sumcheck_proof"])]

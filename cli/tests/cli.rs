@@ -163,10 +163,10 @@ fn write_step_wtns(dir: &std::path::Path, idx: usize, st_in: u64, x: u64) -> u64
 // The Cardano Ed25519 key-ownership proof is split into a chain of
 // `BitElementMulAny` steps (one scalar-mul bit per step).  The step circuit
 // `cardano_ed25519_ownership_nova.circom` has `n_pub_in == n_pub_out == 24`
-// (the IVC state = (dblIn[4][3], addIn[4][3])), which `nova` enforces.
+// (the IVC state = (dblIn[4][3], addIn[4][3])), which `nova-slim` enforces.
 //
 // The monolithic circuits (`cardano_ed25519_ownership.r1cs`,
-// `cardano_key_ownership.r1cs`) must be *rejected* by `nova params` because
+    // `cardano_key_ownership.r1cs`) must be *rejected* by `nova-slim params` because
 // their public-input width does not equal their public-output width.  The
 // step-circuit tests (compile the .circom with
 // `circom --prime bls12381 --r1cs --wasm`) skip when the compiled artifacts
@@ -337,7 +337,7 @@ fn generate_nova_step_witnesses(
     Ok(())
 }
 
-/// `nova params` must reject the monolithic Ed25519 ownership circuit:
+/// `nova-slim params` must reject the monolithic Ed25519 ownership circuit:
 /// its 256-bit public input `A` is not an IVC state.
 #[test]
 fn params_rejects_monolithic_ed25519_ownership() {
@@ -347,7 +347,7 @@ fn params_rejects_monolithic_ed25519_ownership() {
         return;
     }
 
-    let mut cmd = Command::cargo_bin("nova").unwrap();
+    let mut cmd = Command::cargo_bin("nova-slim").unwrap();
     cmd.arg("params").arg("--circuit").arg(&circuit);
 
     cmd.assert()
@@ -365,7 +365,7 @@ fn params_rejects_jubjub_ownership() {
         return;
     }
 
-    let mut cmd = Command::cargo_bin("nova").unwrap();
+    let mut cmd = Command::cargo_bin("nova-slim").unwrap();
     cmd.arg("params").arg("--circuit").arg(&circuit);
 
     cmd.assert()
@@ -380,7 +380,7 @@ fn params_rejects_non_step_circuit() {
     let r1cs = NamedTempFile::new().unwrap();
     fs::write(r1cs.path(), build_synthetic_r1cs()).unwrap();
 
-    let mut cmd = Command::cargo_bin("nova").unwrap();
+    let mut cmd = Command::cargo_bin("nova-slim").unwrap();
     cmd.arg("params").arg("--circuit").arg(r1cs.path());
 
     cmd.assert()
@@ -391,7 +391,7 @@ fn params_rejects_non_step_circuit() {
 
 #[test]
 fn params_missing_circuit() {
-    let mut cmd = Command::cargo_bin("nova").unwrap();
+    let mut cmd = Command::cargo_bin("nova-slim").unwrap();
     cmd.arg("params")
         .arg("--circuit")
         .arg("/tmp/does-not-exist-nova.r1cs");
@@ -406,7 +406,7 @@ fn params_invalid_circuit() {
     let bad_r1cs = NamedTempFile::new().unwrap();
     fs::write(bad_r1cs.path(), b"not_a_valid_r1cs_file").unwrap();
 
-    let mut cmd = Command::cargo_bin("nova").unwrap();
+    let mut cmd = Command::cargo_bin("nova-slim").unwrap();
     cmd.arg("params").arg("--circuit").arg(bad_r1cs.path());
 
     cmd.assert()
@@ -414,7 +414,7 @@ fn params_invalid_circuit() {
         .stderr(predicate::str::contains("failed to load circuit"));
 }
 
-/// `nova params` on the compiled step circuit reports the IVC state shape:
+/// `nova-slim params` on the compiled step circuit reports the IVC state shape:
 /// 24 public inputs = 24 public outputs, 1 private `sel` bit.
 #[test]
 fn params_accepts_cardano_ed25519_ownership_step() {
@@ -425,13 +425,13 @@ fn params_accepts_cardano_ed25519_ownership_step() {
 
     let circuit = cardano_key_ownership_dir().join("cardano_ed25519_ownership_nova.r1cs");
 
-    let mut cmd = Command::cargo_bin("nova").unwrap();
+    let mut cmd = Command::cargo_bin("nova-slim").unwrap();
     cmd.arg("params").arg("--circuit").arg(&circuit);
 
     let output = cmd.output().unwrap();
     assert!(
         output.status.success(),
-        "nova params failed: {}",
+        "nova-slim params failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
@@ -476,7 +476,7 @@ fn cardano_ed25519_ownership_nova_fold_rejects_broken_chain() {
     .unwrap();
 
     let bundle_file = NamedTempFile::new().unwrap();
-    let mut fold = Command::cargo_bin("nova").unwrap();
+    let mut fold = Command::cargo_bin("nova-slim").unwrap();
     fold.arg("fold")
         .arg("--circuit")
         .arg(&circuit)
@@ -513,7 +513,7 @@ fn cardano_ed25519_ownership_nova_verify_rejects_tampered_bundle() {
 
     // Fold the chain (NIFS path).
     let ivc = NamedTempFile::new().unwrap();
-    let mut fold = Command::cargo_bin("nova").unwrap();
+    let mut fold = Command::cargo_bin("nova-slim").unwrap();
     fold.arg("fold")
         .arg("--circuit")
         .arg(&circuit)
@@ -528,7 +528,7 @@ fn cardano_ed25519_ownership_nova_verify_rejects_tampered_bundle() {
     // Produce a slim proof for the honest bundle, then verify the tampered
     // bundle against it — the instance mismatch must be rejected.
     let slim_file = NamedTempFile::new().unwrap();
-    let mut compress = Command::cargo_bin("nova").unwrap();
+    let mut compress = Command::cargo_bin("nova-slim").unwrap();
     compress
         .arg("compress")
         .arg("--slim")
@@ -545,7 +545,7 @@ fn cardano_ed25519_ownership_nova_verify_rejects_tampered_bundle() {
     bundle.final_instance.u = "999".to_string();
     fs::write(ivc.path(), bundle.to_cbor().unwrap()).unwrap();
 
-    let mut verify = Command::cargo_bin("nova").unwrap();
+    let mut verify = Command::cargo_bin("nova-slim").unwrap();
     verify
         .arg("verify")
         .arg("--ivc")
@@ -562,14 +562,14 @@ fn cardano_ed25519_ownership_nova_verify_rejects_tampered_bundle() {
 // Help output
 // ------------------------------------------------------------------
 
-/// `nova --help` lists all subcommands.
+/// `nova-slim --help` lists all subcommands.
 #[test]
 fn help_top_level() {
-    let mut cmd = Command::cargo_bin("nova").unwrap();
+    let mut cmd = Command::cargo_bin("nova-slim").unwrap();
     cmd.arg("--help");
     cmd.assert()
         .success()
-        .stdout(predicate::str::contains("Usage: nova <COMMAND>"))
+        .stdout(predicate::str::contains("Usage: nova-slim <COMMAND>"))
         .stdout(predicate::str::contains("Commands:"))
         .stdout(predicate::str::contains("params"))
         .stdout(predicate::str::contains("fold"))
@@ -581,7 +581,7 @@ fn help_top_level() {
 // Error cases
 // ------------------------------------------------------------------
 
-/// `nova fold` fails early when the circuit is not a valid step circuit
+/// `nova-slim fold` fails early when the circuit is not a valid step circuit
 /// (n_pub_in != n_pub_out), before any folding work happens.
 #[test]
 fn fold_rejects_non_step_circuit() {
@@ -590,7 +590,7 @@ fn fold_rejects_non_step_circuit() {
     let steps_dir = tempfile::tempdir().unwrap();
     let ivc = NamedTempFile::new().unwrap();
 
-    let mut cmd = Command::cargo_bin("nova").unwrap();
+    let mut cmd = Command::cargo_bin("nova-slim").unwrap();
     cmd.arg("fold")
         .arg("--circuit")
         .arg(r1cs.path())
@@ -603,12 +603,12 @@ fn fold_rejects_non_step_circuit() {
         .stderr(predicate::str::contains("not a valid step circuit"));
 }
 
-/// `nova verify` fails when the IVC bundle file does not exist.
+/// `nova-slim verify` fails when the IVC bundle file does not exist.
 #[test]
 fn verify_missing_ivc() {
     let slim = NamedTempFile::new().unwrap();
 
-    let mut cmd = Command::cargo_bin("nova").unwrap();
+    let mut cmd = Command::cargo_bin("nova-slim").unwrap();
     cmd.arg("verify")
         .arg("--ivc")
         .arg("/nonexistent/bundle.ivc.json")
@@ -623,7 +623,7 @@ fn verify_missing_ivc() {
 // NIFS folding (constant-size bundle)
 // ------------------------------------------------------------------
 
-/// Full `nova fold` flow on a synthetic step circuit: folding is
+/// Full `nova-slim fold` flow on a synthetic step circuit: folding is
 /// transparent (no proving key), producing an O(1) NIFS bundle with a folded
 /// Relaxed-R1CS final instance and a deterministic transcript.
 #[test]
@@ -640,7 +640,7 @@ fn fold_nifs_end_to_end() {
     assert_eq!(state, 210);
 
     let bundle_file = NamedTempFile::new().unwrap();
-    let mut cmd = Command::cargo_bin("nova").unwrap();
+    let mut cmd = Command::cargo_bin("nova-slim").unwrap();
     cmd.arg("fold")
         .arg("--circuit")
         .arg(r1cs.path())
@@ -667,7 +667,7 @@ fn fold_nifs_end_to_end() {
     // Folding is deterministic: re-folding the same witnesses yields the
     // exact same bundle (challenges are transcript-derived, not sampled).
     let rerun = NamedTempFile::new().unwrap();
-    let mut cmd = Command::cargo_bin("nova").unwrap();
+    let mut cmd = Command::cargo_bin("nova-slim").unwrap();
     cmd.arg("fold")
         .arg("--circuit")
         .arg(r1cs.path())
@@ -706,7 +706,7 @@ fn fold_nifs_rejects_broken_chain() {
     .unwrap();
 
     let bundle_file = NamedTempFile::new().unwrap();
-    let mut cmd = Command::cargo_bin("nova").unwrap();
+    let mut cmd = Command::cargo_bin("nova-slim").unwrap();
     cmd.arg("fold")
         .arg("--circuit")
         .arg(r1cs.path())
@@ -722,7 +722,7 @@ fn fold_nifs_rejects_broken_chain() {
         .stderr(predicate::str::contains("step_0001.wtns"));
 }
 
-/// `nova verify` without a proof flag reports what is missing.
+/// `nova-slim verify` without a proof flag reports what is missing.
 #[test]
 fn verify_requires_a_proof_flag() {
     let r1cs = NamedTempFile::new().unwrap();
@@ -735,7 +735,7 @@ fn verify_requires_a_proof_flag() {
     }
 
     let bundle_file = NamedTempFile::new().unwrap();
-    let mut fold = Command::cargo_bin("nova").unwrap();
+    let mut fold = Command::cargo_bin("nova-slim").unwrap();
     fold.arg("fold")
         .arg("--circuit")
         .arg(r1cs.path())
@@ -745,7 +745,7 @@ fn verify_requires_a_proof_flag() {
         .arg(bundle_file.path());
     fold.assert().success();
 
-    let mut verify = Command::cargo_bin("nova").unwrap();
+    let mut verify = Command::cargo_bin("nova-slim").unwrap();
     verify.arg("verify").arg("--ivc").arg(bundle_file.path());
     verify
         .assert()
@@ -768,7 +768,7 @@ fn nifs_compress_verify_end_to_end() {
 
     // 1. fold -> bundle
     let bundle_file = NamedTempFile::new().unwrap();
-    let mut fold = Command::cargo_bin("nova").unwrap();
+    let mut fold = Command::cargo_bin("nova-slim").unwrap();
     fold.arg("fold")
         .arg("--circuit")
         .arg(r1cs.path())
@@ -780,7 +780,7 @@ fn nifs_compress_verify_end_to_end() {
 
     // 2. compress --slim -> on-chain proof
     let proof_file = NamedTempFile::new().unwrap();
-    let mut compress = Command::cargo_bin("nova").unwrap();
+    let mut compress = Command::cargo_bin("nova-slim").unwrap();
     compress
         .arg("compress")
         .arg("--slim")
@@ -796,7 +796,7 @@ fn nifs_compress_verify_end_to_end() {
         .stderr(predicate::str::contains("Slim proof written"));
 
     // 3. verify the bundle with the slim proof
-    let mut verify = Command::cargo_bin("nova").unwrap();
+    let mut verify = Command::cargo_bin("nova-slim").unwrap();
     verify
         .arg("verify")
         .arg("--ivc")
@@ -814,7 +814,7 @@ fn nifs_compress_verify_end_to_end() {
     tampered.final_instance.x[0] = (state + 1).to_string();
     let tampered_file = tempfile::NamedTempFile::new().unwrap();
     fs::write(tampered_file.path(), tampered.to_cbor().unwrap()).unwrap();
-    let mut verify2 = Command::cargo_bin("nova").unwrap();
+    let mut verify2 = Command::cargo_bin("nova-slim").unwrap();
     verify2
         .arg("verify")
         .arg("--ivc")

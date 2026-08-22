@@ -177,7 +177,7 @@ fn benchmark_slim(circuit: &mut SparseCircomCircuit, wtns: &[PathBuf], parallel:
 }
 
 /// Fold every step witness into one Relaxed-R1CS running instance, exactly as
-/// `nova fold` does (same transparent Pedersen params, FOLD_PREFIX challenge,
+/// `nova-slim fold` does (same transparent Pedersen params, FOLD_PREFIX challenge,
 /// and NIFS_TRANSCRIPT_PREFIX chain), but fully in memory.
 fn nifs_fold(circuit: &mut SparseCircomCircuit, wtns: &[PathBuf], parallel: bool) -> NifsFoldOutput {
     let n_pub_out = circuit.n_pub_out as usize;
@@ -279,7 +279,7 @@ fn nifs_fold(circuit: &mut SparseCircomCircuit, wtns: &[PathBuf], parallel: bool
     }
 }
 
-/// `H(NIFS_TRANSCRIPT_PREFIX ‖ initial_state)`, matching `nova fold`.
+/// `H(NIFS_TRANSCRIPT_PREFIX ‖ initial_state)`, matching `nova-slim fold`.
 fn transcript_nifs_init(initial_state: &[Fr]) -> Vec<u8> {
     let mut h = Blake2b512::new();
     h.update(NIFS_TRANSCRIPT_PREFIX);
@@ -287,7 +287,7 @@ fn transcript_nifs_init(initial_state: &[Fr]) -> Vec<u8> {
     h.finalize().to_vec()
 }
 
-/// `H(NIFS_TRANSCRIPT_PREFIX ‖ acc ‖ instance_bytes)`, matching `nova fold`.
+/// `H(NIFS_TRANSCRIPT_PREFIX ‖ acc ‖ instance_bytes)`, matching `nova-slim fold`.
 fn transcript_nifs_step(acc: &[u8], u: &nifs::RelaxedR1csInstance) -> Vec<u8> {
     let mut h = Blake2b512::new();
     h.update(NIFS_TRANSCRIPT_PREFIX);
