@@ -136,6 +136,20 @@ fn benchmark<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(state_
         slim_cbor.len() as f64 / 1024.0
     );
     println!("all verifications OK");
+
+    // Memory scaling: print peak RSS.
+    if let Some(rss_kb) = read_rss_kb() {
+        println!("peak RSS: {rss_kb} KiB ({:.1} MiB)", rss_kb as f64 / 1024.0);
+    }
+}
+
+fn read_rss_kb() -> Option<usize> {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()?
+        .lines()
+        .find(|l| l.starts_with("VmRSS:"))
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|n| n.parse().ok())
 }
 
 fn nifs_fold_in_memory<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(

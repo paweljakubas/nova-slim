@@ -136,6 +136,8 @@ Latest run (2026-08-24, 4-core desktop, release build, 255 chained steps):
 | `ed25519_verify_nova` | bls12-381 | Pedersen | 7,724 | 255 | 138.5 / 145.7 s | 543 / 571 ms | 25.44 / 24.30 s | 28.59 / 25.49 s | **0.7 ms** | **2.5 KiB** | 2.2 KiB |
 | `ed25519_verify_nova` | bn254 | Pedersen | 7,724 | 255 | 74.2 / 66.7 s | 347 / 312 ms | 12.23 / 11.14 s | 12.22 / 11.53 s | **0.6 ms** | **2.4 KiB** | 2.2 KiB |
 | `ed25519_verify_nova` | bn254 | **SIS** | 7,724 | 214 | 8.5 s | **39.9 ms** | 14.2 s | **1.1 s** | **0.6 ms** | **2.6 KiB** | 2.4 KiB |
+| `vrf_verify_nova` | bn254 | Pedersen | 9 | 254 | 2.1 s | 8.4 ms | 0.02 s | 0.03 s | **0.1 ms** | **0.8 KiB** | 0.7 KiB |
+| `vrf_verify_nova` | bn254 | **SIS** | 9 | 254 | **0.04 s** | **0.17 ms** | 0.03 s | 0.002 s | **0.2 ms** | **1.0 KiB** | 0.9 KiB |
 
 *Each cell shows baseline / `--opt-parallel` where two values are shown.
 The slim proof is constant in step count and step width. Artifacts use a
@@ -200,6 +202,18 @@ cargo run --release --manifest-path prover/Cargo.toml --bin benchmark_synthetic 
 |---|---|---|---|---|---|---|
 | Pedersen | 1.64 ms | 0.042 s | 0.047 s | 0.3 ms | 1.6 KiB | 0.5 KiB |
 | **SIS** | **0.22 ms** (7.4×) | 0.047 s | **0.005 s** (10×) | 0.1 ms | 1.8 KiB | 0.7 KiB |
+
+**Memory scaling (synthetic, BN254, state_width=24, Pedersen):**
+
+| Steps | Peak RSS | Δ per 100 steps |
+|---|---|---|
+| 16 | 2.9 MiB | — |
+| 255 | 3.5 MiB | 0.2 MiB |
+| 1,000 | 4.9 MiB | 0.2 MiB |
+
+Memory is effectively **O(1) in step count** — only the current witness is
+kept in memory. Real circuits show higher baseline (R1CS matrices loaded
+once) but still well under 100 MiB for 255 steps.
 
 All four curves complete fold → compress → verify end-to-end in the synthetic
 harness.
