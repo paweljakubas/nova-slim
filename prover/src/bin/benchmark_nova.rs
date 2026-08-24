@@ -125,7 +125,7 @@ fn benchmark_slim<C: NovaCurve>(circuit: &mut SparseCircuit<ScalarField<C>>, wtn
     //    (no trusted setup needed).
     let mut rng = rand::thread_rng();
     let t = Instant::now();
-    let sc_proof = prove_sumcheck_compression_opt::<C>(
+    let sc_proof = prove_sumcheck_compression_opt::<C, PedersenCommitment<C>>(
         circuit,
         &folded,
         &mut rng,
@@ -144,7 +144,7 @@ fn benchmark_slim<C: NovaCurve>(circuit: &mut SparseCircuit<ScalarField<C>>, wtn
 
     // 3a. Verify — sumcheck verification + HashPC checks (audit-grade).
     let t = Instant::now();
-    verify_sumcheck_compression::<C>(&folded.bundle, &sc_proof)
+    verify_sumcheck_compression::<C, PedersenCommitment<C>>(&folded.bundle, &sc_proof)
         .unwrap_or_else(|e| panic!("sumcheck compression verification failed: {e}"));
     let verify_s = t.elapsed().as_secs_f64();
     println!("verify (full): {verify_s:.4} s (sumcheck + HashPC checks)");
@@ -152,7 +152,7 @@ fn benchmark_slim<C: NovaCurve>(circuit: &mut SparseCircuit<ScalarField<C>>, wtn
     // 3b. Verify — slim on-chain path (openings stripped).
     let slim = sc_proof.to_slim();
     let t = Instant::now();
-    verify_slim::<C>(&folded.bundle, &slim)
+    verify_slim::<C, PedersenCommitment<C>>(&folded.bundle, &slim)
         .unwrap_or_else(|e| panic!("slim verification failed: {e}"));
     let verify_slim_s = t.elapsed().as_secs_f64();
 
@@ -197,7 +197,7 @@ fn benchmark_slim<C: NovaCurve>(circuit: &mut SparseCircuit<ScalarField<C>>, wtn
 /// Fold every step witness into one Relaxed-R1CS running instance, exactly as
 /// `nova-slim fold` does (same transparent Pedersen params, FOLD_PREFIX challenge,
 /// and NIFS_TRANSCRIPT_PREFIX chain), but fully in memory.
-fn nifs_fold<C: NovaCurve>(circuit: &mut SparseCircuit<ScalarField<C>>, wtns: &[PathBuf], parallel: bool) -> NifsFoldOutput<C> {
+fn nifs_fold<C: NovaCurve>(circuit: &mut SparseCircuit<ScalarField<C>>, wtns: &[PathBuf], parallel: bool) -> NifsFoldOutput<PedersenCommitment<C>> {
     let n_pub_out = circuit.n_pub_out as usize;
     let n_pub_in = circuit.n_pub_in as usize;
     let n_wires = circuit.n_wires as usize;

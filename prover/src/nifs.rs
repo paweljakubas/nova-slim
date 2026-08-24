@@ -223,7 +223,7 @@ mod tests {
     use crate::curve::Bls12_381;
     use ark_bls12_381::Fr;
     use ark_ec::AffineRepr;
-    use ark_ff::{Field, Zero};
+    use ark_ff::Zero;
 
     #[test]
     fn basis_derivation_is_deterministic() {

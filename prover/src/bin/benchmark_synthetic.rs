@@ -96,7 +96,7 @@ fn benchmark<C: NovaCurve>(state_width: usize, n_steps: usize, opt_parallel: boo
 
     let mut rng = rand::thread_rng();
     let t = Instant::now();
-    let sc_proof = prove_sumcheck_compression_opt::<C>(
+    let sc_proof = prove_sumcheck_compression_opt::<C, PedersenCommitment<C>>(
         &circuit, &folded, &mut rng, opt,
     )
     .unwrap_or_else(|e| panic!("failed to build sumcheck compression proof: {e}"));
@@ -104,13 +104,13 @@ fn benchmark<C: NovaCurve>(state_width: usize, n_steps: usize, opt_parallel: boo
     println!("sumcheck compress: {:.3} s", compress_s);
 
     let t = Instant::now();
-    verify_sumcheck_compression::<C>(&folded.bundle, &sc_proof)
+    verify_sumcheck_compression::<C, PedersenCommitment<C>>(&folded.bundle, &sc_proof)
         .unwrap_or_else(|e| panic!("full verification failed: {e}"));
     println!("verify (full): {:.4} s", t.elapsed().as_secs_f64());
 
     let slim = sc_proof.to_slim();
     let t = Instant::now();
-    verify_slim::<C>(&folded.bundle, &slim)
+    verify_slim::<C, PedersenCommitment<C>>(&folded.bundle, &slim)
         .unwrap_or_else(|e| panic!("slim verification failed: {e}"));
     println!("verify (slim): {:.4} s", t.elapsed().as_secs_f64());
 
@@ -133,7 +133,7 @@ fn nifs_fold_in_memory<C: NovaCurve>(
     circuit: &mut SparseCircuit<ScalarField<C>>,
     witnesses: &[Vec<ScalarField<C>>],
     parallel: bool,
-) -> NifsFoldOutput<C> {
+) -> NifsFoldOutput<PedersenCommitment<C>> {
     let n_pub_out = circuit.n_pub_out as usize;
     let n_pub_in = circuit.n_pub_in as usize;
     let n_wires = circuit.n_wires as usize;

@@ -2,7 +2,7 @@
 //! instance (NIFS) and emit the O(1) bundle.
 
 use clap::Parser;
-use prover::{run_fold_nifs_opt, OptFlags, NifsBundle, curve::{Bls12_381, Bn254, Pallas, Vesta, NovaCurve, ScalarField}};
+use prover::{run_fold_nifs_opt, OptFlags, NifsBundle, commitment::{PedersenCommitment, SisCommitment}, curve::{Bls12_381, Bn254, Pallas, Vesta, NovaCurve, ScalarField}};
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
@@ -74,25 +74,38 @@ fn write_bundle<C: NovaCurve>(out: &NifsBundle, path: &std::path::Path, opts: Op
 
 /// Run the `fold` subcommand.
 pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
-    if matches!(args.commitment, crate::CommitmentSchemeArg::Sis) {
-        return Err("SIS commitment scheme is not yet implemented (Stage 2).".into());
-    }
     let opts = parse_opt_flags(&args.opt)?;
-    match args.curve {
-        Curve::Bls12_381 => {
-            let out = run_fold_nifs_opt::<Bls12_381>(&args.circuit, &args.steps, opts)?;
+    match (args.curve, args.commitment) {
+        (Curve::Bls12_381, crate::CommitmentSchemeArg::Pedersen) => {
+            let out = run_fold_nifs_opt::<Bls12_381, PedersenCommitment<Bls12_381>>(&args.circuit, &args.steps, opts)?;
             write_bundle::<Bls12_381>(&out.bundle, &args.out, opts)?;
         }
-        Curve::Bn254 => {
-            let out = run_fold_nifs_opt::<Bn254>(&args.circuit, &args.steps, opts)?;
+        (Curve::Bls12_381, crate::CommitmentSchemeArg::Sis) => {
+            let out = run_fold_nifs_opt::<Bls12_381, SisCommitment<Bls12_381>>(&args.circuit, &args.steps, opts)?;
+            write_bundle::<Bls12_381>(&out.bundle, &args.out, opts)?;
+        }
+        (Curve::Bn254, crate::CommitmentSchemeArg::Pedersen) => {
+            let out = run_fold_nifs_opt::<Bn254, PedersenCommitment<Bn254>>(&args.circuit, &args.steps, opts)?;
             write_bundle::<Bn254>(&out.bundle, &args.out, opts)?;
         }
-        Curve::Pallas => {
-            let out = run_fold_nifs_opt::<Pallas>(&args.circuit, &args.steps, opts)?;
+        (Curve::Bn254, crate::CommitmentSchemeArg::Sis) => {
+            let out = run_fold_nifs_opt::<Bn254, SisCommitment<Bn254>>(&args.circuit, &args.steps, opts)?;
+            write_bundle::<Bn254>(&out.bundle, &args.out, opts)?;
+        }
+        (Curve::Pallas, crate::CommitmentSchemeArg::Pedersen) => {
+            let out = run_fold_nifs_opt::<Pallas, PedersenCommitment<Pallas>>(&args.circuit, &args.steps, opts)?;
             write_bundle::<Pallas>(&out.bundle, &args.out, opts)?;
         }
-        Curve::Vesta => {
-            let out = run_fold_nifs_opt::<Vesta>(&args.circuit, &args.steps, opts)?;
+        (Curve::Pallas, crate::CommitmentSchemeArg::Sis) => {
+            let out = run_fold_nifs_opt::<Pallas, SisCommitment<Pallas>>(&args.circuit, &args.steps, opts)?;
+            write_bundle::<Pallas>(&out.bundle, &args.out, opts)?;
+        }
+        (Curve::Vesta, crate::CommitmentSchemeArg::Pedersen) => {
+            let out = run_fold_nifs_opt::<Vesta, PedersenCommitment<Vesta>>(&args.circuit, &args.steps, opts)?;
+            write_bundle::<Vesta>(&out.bundle, &args.out, opts)?;
+        }
+        (Curve::Vesta, crate::CommitmentSchemeArg::Sis) => {
+            let out = run_fold_nifs_opt::<Vesta, SisCommitment<Vesta>>(&args.circuit, &args.steps, opts)?;
             write_bundle::<Vesta>(&out.bundle, &args.out, opts)?;
         }
     }
