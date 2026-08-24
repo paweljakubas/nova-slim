@@ -2,7 +2,7 @@
 //! instance (NIFS) and emit the O(1) bundle.
 
 use clap::Parser;
-use prover::{run_fold_nifs_opt, OptFlags, NifsBundle, curve::{Bls12_381, Bn254, Pallas, NovaCurve, ScalarField}};
+use prover::{run_fold_nifs_opt, OptFlags, NifsBundle, curve::{Bls12_381, Bn254, Pallas, Vesta, NovaCurve, ScalarField}};
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
@@ -83,6 +83,10 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
         Curve::Pallas => {
             let out = run_fold_nifs_opt::<Pallas>(&args.circuit, &args.steps, opts)?;
             write_bundle::<Pallas>(&out.bundle, &args.out, opts)?;
+        }
+        Curve::Vesta => {
+            let out = run_fold_nifs_opt::<Vesta>(&args.circuit, &args.steps, opts)?;
+            write_bundle::<Vesta>(&out.bundle, &args.out, opts)?;
         }
     }
     Ok(())

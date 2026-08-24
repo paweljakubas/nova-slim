@@ -29,6 +29,8 @@ pub enum Curve {
     Bn254,
     /// Pallas (Zcash Orchard).
     Pallas,
+    /// Vesta (the other half of the Pallas/Vesta cycle).
+    Vesta,
 }
 
 /// CLI commands available

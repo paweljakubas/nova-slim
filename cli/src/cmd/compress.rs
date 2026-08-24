@@ -10,7 +10,7 @@
 //! little-endian values).
 
 use clap::Parser;
-use prover::{run_compress_sumcheck_opt, NifsSumcheckProof, OptFlags, curve::{Bls12_381, Bn254, Pallas, NovaCurve, ScalarField}};
+use prover::{run_compress_sumcheck_opt, NifsSumcheckProof, OptFlags, curve::{Bls12_381, Bn254, Pallas, Vesta, NovaCurve, ScalarField}};
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
@@ -92,12 +92,14 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
             Curve::Bls12_381 => run_compress_sumcheck_opt::<Bls12_381>(&args.circuit, &args.steps, &tmp, opts)?,
             Curve::Bn254 => run_compress_sumcheck_opt::<Bn254>(&args.circuit, &args.steps, &tmp, opts)?,
             Curve::Pallas => run_compress_sumcheck_opt::<Pallas>(&args.circuit, &args.steps, &tmp, opts)?,
+            Curve::Vesta => run_compress_sumcheck_opt::<Vesta>(&args.circuit, &args.steps, &tmp, opts)?,
         };
         let full_bytes = fs::read(&tmp)?;
         match args.curve {
             Curve::Bls12_381 => strip_and_write::<Bls12_381>(&full_bytes, &args.out)?,
             Curve::Bn254 => strip_and_write::<Bn254>(&full_bytes, &args.out)?,
             Curve::Pallas => strip_and_write::<Pallas>(&full_bytes, &args.out)?,
+            Curve::Vesta => strip_and_write::<Vesta>(&full_bytes, &args.out)?,
         };
         fs::remove_file(&tmp).ok();
     } else {
@@ -106,6 +108,7 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
             Curve::Bls12_381 => run_compress_sumcheck_opt::<Bls12_381>(&args.circuit, &args.steps, &args.out, opts)?,
             Curve::Bn254 => run_compress_sumcheck_opt::<Bn254>(&args.circuit, &args.steps, &args.out, opts)?,
             Curve::Pallas => run_compress_sumcheck_opt::<Pallas>(&args.circuit, &args.steps, &args.out, opts)?,
+            Curve::Vesta => run_compress_sumcheck_opt::<Vesta>(&args.circuit, &args.steps, &args.out, opts)?,
         };
     }
     Ok(())

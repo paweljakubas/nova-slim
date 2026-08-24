@@ -1,6 +1,6 @@
 # prover
 
-NovaSlim IVC folding core for BLS12-381, BN254, and Pallas (arkworks): NIFS folding + sumcheck
+NovaSlim IVC folding core for BLS12-381, BN254, Pallas, and Vesta (arkworks): NIFS folding + sumcheck
 compression + **slim on-chain proofs**.
 
 A long computation is split into `N` identical step circuits, each proving
@@ -88,6 +88,7 @@ nova-slim compress --slim --opt parallel --curve bls12-381 --circuit step_circui
 | BLS12-381 | `--curve bls12-381` | Cardano-native |
 | BN254 | `--curve bn254` | Ethereum zk-rollups |
 | Pallas | `--curve pallas` | Zcash Orchard |
+| Vesta | `--curve vesta` | Pallas/Vesta cycle (Nova-Scotia) |
 
 ---
 
@@ -129,10 +130,10 @@ desktop, release build, 255 chained steps):
 *Each cell shows baseline / `--opt-parallel` where two values are shown.
 The slim proof is constant in both step count and step width.*
 
-**Note on Pallas:** the folding core fully supports Pallas, but `snarkjs`
-currently does not generate valid witnesses for Pallas-compiled circuits
-(`snarkjs wtns check` reports "Curve not supported"). Pallas synthetic
-benchmarks work end-to-end.
+**Note on Pallas / Vesta:** the folding core fully supports both curves, but
+`snarkjs` currently does not generate valid witnesses for pasta-compiled
+circuits (`snarkjs wtns check` reports "Curve not supported"). Synthetic
+benchmarks work end-to-end for both curves.
 
 Re-run after any folding/compression change and paste the new summary here:
 

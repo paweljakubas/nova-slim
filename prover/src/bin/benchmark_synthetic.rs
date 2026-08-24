@@ -37,8 +37,10 @@ fn main() {
         "bn254" => benchmark::<prover::curve::Bn254>(state_width, n_steps, opt_parallel),
         #[cfg(feature = "pallas")]
         "pallas" => benchmark::<prover::curve::Pallas>(state_width, n_steps, opt_parallel),
+        #[cfg(feature = "vesta")]
+        "vesta" => benchmark::<prover::curve::Vesta>(state_width, n_steps, opt_parallel),
         _ => {
-            eprintln!("unknown curve: {curve} — valid: bls12-381, bn254, pallas");
+            eprintln!("unknown curve: {curve} — valid: bls12-381, bn254, pallas, vesta");
             std::process::exit(2);
         }
     }

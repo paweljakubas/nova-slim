@@ -44,7 +44,7 @@ fn main() {
         .map(|w| w[1].clone());
     let (Some(circuit_path), Some(steps_dir)) = (circuit_path, steps_dir) else {
         eprintln!(
-            "usage: benchmark_nova [--curve bls12-381|bn254|pallas] [--opt-parallel] --circuit <step.r1cs> --steps <witness-dir> [--limit N]"
+            "usage: benchmark_nova [--curve bls12-381|bn254|pallas|vesta] [--opt-parallel] --circuit <step.r1cs> --steps <witness-dir> [--limit N]"
         );
         std::process::exit(2);
     };
@@ -60,8 +60,10 @@ fn main() {
         "bn254" => benchmark::<prover::curve::Bn254>(&circuit_path, &steps_dir, limit, opt_parallel),
         #[cfg(feature = "pallas")]
         "pallas" => benchmark::<prover::curve::Pallas>(&circuit_path, &steps_dir, limit, opt_parallel),
+        #[cfg(feature = "vesta")]
+        "vesta" => benchmark::<prover::curve::Vesta>(&circuit_path, &steps_dir, limit, opt_parallel),
         _ => {
-            eprintln!("unknown curve: {curve} — valid: bls12-381, bn254, pallas");
+            eprintln!("unknown curve: {curve} — valid: bls12-381, bn254, pallas, vesta");
             std::process::exit(2);
         }
     }

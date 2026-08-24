@@ -70,3 +70,14 @@ impl NovaCurve for Pallas {
     type ScalarField = ark_pallas::Fr;
     type G1Affine = ark_pallas::Affine;
 }
+
+/// Vesta — the other half of the Pallas/Vesta cycle (prime-order, no pairing).
+#[cfg(feature = "vesta")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Vesta;
+
+#[cfg(feature = "vesta")]
+impl NovaCurve for Vesta {
+    type ScalarField = ark_vesta::Fr;
+    type G1Affine = ark_vesta::Affine;
+}

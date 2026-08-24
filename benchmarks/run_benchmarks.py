@@ -47,6 +47,7 @@ CIRCOM_PRIMES = {
     "bls12-381": "bls12381",
     "bn254": "bn128",
     "pallas": "pallas",
+    "vesta": "vesta",
 }
 
 
@@ -78,8 +79,9 @@ def ed25519_step_family(dir_name):
 
 # Supported benchmark configurations.
 # CardanoKeyOwnership is BLS12-381 specific (originally from cardano-foundation/bls).
-# Ed25519Verify can be compiled for any curve, but Pallas witness generation
-# is not fully supported by snarkjs (witness check fails with "Curve not supported").
+# Ed25519Verify can be compiled for any curve, but Pallas and Vesta witness
+# generation is not fully supported by snarkjs (witness check fails with
+# "Curve not supported" and the generated witnesses do not satisfy constraints).
 FAMILIES = {
     "cardano_ed25519_ownership_nova_bls12_381": {
         **ed25519_step_family("CardanoKeyOwnership"),
@@ -202,7 +204,7 @@ def main():
 
     manifest = os.path.join(REPO_DIR, "prover", "Cargo.toml")
     run(["cargo", "build", "--release", "--manifest-path", manifest,
-         "--features", "bls12-381 bn254 pallas",
+         "--features", "bls12-381 bn254 pallas vesta",
          "--bin", "benchmark_nova"])
     bench_bin = os.path.join(REPO_DIR, "prover", "target", "release", "benchmark_nova")
 

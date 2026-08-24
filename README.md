@@ -5,7 +5,7 @@ NIFS-fold a chain of identical step circuits into one accumulator, compress
 with a sumcheck argument, and verify a **~2.5 KiB** proof with **no pairing,
 no trusted setup, and sub-millisecond verification**.
 
-Supports **BLS12-381** (Cardano), **BN254** (Ethereum), and **Pallas** (Zcash).
+Supports **BLS12-381** (Cardano), **BN254** (Ethereum), **Pallas** (Zcash), and **Vesta** (the other half of the Pallas/Vesta cycle).
 
 ```
 nova-slim params   → inspect a step circuit (n_pub_in must equal n_pub_out)
@@ -37,7 +37,7 @@ cargo build --release --manifest-path cli/Cargo.toml
 NOVA=cli/target/release/nova-slim
 
 # 2. Compile the step circuit (once; pre-compiled .r1cs is shipped in circom/)
-#    Choose the curve: bls12381, bn128, or pallas
+#    Choose the curve: bls12381, bn128, pallas, or vesta
 cd circom/Ed25519Verify
 circom --prime bn128 -l node_modules/circomlib/circuits \
     ed25519_verify_nova.circom --r1cs --wasm --sym
@@ -102,10 +102,10 @@ The slim proof is constant in step count and step width. Artifacts use a
 compact CBOR encoding (field elements as 32-byte little-endian values,
 sizes shown for CBOR; the legacy decimal/hex JSON encoding is ~2.6× larger).*
 
-**Note on Pallas:** the folding core fully supports Pallas, but `snarkjs`
-currently does not generate valid witnesses for Pallas-compiled circuits
-(`snarkjs wtns check` reports "Curve not supported"). Pallas synthetic
-benchmarks work end-to-end.
+**Note on Pallas / Vesta:** the folding core fully supports both curves, but
+`snarkjs` currently does not generate valid witnesses for pasta-compiled
+circuits (`snarkjs wtns check` reports "Curve not supported"). Synthetic
+benchmarks work end-to-end for both curves.
 
 Re-run after any folding/compression change and paste the new summary here:
 

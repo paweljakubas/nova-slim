@@ -9,6 +9,7 @@ description = "NovaSlim — curve-agnostic Nova IVC folding with sumcheck compre
 ark-bls12-381 = { version = "0.4", optional = true }
 ark-bn254 = { version = "0.4", optional = true }
 ark-pallas = { version = "0.4", optional = true }
+ark-vesta = { version = "0.4", optional = true }
 ark-ec = "0.4"
 ark-ff = "0.4"
 ark-serialize = "0.4"
@@ -28,6 +29,7 @@ default = ["bls12-381"]
 bls12-381 = ["dep:ark-bls12-381"]
 bn254 = ["dep:ark-bn254"]
 pallas = ["dep:ark-pallas"]
+vesta = ["dep:ark-vesta"]
 
 [dev-dependencies]
 proptest = "1.4"
