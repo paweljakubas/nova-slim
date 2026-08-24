@@ -45,6 +45,10 @@ pub struct Args {
     #[arg(long, value_enum, default_value = "bls12-381")]
     pub curve: Curve,
 
+    /// Commitment scheme to use.
+    #[arg(long, value_enum, default_value = "pedersen")]
+    pub commitment: crate::CommitmentSchemeArg,
+
     /// Optimizations (comma-separated):
     ///   parallel  — use rayon for independent row/column operations
     ///   lazy      — defer Pedersen MSM to final step
@@ -84,6 +88,9 @@ fn strip_and_write<C: NovaCurve>(full_bytes: &[u8], out: &std::path::Path) -> Re
 
 /// Run the `compress` subcommand.
 pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
+    if matches!(args.commitment, crate::CommitmentSchemeArg::Sis) {
+        return Err("SIS commitment scheme is not yet implemented (Stage 2).".into());
+    }
     let opts = parse_opt_flags(&args.opt)?;
     if args.slim {
         // Sumcheck compress, then strip opening proofs for on-chain proof.

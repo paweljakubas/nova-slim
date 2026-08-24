@@ -17,6 +17,7 @@ use prover::{
     NIFS_TRANSCRIPT_PREFIX, fr_to_string, curve::{NovaCurve, ScalarField},
 };
 use prover::nifs;
+use prover::commitment::{pedersen_commit, PedersenCommitment, PedersenParams};
 use std::time::Instant;
 
 fn main() {
@@ -138,14 +139,14 @@ fn nifs_fold_in_memory<C: NovaCurve>(
     let n_wires = circuit.n_wires as usize;
     let n_constraints = circuit.n_constraints as usize;
 
-    let params = nifs::PedersenParams::<C>::from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints);
+    let params = PedersenParams::<C>::from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints);
     let zero_e = vec![ScalarField::<C>::zero(); n_constraints];
 
     let mut acc_hash: Option<Vec<u8>> = None;
     let mut prev_out: Option<Vec<String>> = None;
     let mut initial_state: Vec<String> = Vec::new();
-    let mut acc_u: Option<nifs::RelaxedR1csInstance<C>> = None;
-    let mut acc_w: Option<nifs::RelaxedR1csWitness<C>> = None;
+    let mut acc_u: Option<nifs::RelaxedR1csInstance<PedersenCommitment<C>>> = None;
+    let mut acc_w: Option<nifs::RelaxedR1csWitness<PedersenCommitment<C>>> = None;
 
     for w in witnesses {
         circuit.witness = w.clone();
@@ -164,7 +165,7 @@ fn nifs_fold_in_memory<C: NovaCurve>(
         let step_u = nifs::RelaxedR1csInstance {
             x,
             u: ScalarField::<C>::from(1u64),
-            w_commit: nifs::commit::<C>(&params.basis_w, w),
+            w_commit: pedersen_commit::<C>(&params.basis_w, w),
             e_commit: C::G1Affine::zero(),
         };
         let step_w = nifs::RelaxedR1csWitness {
@@ -180,8 +181,8 @@ fn nifs_fold_in_memory<C: NovaCurve>(
             Some(u_acc) => {
                 let w_acc = acc_w.take().expect("running witness must exist");
                 let acc = acc_hash.as_ref().expect("transcript initialized");
-                let challenge = nifs::fold_challenge::<C>(acc, &u_acc, &step_u);
-                let (u3, w3) = nifs::fold_with_opts(
+                let challenge = nifs::fold_challenge::<PedersenCommitment<C>>(acc, &u_acc, &step_u);
+                let (u3, w3) = nifs::fold_with_opts::<PedersenCommitment<C>>(
                     &params, &circuit.l, &circuit.r, &circuit.o, &u_acc, &w_acc, &step_u, &step_w,
                     challenge, parallel,
                 );
@@ -236,11 +237,11 @@ fn transcript_nifs_init<C: NovaCurve>(initial_state: &[ScalarField<C>]) -> Vec<u
     h.finalize().to_vec()
 }
 
-fn transcript_nifs_step<C: NovaCurve>(acc: &[u8], u: &nifs::RelaxedR1csInstance<C>) -> Vec<u8> {
+fn transcript_nifs_step<C: NovaCurve>(acc: &[u8], u: &nifs::RelaxedR1csInstance<PedersenCommitment<C>>) -> Vec<u8> {
     let mut h = blake2::Blake2b512::new();
     h.update(NIFS_TRANSCRIPT_PREFIX);
     h.update(acc);
-    h.update(nifs::instance_to_bytes::<C>(u).expect("serialize instance"));
+    h.update(nifs::instance_to_bytes::<PedersenCommitment<C>>(u).expect("serialize instance"));
     h.finalize().to_vec()
 }
 

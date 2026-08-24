@@ -19,6 +19,16 @@ use std::error::Error;
 
 mod cmd;
 
+/// Supported commitment schemes.
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+pub enum CommitmentSchemeArg {
+    /// Pedersen (elliptic-curve) commitments — default, transparent.
+    #[default]
+    Pedersen,
+    /// SIS/Ajtai lattice commitments — not yet implemented.
+    Sis,
+}
+
 /// Supported elliptic curves.
 #[derive(Debug, Clone, Copy, Default, ValueEnum)]
 pub enum Curve {

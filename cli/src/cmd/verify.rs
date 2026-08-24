@@ -28,10 +28,17 @@ pub struct Args {
     /// Elliptic curve to use.
     #[arg(long, value_enum, default_value = "bls12-381")]
     pub curve: Curve,
+
+    /// Commitment scheme to use.
+    #[arg(long, value_enum, default_value = "pedersen")]
+    pub commitment: crate::CommitmentSchemeArg,
 }
 
 /// Run the `verify` subcommand.
 pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
+    if matches!(args.commitment, crate::CommitmentSchemeArg::Sis) {
+        return Err("SIS commitment scheme is not yet implemented (Stage 2).".into());
+    }
     if let Some(ref sp) = args.slim_proof {
         let out = match args.curve {
             Curve::Bls12_381 => run_verify_slim::<Bls12_381>(&args.ivc, sp)?,

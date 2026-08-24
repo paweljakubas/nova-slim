@@ -32,6 +32,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::circuit::SparseCircuit;
+use crate::commitment::PedersenCommitment;
 use crate::curve::{NovaCurve, ScalarField};
 
 /// Optimization flags for folding and compression.
@@ -86,7 +87,10 @@ pub mod circuit;
 /// Curve abstraction — makes the folding scheme curve-agnostic.
 pub mod curve;
 
-/// NIFS folding module — Relaxed-R1CS + Pedersen commitments.
+/// Commitment scheme abstraction (Pedersen, future SIS).
+pub mod commitment;
+
+/// NIFS folding module — Relaxed-R1CS over any commitment scheme.
 pub mod nifs;
 
 /// Sumcheck-based constant-size compression — a sumcheck argument over the
@@ -455,8 +459,8 @@ pub mod codec {
 #[derive(Debug, Clone)]
 pub struct NifsFoldOutput<C: NovaCurve> {
     pub bundle: NifsBundle,
-    pub final_instance: nifs::RelaxedR1csInstance<C>,
-    pub final_witness: nifs::RelaxedR1csWitness<C>,
+    pub final_instance: nifs::RelaxedR1csInstance<PedersenCommitment<C>>,
+    pub final_witness: nifs::RelaxedR1csWitness<PedersenCommitment<C>>,
 }
 
 /// Sumcheck-based compression proof.
@@ -583,7 +587,7 @@ fn fold_nifs<C: NovaCurve>(
     let n_wires = circuit.n_wires as usize;
     let n_constraints = circuit.n_constraints as usize;
 
-    let params = nifs::PedersenParams::<C>::from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints);
+    let params = commitment::PedersenParams::<C>::from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints);
     let zero_e = vec![ScalarField::<C>::zero(); n_constraints];
 
     let mut wtns_paths: Vec<PathBuf> = Vec::new();
@@ -610,8 +614,8 @@ fn fold_nifs<C: NovaCurve>(
     let mut acc_hash: Option<Vec<u8>> = None;
     let mut prev_out: Option<Vec<String>> = None;
     let mut initial_state: Vec<String> = Vec::new();
-    let mut acc_u: Option<nifs::RelaxedR1csInstance<C>> = None;
-    let mut acc_w: Option<nifs::RelaxedR1csWitness<C>> = None;
+    let mut acc_u: Option<nifs::RelaxedR1csInstance<PedersenCommitment<C>>> = None;
+    let mut acc_w: Option<nifs::RelaxedR1csWitness<PedersenCommitment<C>>> = None;
 
     for (i, p) in wtns_paths.iter().enumerate() {
         circuit
@@ -645,7 +649,7 @@ fn fold_nifs<C: NovaCurve>(
         let step_u = nifs::RelaxedR1csInstance {
             x,
             u: ScalarField::<C>::from(1u64),
-            w_commit: nifs::commit::<C>(&params.basis_w, w),
+            w_commit: commitment::pedersen_commit::<C>(&params.basis_w, w),
             e_commit: C::G1Affine::zero(),
         };
         let step_w = nifs::RelaxedR1csWitness {
@@ -661,8 +665,8 @@ fn fold_nifs<C: NovaCurve>(
             Some(u_acc) => {
                 let w_acc = acc_w.take().expect("running witness must exist");
                 let acc = acc_hash.as_ref().expect("transcript initialized");
-                let challenge = nifs::fold_challenge::<C>(acc, &u_acc, &step_u);
-                let (u3, w3) = nifs::fold_with_opts::<C>(
+                let challenge = nifs::fold_challenge::<PedersenCommitment<C>>(acc, &u_acc, &step_u);
+                let (u3, w3) = nifs::fold_with_opts::<PedersenCommitment<C>>(
                     &params, &circuit.l, &circuit.r, &circuit.o, &u_acc, &w_acc, &step_u, &step_w,
                     challenge,
                     opts.parallel,
@@ -816,7 +820,7 @@ pub fn prove_sumcheck_compression_opt<C: NovaCurve>(
 ) -> Result<NifsSumcheckProof, Box<dyn Error>> {
     let n_wires = circuit.n_wires as usize;
     let n_constraints = circuit.n_constraints as usize;
-    let params = nifs::PedersenParams::<C>::from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints);
+    let params = commitment::PedersenParams::<C>::from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints);
 
     // Build the full witness: Z = folded wire vector, E = error vector.
     let z = &folded.final_witness.w;
@@ -993,13 +997,13 @@ pub fn verify_sumcheck_compression<C: NovaCurve>(
     }
 
     // 5. Verify Pedersen commitments match the bundle.
-    let params = nifs::PedersenParams::<C>::from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints);
+    let params = commitment::PedersenParams::<C>::from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints);
     let w_vec = &w_opening.table[..n_wires.min(w_opening.table.len())];
-    if nifs::commit::<C>(&params.basis_w, w_vec) != deserialize_g1::<C>(&bundle.final_instance.w_commit)? {
+    if commitment::pedersen_commit::<C>(&params.basis_w, w_vec) != deserialize_g1::<C>(&bundle.final_instance.w_commit)? {
         return Err("W Pedersen commitment does not match the NIFS bundle".into());
     }
     let e_vec = &e_opening.table[..n_constraints.min(e_opening.table.len())];
-    if nifs::commit::<C>(&params.basis_e, e_vec) != deserialize_g1::<C>(&bundle.final_instance.e_commit)? {
+    if commitment::pedersen_commit::<C>(&params.basis_e, e_vec) != deserialize_g1::<C>(&bundle.final_instance.e_commit)? {
         return Err("E Pedersen commitment does not match the NIFS bundle".into());
     }
 
@@ -1192,11 +1196,11 @@ fn transcript_nifs_init<C: NovaCurve>(initial_state: &[ScalarField<C>]) -> Vec<u
 /// Extend the NIFS transcript with the running instance after a fold:
 /// `H(acc ‖ instance_bytes)`.  The folding challenge (`nifs::fold_challenge`)
 /// is domain-separated via `FOLD_PREFIX`.
-fn transcript_nifs_step<C: NovaCurve>(acc_hash: &[u8], u: &nifs::RelaxedR1csInstance<C>) -> Vec<u8> {
+fn transcript_nifs_step<C: NovaCurve>(acc_hash: &[u8], u: &nifs::RelaxedR1csInstance<PedersenCommitment<C>>) -> Vec<u8> {
     let mut h = Blake2b512::new();
     h.update(NIFS_TRANSCRIPT_PREFIX);
     h.update(acc_hash);
-    h.update(nifs::instance_to_bytes::<C>(u).expect("serialize instance"));
+    h.update(nifs::instance_to_bytes::<PedersenCommitment<C>>(u).expect("serialize instance"));
     h.finalize().to_vec()
 }
 
@@ -1448,8 +1452,8 @@ mod tests {
 
         // Verify the fold produced a valid instance
         let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
-        let params = nifs::PedersenParams::<crate::curve::Bls12_381>::from_seed(NIFS_PARAMS_SEED, c.n_wires as usize, c.n_constraints as usize);
-        let w_commit = nifs::commit::<crate::curve::Bls12_381>(&params.basis_w, &fold_out.final_witness.w);
+        let params = commitment::PedersenParams::<crate::curve::Bls12_381>::from_seed(NIFS_PARAMS_SEED, c.n_wires as usize, c.n_constraints as usize);
+        let w_commit = commitment::pedersen_commit::<crate::curve::Bls12_381>(&params.basis_w, &fold_out.final_witness.w);
         assert_eq!(fold_out.final_instance.w_commit, w_commit);
     }
 

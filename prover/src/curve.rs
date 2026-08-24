@@ -17,7 +17,7 @@ use ark_ff::PrimeField;
 /// Implement this trait for any curve you want to support (e.g. BLS12-381,
 /// BN254, Pallas, secp256k1). The folding and compression logic are then
 /// completely generic over the curve.
-pub trait NovaCurve: 'static + Sized + Clone + Copy + PartialEq + Eq {
+pub trait NovaCurve: 'static + Sized + Clone + Copy + PartialEq + Eq + std::fmt::Debug + Send + Sync {
     /// Scalar field — hosts R1CS constraints, witnesses, Fiat-Shamir
     /// challenges, and all sumcheck arithmetic.
     type ScalarField: PrimeField;

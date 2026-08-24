@@ -38,8 +38,6 @@ use blake2::{Blake2b512, Digest};
 use blake2::digest::consts::U32;
 use rayon::prelude::*;
 
-use crate::nifs;
-
 /// Number of sumcheck rounds (log2 of the padded constraint count).
 pub fn log2ceil(n: usize) -> usize {
     if n <= 1 {
@@ -339,7 +337,7 @@ pub fn poly_commit<C: NovaCurve>(
         }
         h.finalize().to_vec()
     };
-    let ped = nifs::commit::<C>(pedersen_basis, v);
+    let ped = crate::commitment::pedersen_commit::<C>(pedersen_basis, v);
     (hash, ped)
 }
 
@@ -405,7 +403,7 @@ pub fn proof_hash<C: NovaCurve>(p: &SumcheckProof<C>) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nifs::PedersenParams;
+    use crate::commitment::PedersenParams;
     use ark_bls12_381::Fr;
     use ark_ff::{One, Zero};
 
@@ -752,7 +750,7 @@ mod tests {
     /// Golden test: HashPC commitment for a known vector.
     #[test]
     fn golden_hashpc_commitment() {
-        use crate::nifs::PedersenParams;
+        use crate::commitment::PedersenParams;
         let v = vec![
             Fr::from(10u64),
             Fr::from(20u64),
@@ -987,7 +985,7 @@ mod tests {
 #[cfg(test)]
 mod proptests {
     use super::*;
-    use crate::nifs::PedersenParams;
+    use crate::commitment::PedersenParams;
     use ark_bls12_381::Fr;
     use proptest::prelude::*;
 

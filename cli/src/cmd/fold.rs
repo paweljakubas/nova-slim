@@ -30,6 +30,10 @@ pub struct Args {
     #[arg(long, value_enum, default_value = "bls12-381")]
     pub curve: Curve,
 
+    /// Commitment scheme to use.
+    #[arg(long, value_enum, default_value = "pedersen")]
+    pub commitment: crate::CommitmentSchemeArg,
+
     /// Optimizations (comma-separated):
     ///   parallel  — use rayon for independent row/column operations
     ///   lazy      — defer Pedersen MSM to final step
@@ -70,6 +74,9 @@ fn write_bundle<C: NovaCurve>(out: &NifsBundle, path: &std::path::Path, opts: Op
 
 /// Run the `fold` subcommand.
 pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
+    if matches!(args.commitment, crate::CommitmentSchemeArg::Sis) {
+        return Err("SIS commitment scheme is not yet implemented (Stage 2).".into());
+    }
     let opts = parse_opt_flags(&args.opt)?;
     match args.curve {
         Curve::Bls12_381 => {

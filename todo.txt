@@ -1,0 +1,18 @@
+Stage 1: Trait abstraction + Pedersen (2–3 hours)
+- Define CommitmentScheme trait
+- Refactor RelaxedR1csInstance to be generic
+- Move Pedersen into a PedersenCommitment impl
+- Add --pedersen flag (default, the only working option)
+- All tests pass, zero behavior change
+
+Stage 2: SIS stub (1–2 hours)
+- Create SisCommitment struct implementing the trait
+- Stub out the methods with todo!() or basic matrix-vector mult from lattice-prover
+- Add --sis flag that prints "not yet implemented"
+- The architecture is ready
+
+Stage 3: Full SIS integration (research track)
+- Port RNS decomposition from lattice-prover/src/rns.rs
+- Map Fr field elements to Z2_64 decomposed witnesses
+- Adapt Lova's ternary-challenge folding to Nova's NIFS structure
+- Write tests
