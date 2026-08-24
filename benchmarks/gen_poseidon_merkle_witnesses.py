@@ -59,10 +59,10 @@ def main():
             wit = json.load(f)
         os.remove(wit_json)
 
-        # Update state: state_out is the second public output signal
-        # In circom, public outputs follow public inputs. state_in is the only
-        # public input (index 1), so state_out is index 2.
-        state = str(int(wit[2]))
+        # Update state: state_out is the first public output signal.
+        # In circom witness ordering: idx0=1, idx1=state_out (public output),
+        # idx2=state_in (public input), idx3=sibling, idx4=direction, ...
+        state = str(int(wit[1]))
 
         if (i + 1) % 10 == 0 or i + 1 == args.steps:
             print(f"  step {i + 1}/{args.steps}")
