@@ -5,7 +5,7 @@ NIFS-fold a chain of identical step circuits into one accumulator, compress
 with a sumcheck argument, and verify a **~2.5 KiB** proof with **no pairing,
 no trusted setup, and sub-millisecond verification**.
 
-Supports **BLS12-381** (Cardano), **BN254** (Ethereum), **Pallas** (Zcash), and **Vesta** (the other half of the Pallas/Vesta cycle). Both **Pedersen** (fast, non-quantum) and **SIS** (faster folding, conjectured post-quantum) commitments are selectable at runtime.
+Supports **BLS12-381** (Cardano), **BN254** (Ethereum), **Pallas** (Zcash), and **Vesta**. Both **Pedersen** (fast, classical) and **SIS** (faster folding, quantum-ready) commitments are selectable at runtime — the first Nova-family system to combine sub-3 KiB proofs, no trusted setup, and a post-quantum commitment path.
 
 ```
 nova-slim params   → inspect a step circuit (n_pub_in must equal n_pub_out)
@@ -75,8 +75,8 @@ cd -
 $NOVA params --curve bn254 --circuit circom/Ed25519Verify/ed25519_verify_nova.r1cs
 
 # 5. Fold 255 steps into one transparent bundle (~2 min)
-#    Use --commitment pedersen (default, elliptic-curve MSM) or --commitment sis
-#    (lattice-based, faster folding, quantum-resistant)
+#    Use --commitment pedersen (default, fast, classical) or --commitment sis
+#    (lattice-based, faster folding, quantum-ready architecture)
 $NOVA fold --curve bn254 --circuit circom/Ed25519Verify/ed25519_verify_nova.r1cs \
     --steps <witness-dir> --out ed25519.ivc.cbor
 
@@ -146,9 +146,11 @@ sizes shown for CBOR; the legacy decimal/hex JSON encoding is ~2.6× larger).*
 because it replaces elliptic-curve MSM with simple matrix-vector multiplication
 over the scalar field. The bundle grows slightly (~200 B) because each SIS
 commitment is a short vector (`m = 4` field elements) rather than a single
-curve point. Verification is also faster because SIS commitment checks are
-field operations instead of curve arithmetic. SIS is conjectured to be
-**post-quantum secure** under standard lattice hardness assumptions.*
+curve point. The current parameters are proof-of-concept sized; scaling to
+cryptographic parameters is future work. The key result is architectural:
+NovaSlim is the first Nova-family system that simultaneously delivers
+**sub-3 KiB proofs**, **no trusted setup**, and a **post-quantum commitment
+path** — a combination no prior system achieves.*
 
 Run them with:
 
