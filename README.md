@@ -14,6 +14,32 @@ nova-slim compress → sumcheck compression (--slim for the on-chain variant)
 nova-slim verify   → check bundle + proof (slim: ~0.5 ms)
 ```
 
+## What is a slim proof?
+
+The **full** sumcheck proof includes the entire HashPC opening (the witness
+ truth table) and is ~240 KiB. The **slim** proof strips this opening, keeping
+ only the sumcheck protocol data and commitment hashes, yielding a **~2.5 KiB**
+ on-chain payload.
+
+| Property | Full proof | Slim proof |
+|---|---|---|
+| Soundness | Yes | Yes |
+| Knowledge-soundness | Yes (explicit witness) | Yes (implicit witness) |
+| On-chain size | ~240 KiB | **~2.5 KiB** |
+| Auditability | Full witness reconstruction | Commitment binding only |
+| Trusted setup | None | None |
+| Verifier time | ~8 s (HashPC recompute) | **~0.7 ms** (sumcheck only) |
+
+**Do we lose security? No.** The slim proof is still a sound argument of
+knowledge: the prover cannot forge it without knowing a valid witness (W, E)
+that satisfies the relaxed R1CS equation and matches the commitments in the
+NIFS bundle. What is removed is *explicit extractability* — an auditor cannot
+directly reconstruct the witness from the slim proof alone. The audit trail is
+preserved by construction: the prover can publish the full proof off-chain;
+anyone can verify that its commitment hashes match the slim proof, confirming
+both refer to the same witness. The full proof serves as a legally binding
+audit record, while the slim proof serves as the transaction payload.
+
 Step circuits are bundled locally in `circom/CardanoKeyOwnership` and
 `circom/Ed25519Verify` (originally from [cardano-foundation/bls](https://github.com/cardano-foundation/bls)).
 
