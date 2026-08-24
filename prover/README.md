@@ -134,7 +134,6 @@ Latest run (2026-08-24, 4-core desktop, release build, 255 chained steps):
 
 | Step circuit | Curve | Constraints | Steps | Fold total | Fold/step | Compress | Verify (full) | Verify (slim) | Slim proof | Bundle |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `cardano_ed25519_ownership_nova` | bls12-381 | 7,724 | 255 | 141.2 / 139.1 s | 554 / 546 ms | 28.02 / 21.62 s | 26.77 / 21.84 s | **0.9 ms** | **2.5 KiB** | 2.2 KiB |
 | `ed25519_verify_nova` | bls12-381 | 7,724 | 255 | 138.5 / 145.7 s | 543 / 571 ms | 25.44 / 24.30 s | 28.59 / 25.49 s | **0.7 ms** | **2.5 KiB** | 2.2 KiB |
 | `ed25519_verify_nova` | bn254 | 7,724 | 255 | 74.2 / 66.7 s | 347 / 312 ms | 12.23 / 11.14 s | 12.22 / 11.53 s | **0.6 ms** | **2.4 KiB** | 2.2 KiB |
 

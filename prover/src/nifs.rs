@@ -12,7 +12,7 @@
 //! no trusted setup.
 
 use ark_ec::{AffineRepr, Group, VariableBaseMSM};
-use ark_ff::{PrimeField, Zero};
+use ark_ff::PrimeField;
 use ark_serialize::{CanonicalSerialize, SerializationError};
 use blake2::{Blake2b512, Digest};
 use rayon::prelude::*;
@@ -262,6 +262,7 @@ pub fn fold_with_opts<C: NovaCurve>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ark_ff::Zero;
 
     #[test]
     fn basis_derivation_is_deterministic() {

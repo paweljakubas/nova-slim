@@ -31,7 +31,7 @@
 //! would provide information-theoretic opening proofs; this POC uses
 //! simplified opening verification.
 
-use ark_ff::{BigInteger, One, PrimeField, Zero};
+use ark_ff::{BigInteger, PrimeField, Zero};
 
 use crate::curve::{NovaCurve, ScalarField};
 use blake2::{Blake2b512, Digest};
@@ -407,6 +407,7 @@ mod tests {
     use super::*;
     use crate::nifs::PedersenParams;
     use ark_bls12_381::Fr;
+    use ark_ff::{One, Zero};
 
     /// One-constraint multiplier: Z[1]·Z[2] = Z[3], wire 0 = constant 1.
     fn simple_r1cs() -> (

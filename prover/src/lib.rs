@@ -145,7 +145,6 @@ pub struct NifsBundle {
 pub mod codec {
     use super::{NifsBundle, NifsFinalInstance, NifsSlimProof, NifsSumcheckProof};
     use ark_ff::PrimeField;
-    use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
     use serde::{Deserialize, Serialize};
     use serde_bytes::ByteBuf;
     use std::error::Error;

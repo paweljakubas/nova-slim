@@ -157,19 +157,19 @@ nova-slim verify --curve bls12-381 --ivc bundle.ivc.cbor --slim-proof slim.proof
 
 ---
 
-## Example: CardanoKeyOwnership circuit
+## Example: Ed25519Verify circuit
 
-> **Note:** `cardano_ed25519_ownership_nova` is an **example step circuit** — one
-> of several circuits the CLI has been tested on. The same commands work for any
-> step circuit satisfying `n_pub_in == n_pub_out`.
+> **Note:** `ed25519_verify_nova` is the primary step circuit used for
+> benchmarking. The same commands work for any step circuit satisfying
+> `n_pub_in == n_pub_out`.
 
 This circuit decomposes Ed25519 base-point scalar multiplication into 255 steps
 of 7,724 constraints each (24 public inputs / 24 public outputs).
 
 ```bash
-nova-slim params --curve bls12-381 --circuit cardano_ed25519_ownership_nova.r1cs
-nova-slim fold --curve bls12-381 --circuit cardano_ed25519_ownership_nova.r1cs --steps <witness-dir> --out bundle.ivc.cbor
-nova-slim compress --slim --curve bls12-381 --circuit cardano_ed25519_ownership_nova.r1cs --steps <witness-dir> --out slim.proof.cbor
+nova-slim params --curve bls12-381 --circuit ed25519_verify_nova.r1cs
+nova-slim fold --curve bls12-381 --circuit ed25519_verify_nova.r1cs --steps <witness-dir> --out bundle.ivc.cbor
+nova-slim compress --slim --curve bls12-381 --circuit ed25519_verify_nova.r1cs --steps <witness-dir> --out slim.proof.cbor
 nova-slim verify --curve bls12-381 --ivc bundle.ivc.cbor --slim-proof slim.proof.cbor
 ```
 

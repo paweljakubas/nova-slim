@@ -89,18 +89,12 @@ def ed25519_step_family(dir_name):
 
 
 # Supported benchmark configurations for the TRADITIONAL benchmark runner.
-# CardanoKeyOwnership is BLS12-381 specific (originally from cardano-foundation/bls).
-# Ed25519Verify can be compiled for any curve, but Pallas and Vesta are
-# EXCLUDED because snarkjs does not generate valid witnesses for pasta curves
-# ("Curve not supported"). Use the synthetic benchmark for Pallas / Vesta:
+# Pallas and Vesta are EXCLUDED because snarkjs does not generate valid
+# witnesses for pasta curves ("Curve not supported"). Use the synthetic
+# benchmark for Pallas / Vesta:
 #   cargo run --release --manifest-path prover/Cargo.toml --bin benchmark_synthetic -- --curve pallas --state-width 24 --steps 255
 FAMILIES = {
-    "cardano_ed25519_ownership_nova_bls12_381": {
-        **ed25519_step_family("CardanoKeyOwnership"),
-        "circuit_name": "cardano_ed25519_ownership_nova",
-        "curve": "bls12-381",
-        "default_steps": 255,
-    },
+    # Ed25519 verify — medium circuit (7,724 constraints), the primary benchmark
     "ed25519_verify_nova_bls12_381": {
         **ed25519_step_family("Ed25519Verify"),
         "circuit_name": "ed25519_verify_nova",
@@ -113,11 +107,72 @@ FAMILIES = {
         "curve": "bn254",
         "default_steps": 255,
     },
-    "ed25519_verify_nova_pallas": {
+    # Ed25519 scaling series — same circuit, varying step counts
+    "ed25519_verify_nova_bls12_381_16": {
         **ed25519_step_family("Ed25519Verify"),
         "circuit_name": "ed25519_verify_nova",
-        "curve": "pallas",
-        "default_steps": 255,
+        "curve": "bls12-381",
+        "default_steps": 16,
+    },
+    "ed25519_verify_nova_bls12_381_64": {
+        **ed25519_step_family("Ed25519Verify"),
+        "circuit_name": "ed25519_verify_nova",
+        "curve": "bls12-381",
+        "default_steps": 64,
+    },
+    "ed25519_verify_nova_bls12_381_1024": {
+        **ed25519_step_family("Ed25519Verify"),
+        "circuit_name": "ed25519_verify_nova",
+        "curve": "bls12-381",
+        "default_steps": 1024,
+    },
+    "ed25519_verify_nova_bn254_16": {
+        **ed25519_step_family("Ed25519Verify"),
+        "circuit_name": "ed25519_verify_nova",
+        "curve": "bn254",
+        "default_steps": 16,
+    },
+    "ed25519_verify_nova_bn254_64": {
+        **ed25519_step_family("Ed25519Verify"),
+        "circuit_name": "ed25519_verify_nova",
+        "curve": "bn254",
+        "default_steps": 64,
+    },
+    "ed25519_verify_nova_bn254_1024": {
+        **ed25519_step_family("Ed25519Verify"),
+        "circuit_name": "ed25519_verify_nova",
+        "curve": "bn254",
+        "default_steps": 1024,
+    },
+    # VRF — tiny circuit (9 constraints), isolates protocol overhead
+    "vrf_verify_nova_bls12_381": {
+        "circuit_name": "vrf_verify_nova",
+        "curve": "bls12-381",
+        "default_steps": 254,
+        "dir": "VRF",
+        "witness_script": "gen_vrf_witnesses.py",
+    },
+    "vrf_verify_nova_bn254": {
+        "circuit_name": "vrf_verify_nova",
+        "curve": "bn254",
+        "default_steps": 254,
+        "dir": "VRF",
+        "witness_script": "gen_vrf_witnesses.py",
+    },
+    # PoseidonMerkle — hash-heavy circuit (~639 constraints), blockchain-relevant
+    "poseidon_merkle_nova_bls12_381": {
+        "circuit_name": "poseidon_merkle_nova",
+        "curve": "bls12-381",
+        "default_steps": 32,
+        "dir": "PoseidonMerkle",
+        "witness_script": "gen_poseidon_merkle_witnesses.py",
+    },
+    "poseidon_merkle_nova_bn254": {
+        "circuit_name": "poseidon_merkle_nova",
+        "curve": "bn254",
+        "default_steps": 32,
+        "dir": "PoseidonMerkle",
+        "witness_script": "gen_poseidon_merkle_witnesses.py",
     },
 }
 
@@ -133,11 +188,12 @@ def ensure_compiled(family, name, steps_dir):
     src = os.path.join(CIRCOM_DIR, family["dir"], f"{circuit_name}.circom")
     if not os.path.exists(src):
         sys.exit(f"circuit source missing: {src}")
-    inc = os.path.join(CIRCOM_DIR, "Ed25519Verify", "node_modules", "circomlib", "circuits")
     prime = CIRCOM_PRIMES[curve]
     cmd = ["circom", "--prime", prime]
-    if os.path.isdir(inc):
-        cmd += ["-l", inc]
+    # Ed25519Verify circomlib
+    inc1 = os.path.join(CIRCOM_DIR, "Ed25519Verify", "node_modules", "circomlib", "circuits")
+    if os.path.isdir(inc1):
+        cmd += ["-l", inc1]
     cmd += [src, "--r1cs", "--wasm", "--sym", "--output", steps_dir]
     print(f"compiling {circuit_name}.circom for {curve} (prime={prime}) ...")
     run(cmd)
@@ -236,11 +292,17 @@ def main():
 
         steps_dir = os.path.join(work, "steps")
         if not args.skip_witness_gen:
-            initial = os.path.join(work, "initial.json")
-            json.dump(fam["inputs"], open(initial, "w"))
-            run([sys.executable, os.path.join(SCRIPT_DIR, "gen_step_witnesses.py"),
-                 "--wasm", wasm, "--initial", initial, "--outputs", fam["outputs"],
-                 "--steps", str(n_steps), "--dir", steps_dir])
+            if "witness_script" in fam:
+                # Custom witness generator (VRF, PoseidonMerkle)
+                run([sys.executable, os.path.join(SCRIPT_DIR, fam["witness_script"]),
+                     "--wasm", wasm, "--steps", str(n_steps), "--dir", steps_dir])
+            else:
+                # Standard chained-witness generator (Ed25519)
+                initial = os.path.join(work, "initial.json")
+                json.dump(fam["inputs"], open(initial, "w"))
+                run([sys.executable, os.path.join(SCRIPT_DIR, "gen_step_witnesses.py"),
+                     "--wasm", wasm, "--initial", initial, "--outputs", fam["outputs"],
+                     "--steps", str(n_steps), "--dir", steps_dir])
         prune_witness_intermediates(steps_dir)
 
         row = {"family": name, "constraints": constraints, "steps": n_steps, "curve": fam["curve"]}

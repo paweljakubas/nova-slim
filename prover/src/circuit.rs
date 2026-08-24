@@ -6,7 +6,6 @@
 //! implementation.
 
 use ark_ff::{BigInteger, PrimeField};
-use ark_serialize::CanonicalSerialize;
 use ark_std::vec::Vec;
 use nom::{
     bytes::complete::{tag, take},
