@@ -13,9 +13,8 @@
 //! All phases keep the witnesses in memory (no disk I/O beyond the initial
 //! read) and exclude transcript hashing.  Usage:
 //!
-//!   cargo run --release --bin benchmark_nova -- --circuit step.r1cs --steps DIR [--limit N] [--opt-parallel]
+//!   cargo run --release --bin benchmark_nova -- --curve bls12-381 --circuit step.r1cs --steps DIR [--limit N] [--opt-parallel]
 
-use ark_bls12_381::{Fr, G1Affine};
 use ark_ec::AffineRepr;
 use ark_ff::Zero;
 use ark_serialize::CanonicalSerialize;
@@ -25,7 +24,7 @@ use prover::nifs;
 use prover::{
     fr_to_string, prove_sumcheck_compression_opt, verify_slim, verify_sumcheck_compression,
     NifsBundle, NifsFinalInstance, NifsFoldOutput, OptFlags, NIFS_PARAMS_SEED,
-    NIFS_TRANSCRIPT_PREFIX,
+    NIFS_TRANSCRIPT_PREFIX, curve::{NovaCurve, ScalarField},
 };
 use std::fs;
 use std::path::PathBuf;
@@ -34,6 +33,7 @@ use std::time::Instant;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let opt_parallel = args.iter().any(|a| a == "--opt-parallel");
+    let curve = args.iter().position(|a| a == "--curve").map(|i| args[i+1].clone());
     let circuit_path = args
         .windows(2)
         .find(|w| w[0] == "--circuit")
@@ -44,7 +44,7 @@ fn main() {
         .map(|w| w[1].clone());
     let (Some(circuit_path), Some(steps_dir)) = (circuit_path, steps_dir) else {
         eprintln!(
-            "usage: benchmark_nova [--opt-parallel] --circuit <step.r1cs> --steps <witness-dir> [--limit N]"
+            "usage: benchmark_nova [--curve bls12-381|bn254|pallas] [--opt-parallel] --circuit <step.r1cs> --steps <witness-dir> [--limit N]"
         );
         std::process::exit(2);
     };
@@ -53,7 +53,22 @@ fn main() {
             .expect("--limit must be a positive integer")
     });
 
-    let mut circuit = SparseCircuit::<Fr>::from_r1cs(&circuit_path)
+    let curve = curve.as_deref().unwrap_or("bls12-381");
+    match curve {
+        "bls12-381" => benchmark::<prover::curve::Bls12_381>(&circuit_path, &steps_dir, limit, opt_parallel),
+        #[cfg(feature = "bn254")]
+        "bn254" => benchmark::<prover::curve::Bn254>(&circuit_path, &steps_dir, limit, opt_parallel),
+        #[cfg(feature = "pallas")]
+        "pallas" => benchmark::<prover::curve::Pallas>(&circuit_path, &steps_dir, limit, opt_parallel),
+        _ => {
+            eprintln!("unknown curve: {curve} — valid: bls12-381, bn254, pallas");
+            std::process::exit(2);
+        }
+    }
+}
+
+fn benchmark<C: NovaCurve>(circuit_path: &str, steps_dir: &str, limit: Option<usize>, opt_parallel: bool) {
+    let mut circuit = SparseCircuit::<ScalarField<C>>::from_r1cs(circuit_path)
         .unwrap_or_else(|e| panic!("failed to load circuit {circuit_path}: {e}"));
     if circuit.n_pub_in != circuit.n_pub_out {
         panic!(
@@ -62,7 +77,7 @@ fn main() {
         );
     }
 
-    let mut wtns: Vec<PathBuf> = fs::read_dir(&steps_dir)
+    let mut wtns: Vec<PathBuf> = fs::read_dir(steps_dir)
         .expect("failed to read steps dir")
         .map(|e| e.expect("steps dir entry").path())
         .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("wtns"))
@@ -85,18 +100,18 @@ fn main() {
     );
     println!("step witnesses: {n_steps} (from {steps_dir})");
 
-    benchmark_slim(&mut circuit, &wtns, opt_parallel);
+    benchmark_slim::<C>(&mut circuit, &wtns, opt_parallel);
 }
 
 /// Slim flow: NIFS fold → sumcheck compression → full/slim verify.
-fn benchmark_slim(circuit: &mut SparseCircuit<Fr>, wtns: &[PathBuf], parallel: bool) {
+fn benchmark_slim<C: NovaCurve>(circuit: &mut SparseCircuit<ScalarField<C>>, wtns: &[PathBuf], parallel: bool) {
     let n_steps = wtns.len();
     let opt = if parallel { "parallel" } else { "baseline" };
-    println!("mode: NIFS fold + sumcheck compress ({opt})");
+    println!("mode: NIFS fold + sumcheck compress ({opt}), curve: {}", std::any::type_name::<C>());
 
     // 1. NIFS fold.
     let t = Instant::now();
-    let folded = nifs_fold(circuit, wtns, parallel);
+    let folded = nifs_fold::<C>(circuit, wtns, parallel);
     let fold_s = t.elapsed().as_secs_f64();
     println!(
         "nifs fold: {fold_s:.3} s total, {:.3} ms/step over {n_steps} steps (2 O(step)-sized MSMs)",
@@ -107,7 +122,7 @@ fn benchmark_slim(circuit: &mut SparseCircuit<Fr>, wtns: &[PathBuf], parallel: b
     //    (no trusted setup needed).
     let mut rng = rand::thread_rng();
     let t = Instant::now();
-    let sc_proof = prove_sumcheck_compression_opt(
+    let sc_proof = prove_sumcheck_compression_opt::<C>(
         circuit,
         &folded,
         &mut rng,
@@ -126,7 +141,7 @@ fn benchmark_slim(circuit: &mut SparseCircuit<Fr>, wtns: &[PathBuf], parallel: b
 
     // 3a. Verify — sumcheck verification + HashPC checks (audit-grade).
     let t = Instant::now();
-    verify_sumcheck_compression::<prover::curve::Bls12_381>(&folded.bundle, &sc_proof)
+    verify_sumcheck_compression::<C>(&folded.bundle, &sc_proof)
         .unwrap_or_else(|e| panic!("sumcheck compression verification failed: {e}"));
     let verify_s = t.elapsed().as_secs_f64();
     println!("verify (full): {verify_s:.4} s (sumcheck + HashPC checks)");
@@ -134,7 +149,7 @@ fn benchmark_slim(circuit: &mut SparseCircuit<Fr>, wtns: &[PathBuf], parallel: b
     // 3b. Verify — slim on-chain path (openings stripped).
     let slim = sc_proof.to_slim();
     let t = Instant::now();
-    verify_slim::<prover::curve::Bls12_381>(&folded.bundle, &slim)
+    verify_slim::<C>(&folded.bundle, &slim)
         .unwrap_or_else(|e| panic!("slim verification failed: {e}"));
     let verify_slim_s = t.elapsed().as_secs_f64();
 
@@ -148,11 +163,11 @@ fn benchmark_slim(circuit: &mut SparseCircuit<Fr>, wtns: &[PathBuf], parallel: b
         .expect("slim proof serialization should not fail")
         .len();
     let slim_cbor = slim
-        .to_cbor::<Fr>()
+        .to_cbor::<ScalarField<C>>()
         .expect("slim proof serialization should not fail");
     let bundle_cbor = folded
         .bundle
-        .to_cbor::<Fr>()
+        .to_cbor::<ScalarField<C>>()
         .expect("bundle serialization should not fail");
     println!(
         "nifs bundle: {} B ({:.1} KiB cbor / {:.1} KiB json), O(1) in the step count",
@@ -162,8 +177,8 @@ fn benchmark_slim(circuit: &mut SparseCircuit<Fr>, wtns: &[PathBuf], parallel: b
     );
     println!(
         "sumcheck proof (full): {} B ({:.1} KiB cbor / {:.1} KiB json) — off-chain audit variant",
-        sc_proof.to_cbor::<Fr>().unwrap().len(),
-        sc_proof.to_cbor::<Fr>().unwrap().len() as f64 / 1024.0,
+        sc_proof.to_cbor::<ScalarField<C>>().unwrap().len(),
+        sc_proof.to_cbor::<ScalarField<C>>().unwrap().len() as f64 / 1024.0,
         full_json.len() as f64 / 1024.0
     );
     println!(
@@ -179,20 +194,20 @@ fn benchmark_slim(circuit: &mut SparseCircuit<Fr>, wtns: &[PathBuf], parallel: b
 /// Fold every step witness into one Relaxed-R1CS running instance, exactly as
 /// `nova-slim fold` does (same transparent Pedersen params, FOLD_PREFIX challenge,
 /// and NIFS_TRANSCRIPT_PREFIX chain), but fully in memory.
-fn nifs_fold(circuit: &mut SparseCircuit<Fr>, wtns: &[PathBuf], parallel: bool) -> NifsFoldOutput<prover::curve::Bls12_381> {
+fn nifs_fold<C: NovaCurve>(circuit: &mut SparseCircuit<ScalarField<C>>, wtns: &[PathBuf], parallel: bool) -> NifsFoldOutput<C> {
     let n_pub_out = circuit.n_pub_out as usize;
     let n_pub_in = circuit.n_pub_in as usize;
     let n_wires = circuit.n_wires as usize;
     let n_constraints = circuit.n_constraints as usize;
 
-    let params = nifs::PedersenParams::<prover::curve::Bls12_381>::from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints);
-    let zero_e = vec![Fr::zero(); n_constraints];
+    let params = nifs::PedersenParams::<C>::from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints);
+    let zero_e = vec![ScalarField::<C>::zero(); n_constraints];
 
     let mut acc_hash: Option<Vec<u8>> = None;
     let mut prev_out: Option<Vec<String>> = None;
     let mut initial_state: Vec<String> = Vec::new();
-    let mut acc_u: Option<nifs::RelaxedR1csInstance<prover::curve::Bls12_381>> = None;
-    let mut acc_w: Option<nifs::RelaxedR1csWitness<prover::curve::Bls12_381>> = None;
+    let mut acc_u: Option<nifs::RelaxedR1csInstance<C>> = None;
+    let mut acc_w: Option<nifs::RelaxedR1csWitness<C>> = None;
 
     for p in wtns {
         circuit
@@ -211,15 +226,15 @@ fn nifs_fold(circuit: &mut SparseCircuit<Fr>, wtns: &[PathBuf], parallel: bool) 
             );
         } else {
             initial_state = state_in.clone();
-            acc_hash = Some(transcript_nifs_init(in_fr));
+            acc_hash = Some(transcript_nifs_init::<C>(in_fr));
         }
 
         let x = w[1..1 + n_pub_out + n_pub_in].to_vec();
         let step_u = nifs::RelaxedR1csInstance {
             x,
-            u: Fr::from(1u64),
-            w_commit: nifs::commit::<prover::curve::Bls12_381>(&params.basis_w, w),
-            e_commit: G1Affine::zero(),
+            u: ScalarField::<C>::from(1u64),
+            w_commit: nifs::commit::<C>(&params.basis_w, w),
+            e_commit: C::G1Affine::zero(),
         };
         let step_w = nifs::RelaxedR1csWitness {
             w: w.to_vec(),
@@ -234,7 +249,7 @@ fn nifs_fold(circuit: &mut SparseCircuit<Fr>, wtns: &[PathBuf], parallel: bool) 
             Some(u_acc) => {
                 let w_acc = acc_w.take().expect("running witness must exist");
                 let acc = acc_hash.as_ref().expect("transcript initialized");
-                let challenge = nifs::fold_challenge::<prover::curve::Bls12_381>(acc, &u_acc, &step_u);
+                let challenge = nifs::fold_challenge::<C>(acc, &u_acc, &step_u);
                 let (u3, w3) = nifs::fold_with_opts(
                     &params, &circuit.l, &circuit.r, &circuit.o, &u_acc, &w_acc, &step_u, &step_w,
                     challenge, parallel,
@@ -244,7 +259,7 @@ fn nifs_fold(circuit: &mut SparseCircuit<Fr>, wtns: &[PathBuf], parallel: bool) 
             }
         }
 
-        acc_hash = Some(transcript_nifs_step(
+        acc_hash = Some(transcript_nifs_step::<C>(
             acc_hash.as_ref().expect("transcript initialized"),
             acc_u.as_ref().expect("running instance"),
         ));
@@ -266,8 +281,8 @@ fn nifs_fold(circuit: &mut SparseCircuit<Fr>, wtns: &[PathBuf], parallel: bool) 
         final_instance: NifsFinalInstance {
             x: final_u.x.iter().map(fr_to_string).collect(),
             u: fr_to_string(&final_u.u),
-            w_commit: g1_hex(&final_u.w_commit),
-            e_commit: g1_hex(&final_u.e_commit),
+            w_commit: g1_hex::<C>(&final_u.w_commit),
+            e_commit: g1_hex::<C>(&final_u.e_commit),
         },
         transcript_final,
     };
@@ -280,23 +295,23 @@ fn nifs_fold(circuit: &mut SparseCircuit<Fr>, wtns: &[PathBuf], parallel: bool) 
 }
 
 /// `H(NIFS_TRANSCRIPT_PREFIX ‖ initial_state)`, matching `nova-slim fold`.
-fn transcript_nifs_init(initial_state: &[Fr]) -> Vec<u8> {
+fn transcript_nifs_init<C: NovaCurve>(initial_state: &[ScalarField<C>]) -> Vec<u8> {
     let mut h = Blake2b512::new();
     h.update(NIFS_TRANSCRIPT_PREFIX);
-    h.update(frs_bytes(initial_state));
+    h.update(frs_bytes::<C>(initial_state));
     h.finalize().to_vec()
 }
 
 /// `H(NIFS_TRANSCRIPT_PREFIX ‖ acc ‖ instance_bytes)`, matching `nova-slim fold`.
-fn transcript_nifs_step(acc: &[u8], u: &nifs::RelaxedR1csInstance<prover::curve::Bls12_381>) -> Vec<u8> {
+fn transcript_nifs_step<C: NovaCurve>(acc: &[u8], u: &nifs::RelaxedR1csInstance<C>) -> Vec<u8> {
     let mut h = Blake2b512::new();
     h.update(NIFS_TRANSCRIPT_PREFIX);
     h.update(acc);
-    h.update(nifs::instance_to_bytes::<prover::curve::Bls12_381>(u).expect("serialize instance"));
+    h.update(nifs::instance_to_bytes::<C>(u).expect("serialize instance"));
     h.finalize().to_vec()
 }
 
-fn frs_bytes(frs: &[Fr]) -> Vec<u8> {
+fn frs_bytes<C: NovaCurve>(frs: &[ScalarField<C>]) -> Vec<u8> {
     let mut buf = Vec::new();
     for f in frs {
         f.serialize_compressed(&mut buf).expect("Fr serialize");
@@ -304,7 +319,7 @@ fn frs_bytes(frs: &[Fr]) -> Vec<u8> {
     buf
 }
 
-fn g1_hex(p: &G1Affine) -> String {
+fn g1_hex<C: NovaCurve>(p: &C::G1Affine) -> String {
     let mut buf = Vec::new();
     p.serialize_compressed(&mut buf).expect("G1 serialize");
     hex::encode(buf)

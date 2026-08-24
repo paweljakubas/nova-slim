@@ -1,6 +1,6 @@
 # prover
 
-NovaSlim IVC folding core for BLS12-381 (arkworks): NIFS folding + sumcheck
+NovaSlim IVC folding core for BLS12-381, BN254, and Pallas (arkworks): NIFS folding + sumcheck
 compression + **slim on-chain proofs**.
 
 A long computation is split into `N` identical step circuits, each proving
@@ -17,7 +17,7 @@ slim proof.
 | On-chain verify | sumcheck + HashPC (pairing-free) | **sumcheck only (pairing-free)** |
 | Trusted setup | **none** | **none** |
 | ZK | Yes | **Yes** |
-| On-chain size | ~473 KiB | **~2.5 KiB** (CBOR) |
+| On-chain size | ~240 KiB | **~2.5 KiB** (CBOR) |
 
 The R1CS parsing / circom adapter lives in the `groth16-prover` crate; this
 crate adds the IVC folding layer. The `nova-slim` CLI (`cli`) wraps this
@@ -40,19 +40,19 @@ crate's operations.
 
 ```bash
 # 1. Inspect the step circuit (must satisfy n_pub_in == n_pub_out)
-nova-slim params --circuit step_circuit.r1cs
+nova-slim params --curve bls12-381 --circuit step_circuit.r1cs
 
 # 2. Fold step witnesses into a single Relaxed-R1CS instance
-nova-slim fold --circuit step_circuit.r1cs \
-  --steps ./step_witnesses/ --out bundle.ivc.json
+nova-slim fold --curve bls12-381 --circuit step_circuit.r1cs \
+  --steps ./step_witnesses/ --out bundle.ivc.cbor
 
-# 3. Compress into a slim on-chain proof (~2.5 KiB, no trusted setup)
-nova-slim compress --slim --circuit step_circuit.r1cs \
-  --steps ./step_witnesses/ --out slim.proof.json
+# 3. Compress into a slim on-chain proof (~2.5 KiB)
+nova-slim compress --slim --curve bls12-381 --circuit step_circuit.r1cs \
+  --steps ./step_witnesses/ --out slim.proof.cbor
 
 # 4. Verify (no verifying key needed)
-nova-slim verify --ivc bundle.ivc.json --slim-proof slim.proof.json
-# → Verified N steps: sumcheck OK, state chain OK
+nova-slim verify --curve bls12-381 --ivc bundle.ivc.cbor --slim-proof slim.proof.cbor
+# → Verified N steps: slim sumcheck proof OK, state chain OK
 # → Final transcript: <64-byte hex>
 ```
 
@@ -67,8 +67,8 @@ Omit `--slim` to produce the full sumcheck proof (includes HashPC opening
 proofs for off-chain verification):
 
 ```bash
-nova-slim compress --circuit step_circuit.r1cs --steps ./step_witnesses/ --out sumcheck.proof.json
-nova-slim verify --ivc bundle.ivc.json --sumcheck-proof sumcheck.proof.json
+nova-slim compress --curve bls12-381 --circuit step_circuit.r1cs --steps ./step_witnesses/ --out sumcheck.proof.cbor
+nova-slim verify --curve bls12-381 --ivc bundle.ivc.cbor --sumcheck-proof sumcheck.proof.cbor
 ```
 
 ### Parallel mode
@@ -77,9 +77,17 @@ Add `--opt parallel` to the fold or compress phases for rayon-parallelized
 cross-term and sumcheck row computation:
 
 ```bash
-nova-slim fold --opt parallel --circuit step_circuit.r1cs --steps ./step_witnesses/ --out bundle.ivc.json
-nova-slim compress --slim --opt parallel --circuit step_circuit.r1cs --steps ./step_witnesses/ --out slim.proof.json
+nova-slim fold --opt parallel --curve bls12-381 --circuit step_circuit.r1cs --steps ./step_witnesses/ --out bundle.ivc.cbor
+nova-slim compress --slim --opt parallel --curve bls12-381 --circuit step_circuit.r1cs --steps ./step_witnesses/ --out slim.proof.cbor
 ```
+
+### Supported curves
+
+| Curve | CLI flag | Typical use |
+|---|---|---|
+| BLS12-381 | `--curve bls12-381` | Cardano-native |
+| BN254 | `--curve bn254` | Ethereum zk-rollups |
+| Pallas | `--curve pallas` | Zcash Orchard |
 
 ---
 
@@ -96,10 +104,10 @@ for on-chain soundness.
 |---|---|---|
 | Sumcheck proof | ~200 B | ~200 B |
 | Fiat–Shamir transcript | ~2 KiB | ~0.8 KiB (binary) |
-| HashPC openings (Z + E) | ~492 KiB | **off-chain** |
+| HashPC openings (Z + E) | ~240 KiB | **off-chain** |
 | Commitment hashes | — | 128 B |
 | Final IVC state | ~1 KiB | ~0.4 KiB (binary) |
-| **On-chain total** | **~473 KiB** | **~2.5 KiB** (CBOR) |
+| **On-chain total** | **~240 KiB** | **~2.5 KiB** (CBOR) |
 
 ---
 
@@ -109,21 +117,29 @@ for on-chain soundness.
 <summary><b>Measured numbers and how to reproduce them</b></summary>
 
 Measured with `benchmark_nova --release` on the bundled step circuits in
-`circom/` via `benchmarks/run_benchmarks.py`. Latest run (2026-08-21, 4-core
+`circom/` via `benchmarks/run_benchmarks.py`. Latest run (2026-08-24, 4-core
 desktop, release build, 255 chained steps):
 
-| Step circuit | Constraints | Steps | Fold total | Fold/step | Compress | Verify (full) | Verify (slim) | Slim proof | Bundle |
-|---|---|---|---|---|---|---|---|---|---|
-| `cardano_ed25519_ownership_nova` | 7,724 | 255 | 122.2 / 120.1 s | 479 / 471 ms | 20.0 / 19.9 s | 20.4 / 20.4 s | **0.5 ms** | **2.5 KiB** | 2.2 KiB |
-| `ed25519_verify_nova` | 7,724 | 255 | 120.7 / 116.9 s | 473 / 458 ms | 20.0 / 19.9 s | 20.1 / 19.8 s | **0.3 ms** | **2.5 KiB** | 2.2 KiB |
+| Step circuit | Curve | Constraints | Steps | Fold total | Fold/step | Compress | Verify (full) | Verify (slim) | Slim proof | Bundle |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `cardano_ed25519_ownership_nova` | bls12-381 | 7,724 | 255 | 141.2 / 139.1 s | 554 / 546 ms | 28.02 / 21.62 s | 26.77 / 21.84 s | **0.9 ms** | **2.5 KiB** | 2.2 KiB |
+| `ed25519_verify_nova` | bls12-381 | 7,724 | 255 | 138.5 / 145.7 s | 543 / 571 ms | 25.44 / 24.30 s | 28.59 / 25.49 s | **0.7 ms** | **2.5 KiB** | 2.2 KiB |
+| `ed25519_verify_nova` | bn254 | 7,724 | 255 | 74.2 / 66.7 s | 347 / 312 ms | 12.23 / 11.14 s | 12.22 / 11.53 s | **0.6 ms** | **2.4 KiB** | 2.2 KiB |
 
 *Each cell shows baseline / `--opt-parallel` where two values are shown.
 The slim proof is constant in both step count and step width.*
 
+**Note on Pallas:** the folding core fully supports Pallas, but `snarkjs`
+currently does not generate valid witnesses for Pallas-compiled circuits
+(`snarkjs wtns check` reports "Curve not supported"). Pallas synthetic
+benchmarks work end-to-end.
+
 Re-run after any folding/compression change and paste the new summary here:
 
 ```bash
-python3 benchmarks/run_benchmarks.py   # from the repository root
+python3 benchmarks/run_benchmarks.py                    # all families, 255 steps
+python3 benchmarks/run_benchmarks.py --curve bn254      # specific curve
+python3 benchmarks/run_benchmarks.py --steps 32         # shorter chains
 ```
 
 The harness uses the bundled circuits in `circom/`, compiles them if needed,

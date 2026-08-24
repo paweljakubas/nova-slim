@@ -1,7 +1,7 @@
 # nova-slim-cli
 
-Command-line interface for NovaSlim — IVC folding on BLS12-381 with slim
-on-chain proofs.
+Command-line interface for NovaSlim — curve-agnostic IVC folding with slim
+on-chain proofs. Supports BLS12-381 (Cardano), BN254 (Ethereum), and Pallas (Zcash).
 
 A long computation is split into `N` identical step circuits, each proving
 `state_{i+1} = f(step_i, state_i)`. The CLI covers one flow:
@@ -26,18 +26,18 @@ the thin CLI wrapper.
 
 ```bash
 # 1. Inspect the step circuit (must satisfy n_pub_in == n_pub_out)
-nova-slim params --circuit step_circuit.r1cs
+nova-slim params --curve bls12-381 --circuit step_circuit.r1cs
 
 # 2. Fold step witnesses into a single Relaxed-R1CS instance
-nova-slim fold --circuit step_circuit.r1cs \
+nova-slim fold --curve bls12-381 --circuit step_circuit.r1cs \
   --steps ./step_witnesses/ --out bundle.ivc.cbor
 
 # 3. Compress into a slim on-chain proof (~2.5 KiB)
-nova-slim compress --slim --circuit step_circuit.r1cs \
+nova-slim compress --slim --curve bls12-381 --circuit step_circuit.r1cs \
   --steps ./step_witnesses/ --out slim.proof.cbor
 
 # 4. Verify (no verifying key needed)
-nova-slim verify --ivc bundle.ivc.cbor --slim-proof slim.proof.cbor
+nova-slim verify --curve bls12-381 --ivc bundle.ivc.cbor --slim-proof slim.proof.cbor
 # → Verified N steps: slim sumcheck proof OK
 ```
 
@@ -49,8 +49,8 @@ for an off-chain audit trail.
 ### With parallel optimization
 
 ```bash
-nova-slim fold --opt parallel --circuit step_circuit.r1cs --steps ./step_witnesses/ --out bundle.ivc.cbor
-nova-slim compress --slim --opt parallel --circuit step_circuit.r1cs --steps ./step_witnesses/ --out slim.proof.cbor
+nova-slim fold --opt parallel --curve bls12-381 --circuit step_circuit.r1cs --steps ./step_witnesses/ --out bundle.ivc.cbor
+nova-slim compress --slim --opt parallel --curve bls12-381 --circuit step_circuit.r1cs --steps ./step_witnesses/ --out slim.proof.cbor
 ```
 
 ### Full sumcheck proof (with openings, for audit)
@@ -58,8 +58,8 @@ nova-slim compress --slim --opt parallel --circuit step_circuit.r1cs --steps ./s
 Omit `--slim` to keep the HashPC opening proofs:
 
 ```bash
-nova-slim compress --circuit step_circuit.r1cs --steps ./step_witnesses/ --out sumcheck.proof.cbor
-nova-slim verify --ivc bundle.ivc.cbor --sumcheck-proof sumcheck.proof.cbor
+nova-slim compress --curve bls12-381 --circuit step_circuit.r1cs --steps ./step_witnesses/ --out sumcheck.proof.cbor
+nova-slim verify --curve bls12-381 --ivc bundle.ivc.cbor --sumcheck-proof sumcheck.proof.cbor
 ```
 
 ---
@@ -96,8 +96,8 @@ Commands:
 Validates the IVC invariant `n_pub_in == n_pub_out`.
 
 ```bash
-nova-slim params --circuit step_circuit.r1cs
-nova-slim params --circuit step_circuit.r1cs --out step_circuit.desc.json
+nova-slim params --curve bls12-381 --circuit step_circuit.r1cs
+nova-slim params --curve bls12-381 --circuit step_circuit.r1cs --out step_circuit.desc.json
 ```
 
 ### `fold` — fold step witnesses
@@ -105,7 +105,7 @@ nova-slim params --circuit step_circuit.r1cs --out step_circuit.desc.json
 Transparent folding, no proving key, O(1) bundle.
 
 ```bash
-nova-slim fold --circuit step_circuit.r1cs \
+nova-slim fold --curve bls12-381 --circuit step_circuit.r1cs \
   --steps ./step_witnesses/ --out bundle.ivc.cbor
 ```
 
@@ -117,13 +117,13 @@ Add `--opt parallel` for rayon-parallelized cross-term computation.
 for off-chain audit).
 
 ```bash
-nova-slim compress --circuit step_circuit.r1cs --steps ./step_witnesses/ --out sumcheck.proof.cbor
+nova-slim compress --curve bls12-381 --circuit step_circuit.r1cs --steps ./step_witnesses/ --out sumcheck.proof.cbor
 ```
 
 **Slim on-chain proof:** strips HashPC openings (~98% smaller).
 
 ```bash
-nova-slim compress --slim --circuit step_circuit.r1cs --steps ./step_witnesses/ --out slim.proof.cbor
+nova-slim compress --slim --curve bls12-381 --circuit step_circuit.r1cs --steps ./step_witnesses/ --out slim.proof.cbor
 ```
 
 ### `verify` — verify a folded bundle
@@ -131,13 +131,13 @@ nova-slim compress --slim --circuit step_circuit.r1cs --steps ./step_witnesses/ 
 **Slim proof (on-chain path):**
 
 ```bash
-nova-slim verify --ivc bundle.ivc.cbor --slim-proof slim.proof.cbor
+nova-slim verify --curve bls12-381 --ivc bundle.ivc.cbor --slim-proof slim.proof.cbor
 ```
 
 **Full sumcheck proof (audit-grade):**
 
 ```bash
-nova-slim verify --ivc bundle.ivc.cbor --sumcheck-proof sumcheck.proof.cbor
+nova-slim verify --curve bls12-381 --ivc bundle.ivc.cbor --sumcheck-proof sumcheck.proof.cbor
 ```
 
 ---
@@ -146,13 +146,13 @@ nova-slim verify --ivc bundle.ivc.cbor --sumcheck-proof sumcheck.proof.cbor
 
 ```bash
 # 1. Fold (transparent, no proving key)
-nova-slim fold --circuit step_circuit.r1cs --steps ./step_witnesses/ --out bundle.ivc.cbor
+nova-slim fold --curve bls12-381 --circuit step_circuit.r1cs --steps ./step_witnesses/ --out bundle.ivc.cbor
 
 # 2. Compress to slim proof (~2.5 KiB)
-nova-slim compress --slim --circuit step_circuit.r1cs --steps ./step_witnesses/ --out slim.proof.cbor
+nova-slim compress --slim --curve bls12-381 --circuit step_circuit.r1cs --steps ./step_witnesses/ --out slim.proof.cbor
 
 # 3. Verify (pairing-free, no VK)
-nova-slim verify --ivc bundle.ivc.cbor --slim-proof slim.proof.cbor
+nova-slim verify --curve bls12-381 --ivc bundle.ivc.cbor --slim-proof slim.proof.cbor
 ```
 
 ---
@@ -167,10 +167,10 @@ This circuit decomposes Ed25519 base-point scalar multiplication into 255 steps
 of 7,724 constraints each (24 public inputs / 24 public outputs).
 
 ```bash
-nova-slim params --circuit cardano_ed25519_ownership_nova.r1cs
-nova-slim fold --circuit cardano_ed25519_ownership_nova.r1cs --steps <witness-dir> --out bundle.ivc.cbor
-nova-slim compress --slim --circuit cardano_ed25519_ownership_nova.r1cs --steps <witness-dir> --out slim.proof.cbor
-nova-slim verify --ivc bundle.ivc.cbor --slim-proof slim.proof.cbor
+nova-slim params --curve bls12-381 --circuit cardano_ed25519_ownership_nova.r1cs
+nova-slim fold --curve bls12-381 --circuit cardano_ed25519_ownership_nova.r1cs --steps <witness-dir> --out bundle.ivc.cbor
+nova-slim compress --slim --curve bls12-381 --circuit cardano_ed25519_ownership_nova.r1cs --steps <witness-dir> --out slim.proof.cbor
+nova-slim verify --curve bls12-381 --ivc bundle.ivc.cbor --slim-proof slim.proof.cbor
 ```
 
 ---

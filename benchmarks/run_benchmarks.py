@@ -12,7 +12,8 @@ For each circuit family it:
 Usage:
     python3 benchmarks/run_benchmarks.py                 # all families, 255 steps
     python3 benchmarks/run_benchmarks.py --steps 32      # shorter chains
-    python3 benchmarks/run_benchmarks.py --family cardano_ed25519_ownership_nova
+    python3 benchmarks/run_benchmarks.py --curve bn254   # specific curve
+    python3 benchmarks/run_benchmarks.py --family ed25519_verify_nova_bls12_381
 
 Re-run this whenever the folding/compression code changes and paste the
 summary into the Benchmarks section of prover/README.md.
@@ -42,61 +43,91 @@ ED25519_BASE_POINT_G = [
 EDWARDS_IDENTITY = [["0", "0", "0"], ["1", "0", "0"], ["1", "0", "0"], ["0", "0", "0"]]
 
 
+CIRCOM_PRIMES = {
+    "bls12-381": "bls12381",
+    "bn254": "bn128",
+    "pallas": "pallas",
+}
+
+
 def ed25519_step_family(dir_name):
-    """Both Ed25519 scalar-mul step circuits share the same signal layout."""
+    """Both Ed25519 scalar-mul step circuits share the same signal layout.
+
+    The witness JSON from snarkjs places public outputs in signal-declaration
+    order: all dblOut[4][3] first (indices 1..12), then all addOut[4][3]
+    (indices 13..24).  The outputs list must match this order so that
+    gen_step_witnesses.py maps prev_vals[i] → the correct input signal.
+    """
     inputs = {}
     outputs = []
     for i in range(4):
         for j in range(3):
             inputs[f"dbl_in_{i}_{j}"] = ED25519_BASE_POINT_G[i][j]
             inputs[f"add_in_{i}_{j}"] = EDWARDS_IDENTITY[i][j]
+    # dbl outputs come first in the witness (indices 1..12)
+    for i in range(4):
+        for j in range(3):
             outputs.append(f"dbl_in_{i}_{j}=dbl_out_{i}_{j}")
+    # add outputs come next (indices 13..24)
+    for i in range(4):
+        for j in range(3):
             outputs.append(f"add_in_{i}_{j}=add_out_{i}_{j}")
     inputs["sel"] = "1"
     return {"inputs": inputs, "outputs": ",".join(outputs), "dir": dir_name}
 
 
+# Supported benchmark configurations.
+# CardanoKeyOwnership is BLS12-381 specific (originally from cardano-foundation/bls).
+# Ed25519Verify can be compiled for any curve, but Pallas witness generation
+# is not fully supported by snarkjs (witness check fails with "Curve not supported").
 FAMILIES = {
-    "cardano_ed25519_ownership_nova": {
+    "cardano_ed25519_ownership_nova_bls12_381": {
         **ed25519_step_family("CardanoKeyOwnership"),
-        "constraints": 7724,
+        "circuit_name": "cardano_ed25519_ownership_nova",
+        "curve": "bls12-381",
         "default_steps": 255,
     },
-    "ed25519_verify_nova": {
+    "ed25519_verify_nova_bls12_381": {
         **ed25519_step_family("Ed25519Verify"),
-        "constraints": 7724,
+        "circuit_name": "ed25519_verify_nova",
+        "curve": "bls12-381",
+        "default_steps": 255,
+    },
+    "ed25519_verify_nova_bn254": {
+        **ed25519_step_family("Ed25519Verify"),
+        "circuit_name": "ed25519_verify_nova",
+        "curve": "bn254",
+        "default_steps": 255,
+    },
+    "ed25519_verify_nova_pallas": {
+        **ed25519_step_family("Ed25519Verify"),
+        "circuit_name": "ed25519_verify_nova",
+        "curve": "pallas",
         "default_steps": 255,
     },
 }
 
 
 def ensure_compiled(family, name, steps_dir):
-    r1cs = os.path.join(steps_dir, f"{name}.r1cs")
-    wasm = os.path.join(steps_dir, f"{name}_js", f"{name}.wasm")
+    """Compile the circom circuit for the target curve if missing."""
+    circuit_name = family["circuit_name"]
+    curve = family["curve"]
+    r1cs = os.path.join(steps_dir, f"{circuit_name}.r1cs")
+    wasm = os.path.join(steps_dir, f"{circuit_name}_js", f"{circuit_name}.wasm")
     if os.path.exists(r1cs) and os.path.exists(wasm):
         return r1cs, wasm
-    src = os.path.join(CIRCOM_DIR, family["dir"], f"{name}.circom")
+    src = os.path.join(CIRCOM_DIR, family["dir"], f"{circuit_name}.circom")
     if not os.path.exists(src):
         sys.exit(f"circuit source missing: {src}")
     inc = os.path.join(CIRCOM_DIR, "Ed25519Verify", "node_modules", "circomlib", "circuits")
-    cmd = ["circom", "--prime", "bls12381"]
+    prime = CIRCOM_PRIMES[curve]
+    cmd = ["circom", "--prime", prime]
     if os.path.isdir(inc):
         cmd += ["-l", inc]
     cmd += [src, "--r1cs", "--wasm", "--sym", "--output", steps_dir]
-    print(f"compiling {name}.circom ...")
+    print(f"compiling {circuit_name}.circom for {curve} (prime={prime}) ...")
     run(cmd)
     return r1cs, wasm
-
-
-def run(cmd, log_path=None):
-    print("+ " + " ".join(map(str, cmd)), flush=True)
-    if log_path:
-        with open(log_path, "w") as f:
-            r = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, text=True)
-    else:
-        r = subprocess.run(cmd)
-    if r.returncode != 0:
-        sys.exit(f"command failed ({r.returncode}); see {log_path or 'output above'}")
 
 
 def prune_witness_intermediates(steps_dir):
@@ -132,11 +163,36 @@ def parse_bench_log(path):
     return out
 
 
+def _strip_ansi(s):
+    """Remove ANSI escape sequences from a string."""
+    import re
+    return re.sub(r"\x1b\[[0-9;]*m", "", s)
+
+
+def r1cs_constraint_count(path):
+    """Extract constraint count from an R1CS file using snarkjs."""
+    try:
+        r = subprocess.run(["snarkjs", "r1cs", "info", path],
+                           capture_output=True, text=True)
+        for line in r.stdout.splitlines():
+            clean = _strip_ansi(line)
+            if "# of Constraints:" in clean:
+                # Line format: "[INFO]  snarkJS: # of Constraints: 7724"
+                parts = clean.rsplit(":", 1)
+                if len(parts) >= 2:
+                    return int(parts[1].strip().replace(",", ""))
+    except Exception as e:
+        print(f"warning: could not parse constraint count from {path}: {e}")
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--family", choices=sorted(FAMILIES), action="append",
                     help="circuit to benchmark (default: all)")
     ap.add_argument("--steps", type=int, help="override chain length")
+    ap.add_argument("--curve", choices=list(CIRCOM_PRIMES.keys()), action="append",
+                    help="filter families by curve (default: all)")
     ap.add_argument("--skip-witness-gen", action="store_true")
     args = ap.parse_args()
 
@@ -146,17 +202,23 @@ def main():
 
     manifest = os.path.join(REPO_DIR, "prover", "Cargo.toml")
     run(["cargo", "build", "--release", "--manifest-path", manifest,
+         "--features", "bls12-381 bn254 pallas",
          "--bin", "benchmark_nova"])
     bench_bin = os.path.join(REPO_DIR, "prover", "target", "release", "benchmark_nova")
 
     rows = []
-    for name in args.family or sorted(FAMILIES):
+    selected = args.family or sorted(FAMILIES)
+    if args.curve:
+        selected = [f for f in selected if FAMILIES[f]["curve"] in args.curve]
+
+    for name in selected:
         fam = FAMILIES[name]
         n_steps = args.steps or fam["default_steps"]
         work = os.path.join(WORK_DIR, name)
         os.makedirs(work, exist_ok=True)
 
         r1cs, wasm = ensure_compiled(fam, name, work)
+        constraints = r1cs_constraint_count(r1cs)
 
         steps_dir = os.path.join(work, "steps")
         if not args.skip_witness_gen:
@@ -167,10 +229,10 @@ def main():
                  "--steps", str(n_steps), "--dir", steps_dir])
         prune_witness_intermediates(steps_dir)
 
-        row = {"family": name, "constraints": fam["constraints"], "steps": n_steps}
+        row = {"family": name, "constraints": constraints, "steps": n_steps, "curve": fam["curve"]}
         for mode, flag in (("base", []), ("parallel", ["--opt-parallel"])):
             log = os.path.join(out_dir, f"{name}-{mode}.log")
-            run([bench_bin, *flag, "--circuit", r1cs, "--steps", steps_dir], log)
+            run([bench_bin, "--curve", fam["curve"], *flag, "--circuit", r1cs, "--steps", steps_dir], log)
             row[mode] = parse_bench_log(log)
         rows.append(row)
 
@@ -187,13 +249,14 @@ def render_summary(stamp, rows):
         "Measured with `benchmark_nova --release` (prover crate); slim IVC flow:",
         "NIFS fold → sumcheck compress → verify. Witnesses pre-generated.",
         "",
-        "| Step circuit | Constraints | Steps | Fold total | Fold/step | Compress | Verify (full) | Verify (slim) | Slim proof | Bundle |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "| Step circuit | Curve | Constraints | Steps | Fold total | Fold/step | Compress | Verify (full) | Verify (slim) | Slim proof | Bundle |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for r in rows:
         b, p = r["base"], r["parallel"]
+        constraints_str = f"{r['constraints']:,}" if r['constraints'] else "?"
         lines.append(
-            f"| `{r['family']}` | {r['constraints']:,} | {r['steps']} "
+            f"| `{r['family']}` | {r['curve']} | {constraints_str} | {r['steps']} "
             f"| {b['fold_s']:.1f} s / {p['fold_s']:.1f} s "
             f"| {b['fold_ms_per_step']:.0f} ms / {p['fold_ms_per_step']:.0f} ms "
             f"| {b['compress_s']:.2f} s / {p['compress_s']:.2f} s "
@@ -204,6 +267,17 @@ def render_summary(stamp, rows):
         )
     lines += ["", "*Each cell shows baseline / --opt-parallel where two values are shown.*", ""]
     return "\n".join(lines)
+
+
+def run(cmd, log_path=None):
+    print("+ " + " ".join(map(str, cmd)), flush=True)
+    if log_path:
+        with open(log_path, "w") as f:
+            r = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, text=True)
+    else:
+        r = subprocess.run(cmd)
+    if r.returncode != 0:
+        sys.exit(f"command failed ({r.returncode}); see {log_path or 'output above'}")
 
 
 if __name__ == "__main__":
