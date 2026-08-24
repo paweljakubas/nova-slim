@@ -13,20 +13,19 @@
 //! All phases keep the witnesses in memory (no disk I/O beyond the initial
 //! read) and exclude transcript hashing.  Usage:
 //!
-//!   cargo run --release --bin benchmark_nova -- --curve bls12-381 --circuit step.r1cs --steps DIR [--limit N] [--opt-parallel]
+//!   cargo run --release --bin benchmark_nova -- --curve bls12-381 --circuit step.r1cs --steps DIR [--limit N] [--opt-parallel] [--commitment pedersen|sis]
 
-use ark_ec::AffineRepr;
 use ark_ff::Zero;
 use ark_serialize::CanonicalSerialize;
 use blake2::{Blake2b512, Digest};
 use prover::circuit::SparseCircuit;
+use prover::commitment::{CommitmentScheme, PedersenCommitment, SisCommitment};
 use prover::nifs;
 use prover::{
     fr_to_string, prove_sumcheck_compression_opt, verify_slim, verify_sumcheck_compression,
     NifsBundle, NifsFinalInstance, NifsFoldOutput, OptFlags, NIFS_PARAMS_SEED,
     NIFS_TRANSCRIPT_PREFIX, curve::{NovaCurve, ScalarField},
 };
-use prover::commitment::{pedersen_commit, PedersenCommitment, PedersenParams};
 use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -35,6 +34,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let opt_parallel = args.iter().any(|a| a == "--opt-parallel");
     let curve = args.iter().position(|a| a == "--curve").map(|i| args[i+1].clone());
+    let commitment = args.iter().position(|a| a == "--commitment").map(|i| args[i+1].clone());
     let circuit_path = args
         .windows(2)
         .find(|w| w[0] == "--circuit")
@@ -45,7 +45,7 @@ fn main() {
         .map(|w| w[1].clone());
     let (Some(circuit_path), Some(steps_dir)) = (circuit_path, steps_dir) else {
         eprintln!(
-            "usage: benchmark_nova [--curve bls12-381|bn254|pallas|vesta] [--opt-parallel] --circuit <step.r1cs> --steps <witness-dir> [--limit N]"
+            "usage: benchmark_nova [--curve bls12-381|bn254|pallas|vesta] [--commitment pedersen|sis] [--opt-parallel] --circuit <step.r1cs> --steps <witness-dir> [--limit N]"
         );
         std::process::exit(2);
     };
@@ -55,22 +55,30 @@ fn main() {
     });
 
     let curve = curve.as_deref().unwrap_or("bls12-381");
-    match curve {
-        "bls12-381" => benchmark::<prover::curve::Bls12_381>(&circuit_path, &steps_dir, limit, opt_parallel),
+    let commitment = commitment.as_deref().unwrap_or("pedersen");
+    match (curve, commitment) {
+        ("bls12-381", "pedersen") => benchmark::<prover::curve::Bls12_381, PedersenCommitment<prover::curve::Bls12_381>>(&circuit_path, &steps_dir, limit, opt_parallel),
         #[cfg(feature = "bn254")]
-        "bn254" => benchmark::<prover::curve::Bn254>(&circuit_path, &steps_dir, limit, opt_parallel),
+        ("bn254", "pedersen") => benchmark::<prover::curve::Bn254, PedersenCommitment<prover::curve::Bn254>>(&circuit_path, &steps_dir, limit, opt_parallel),
         #[cfg(feature = "pallas")]
-        "pallas" => benchmark::<prover::curve::Pallas>(&circuit_path, &steps_dir, limit, opt_parallel),
+        ("pallas", "pedersen") => benchmark::<prover::curve::Pallas, PedersenCommitment<prover::curve::Pallas>>(&circuit_path, &steps_dir, limit, opt_parallel),
         #[cfg(feature = "vesta")]
-        "vesta" => benchmark::<prover::curve::Vesta>(&circuit_path, &steps_dir, limit, opt_parallel),
+        ("vesta", "pedersen") => benchmark::<prover::curve::Vesta, PedersenCommitment<prover::curve::Vesta>>(&circuit_path, &steps_dir, limit, opt_parallel),
+        ("bls12-381", "sis") => benchmark::<prover::curve::Bls12_381, SisCommitment<prover::curve::Bls12_381>>(&circuit_path, &steps_dir, limit, opt_parallel),
+        #[cfg(feature = "bn254")]
+        ("bn254", "sis") => benchmark::<prover::curve::Bn254, SisCommitment<prover::curve::Bn254>>(&circuit_path, &steps_dir, limit, opt_parallel),
+        #[cfg(feature = "pallas")]
+        ("pallas", "sis") => benchmark::<prover::curve::Pallas, SisCommitment<prover::curve::Pallas>>(&circuit_path, &steps_dir, limit, opt_parallel),
+        #[cfg(feature = "vesta")]
+        ("vesta", "sis") => benchmark::<prover::curve::Vesta, SisCommitment<prover::curve::Vesta>>(&circuit_path, &steps_dir, limit, opt_parallel),
         _ => {
-            eprintln!("unknown curve: {curve} — valid: bls12-381, bn254, pallas, vesta");
+            eprintln!("unknown curve/commitment: {curve}/{commitment} — valid curves: bls12-381, bn254, pallas, vesta; valid commitments: pedersen, sis");
             std::process::exit(2);
         }
     }
 }
 
-fn benchmark<C: NovaCurve>(circuit_path: &str, steps_dir: &str, limit: Option<usize>, opt_parallel: bool) {
+fn benchmark<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(circuit_path: &str, steps_dir: &str, limit: Option<usize>, opt_parallel: bool) {
     let mut circuit = SparseCircuit::<ScalarField<C>>::from_r1cs(circuit_path)
         .unwrap_or_else(|e| panic!("failed to load circuit {circuit_path}: {e}"));
     if circuit.n_pub_in != circuit.n_pub_out {
@@ -92,6 +100,7 @@ fn benchmark<C: NovaCurve>(circuit_path: &str, steps_dir: &str, limit: Option<us
     assert!(!wtns.is_empty(), "no .wtns files in steps dir");
 
     let n_steps = wtns.len();
+    let scheme_name = if std::any::type_name::<CS>().contains("Sis") { "sis" } else { "pedersen" };
 
     println!(
         "step circuit: {} wires, {} constraints, pub {} out + {} in, private {}",
@@ -102,22 +111,23 @@ fn benchmark<C: NovaCurve>(circuit_path: &str, steps_dir: &str, limit: Option<us
         circuit.n_prv_in
     );
     println!("step witnesses: {n_steps} (from {steps_dir})");
+    println!("commitment scheme: {scheme_name}");
 
-    benchmark_slim::<C>(&mut circuit, &wtns, opt_parallel);
+    benchmark_slim::<C, CS>(&mut circuit, &wtns, opt_parallel);
 }
 
 /// Slim flow: NIFS fold → sumcheck compression → full/slim verify.
-fn benchmark_slim<C: NovaCurve>(circuit: &mut SparseCircuit<ScalarField<C>>, wtns: &[PathBuf], parallel: bool) {
+fn benchmark_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(circuit: &mut SparseCircuit<ScalarField<C>>, wtns: &[PathBuf], parallel: bool) {
     let n_steps = wtns.len();
     let opt = if parallel { "parallel" } else { "baseline" };
     println!("mode: NIFS fold + sumcheck compress ({opt}), curve: {}", std::any::type_name::<C>());
 
     // 1. NIFS fold.
     let t = Instant::now();
-    let folded = nifs_fold::<C>(circuit, wtns, parallel);
+    let folded = nifs_fold::<C, CS>(circuit, wtns, parallel);
     let fold_s = t.elapsed().as_secs_f64();
     println!(
-        "nifs fold: {fold_s:.3} s total, {:.3} ms/step over {n_steps} steps (2 O(step)-sized MSMs)",
+        "nifs fold: {fold_s:.3} s total, {:.3} ms/step over {n_steps} steps",
         fold_s * 1000.0 / n_steps as f64
     );
 
@@ -125,7 +135,7 @@ fn benchmark_slim<C: NovaCurve>(circuit: &mut SparseCircuit<ScalarField<C>>, wtn
     //    (no trusted setup needed).
     let mut rng = rand::thread_rng();
     let t = Instant::now();
-    let sc_proof = prove_sumcheck_compression_opt::<C, PedersenCommitment<C>>(
+    let sc_proof = prove_sumcheck_compression_opt::<C, CS>(
         circuit,
         &folded,
         &mut rng,
@@ -144,7 +154,7 @@ fn benchmark_slim<C: NovaCurve>(circuit: &mut SparseCircuit<ScalarField<C>>, wtn
 
     // 3a. Verify — sumcheck verification + HashPC checks (audit-grade).
     let t = Instant::now();
-    verify_sumcheck_compression::<C, PedersenCommitment<C>>(&folded.bundle, &sc_proof)
+    verify_sumcheck_compression::<C, CS>(&folded.bundle, &sc_proof)
         .unwrap_or_else(|e| panic!("sumcheck compression verification failed: {e}"));
     let verify_s = t.elapsed().as_secs_f64();
     println!("verify (full): {verify_s:.4} s (sumcheck + HashPC checks)");
@@ -152,12 +162,11 @@ fn benchmark_slim<C: NovaCurve>(circuit: &mut SparseCircuit<ScalarField<C>>, wtn
     // 3b. Verify — slim on-chain path (openings stripped).
     let slim = sc_proof.to_slim();
     let t = Instant::now();
-    verify_slim::<C, PedersenCommitment<C>>(&folded.bundle, &slim)
+    verify_slim::<C, CS>(&folded.bundle, &slim)
         .unwrap_or_else(|e| panic!("slim verification failed: {e}"));
     let verify_slim_s = t.elapsed().as_secs_f64();
 
     // Sizes: the bundle is O(1) in N; the slim proof is what lands on-chain.
-    // Compact CBOR vs decimal/hex JSON shown for both.
     let bundle_json =
         serde_json::to_string_pretty(&folded.bundle).expect("bundle serialization should not fail");
     let full_json =
@@ -195,22 +204,22 @@ fn benchmark_slim<C: NovaCurve>(circuit: &mut SparseCircuit<ScalarField<C>>, wtn
 }
 
 /// Fold every step witness into one Relaxed-R1CS running instance, exactly as
-/// `nova-slim fold` does (same transparent Pedersen params, FOLD_PREFIX challenge,
+/// `nova-slim fold` does (same transparent params, FOLD_PREFIX challenge,
 /// and NIFS_TRANSCRIPT_PREFIX chain), but fully in memory.
-fn nifs_fold<C: NovaCurve>(circuit: &mut SparseCircuit<ScalarField<C>>, wtns: &[PathBuf], parallel: bool) -> NifsFoldOutput<PedersenCommitment<C>> {
+fn nifs_fold<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(circuit: &mut SparseCircuit<ScalarField<C>>, wtns: &[PathBuf], parallel: bool) -> NifsFoldOutput<CS> {
     let n_pub_out = circuit.n_pub_out as usize;
     let n_pub_in = circuit.n_pub_in as usize;
     let n_wires = circuit.n_wires as usize;
     let n_constraints = circuit.n_constraints as usize;
 
-    let params = PedersenParams::<C>::from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints);
+    let params = CS::params_from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints);
     let zero_e = vec![ScalarField::<C>::zero(); n_constraints];
 
     let mut acc_hash: Option<Vec<u8>> = None;
     let mut prev_out: Option<Vec<String>> = None;
     let mut initial_state: Vec<String> = Vec::new();
-    let mut acc_u: Option<nifs::RelaxedR1csInstance<PedersenCommitment<C>>> = None;
-    let mut acc_w: Option<nifs::RelaxedR1csWitness<PedersenCommitment<C>>> = None;
+    let mut acc_u: Option<nifs::RelaxedR1csInstance<CS>> = None;
+    let mut acc_w: Option<nifs::RelaxedR1csWitness<CS>> = None;
 
     for p in wtns {
         circuit
@@ -236,8 +245,8 @@ fn nifs_fold<C: NovaCurve>(circuit: &mut SparseCircuit<ScalarField<C>>, wtns: &[
         let step_u = nifs::RelaxedR1csInstance {
             x,
             u: ScalarField::<C>::from(1u64),
-            w_commit: pedersen_commit::<C>(&params.basis_w, w),
-            e_commit: C::G1Affine::zero(),
+            w_commit: CS::commit_witness(&params, w),
+            e_commit: CS::zero(),
         };
         let step_w = nifs::RelaxedR1csWitness {
             w: w.to_vec(),
@@ -252,8 +261,8 @@ fn nifs_fold<C: NovaCurve>(circuit: &mut SparseCircuit<ScalarField<C>>, wtns: &[
             Some(u_acc) => {
                 let w_acc = acc_w.take().expect("running witness must exist");
                 let acc = acc_hash.as_ref().expect("transcript initialized");
-                let challenge = nifs::fold_challenge::<PedersenCommitment<C>>(acc, &u_acc, &step_u);
-                let (u3, w3) = nifs::fold_with_opts::<PedersenCommitment<C>>(
+                let challenge = nifs::fold_challenge::<CS>(acc, &u_acc, &step_u);
+                let (u3, w3) = nifs::fold_with_opts::<CS>(
                     &params, &circuit.l, &circuit.r, &circuit.o, &u_acc, &w_acc, &step_u, &step_w,
                     challenge, parallel,
                 );
@@ -262,7 +271,7 @@ fn nifs_fold<C: NovaCurve>(circuit: &mut SparseCircuit<ScalarField<C>>, wtns: &[
             }
         }
 
-        acc_hash = Some(transcript_nifs_step::<C>(
+        acc_hash = Some(transcript_nifs_step::<C, CS>(
             acc_hash.as_ref().expect("transcript initialized"),
             acc_u.as_ref().expect("running instance"),
         ));
@@ -284,8 +293,8 @@ fn nifs_fold<C: NovaCurve>(circuit: &mut SparseCircuit<ScalarField<C>>, wtns: &[
         final_instance: NifsFinalInstance {
             x: final_u.x.iter().map(fr_to_string).collect(),
             u: fr_to_string(&final_u.u),
-            w_commit: g1_hex::<C>(&final_u.w_commit),
-            e_commit: g1_hex::<C>(&final_u.e_commit),
+            w_commit: commitment_hex(&final_u.w_commit),
+            e_commit: commitment_hex(&final_u.e_commit),
         },
         transcript_final,
     };
@@ -306,11 +315,11 @@ fn transcript_nifs_init<C: NovaCurve>(initial_state: &[ScalarField<C>]) -> Vec<u
 }
 
 /// `H(NIFS_TRANSCRIPT_PREFIX ‖ acc ‖ instance_bytes)`, matching `nova-slim fold`.
-fn transcript_nifs_step<C: NovaCurve>(acc: &[u8], u: &nifs::RelaxedR1csInstance<PedersenCommitment<C>>) -> Vec<u8> {
+fn transcript_nifs_step<C: NovaCurve, CS: CommitmentScheme>(acc: &[u8], u: &nifs::RelaxedR1csInstance<CS>) -> Vec<u8> {
     let mut h = Blake2b512::new();
     h.update(NIFS_TRANSCRIPT_PREFIX);
     h.update(acc);
-    h.update(nifs::instance_to_bytes::<PedersenCommitment<C>>(u).expect("serialize instance"));
+    h.update(nifs::instance_to_bytes::<CS>(u).expect("serialize instance"));
     h.finalize().to_vec()
 }
 
@@ -322,8 +331,8 @@ fn frs_bytes<C: NovaCurve>(frs: &[ScalarField<C>]) -> Vec<u8> {
     buf
 }
 
-fn g1_hex<C: NovaCurve>(p: &C::G1Affine) -> String {
+fn commitment_hex<T: CanonicalSerialize>(value: &T) -> String {
     let mut buf = Vec::new();
-    p.serialize_compressed(&mut buf).expect("G1 serialize");
+    value.serialize_compressed(&mut buf).expect("commitment serialize");
     hex::encode(buf)
 }
