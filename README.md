@@ -88,8 +88,20 @@ Notes:
 <details>
 <summary><b>Measured numbers and how to reproduce them</b></summary>
 
-Fresh numbers live in `benchmarks/results/<timestamp>/summary.md`. Latest run
-(2026-08-24, 4-core desktop, release build, 255 chained steps):
+We provide two kinds of benchmarks:
+
+| Kind | What it measures | Curves available |
+|---|---|---|
+| **Traditional** (real circom circuits) | Full end-to-end flow: compile → generate witnesses with snarkjs → fold → compress → verify | **BLS12-381, BN254** |
+| **Synthetic** (in-memory random witnesses) | Fold → compress → verify only (no snarkjs) | **BLS12-381, BN254, Pallas, Vesta** |
+
+### Traditional benchmarks (real circuits)
+
+These use the bundled `circom/` step circuits and snarkjs for witness
+generation. Pallas and Vesta are **not available** here because snarkjs does
+not yet support pasta-curve witness generation.
+
+Latest run (2026-08-24, 4-core desktop, release build, 255 chained steps):
 
 | Step circuit | Curve | Constraints | Steps | Fold total | Fold/step | Compress | Verify (full) | Verify (slim) | Slim proof | Bundle |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -102,12 +114,7 @@ The slim proof is constant in step count and step width. Artifacts use a
 compact CBOR encoding (field elements as 32-byte little-endian values,
 sizes shown for CBOR; the legacy decimal/hex JSON encoding is ~2.6× larger).*
 
-**Note on Pallas / Vesta:** the folding core fully supports both curves, but
-`snarkjs` currently does not generate valid witnesses for pasta-compiled
-circuits (`snarkjs wtns check` reports "Curve not supported"). Synthetic
-benchmarks work end-to-end for both curves.
-
-Re-run after any folding/compression change and paste the new summary here:
+Run them with:
 
 ```bash
 python3 benchmarks/run_benchmarks.py                    # all families, 255 steps
@@ -116,9 +123,31 @@ python3 benchmarks/run_benchmarks.py --curve bn254      # specific curve
 python3 benchmarks/run_benchmarks.py --steps 32         # shorter chains
 ```
 
-The harness uses the bundled circuits in `circom/`, compiles them if needed,
-generates (resumable) step witnesses via snarkjs, then measures baseline and
-parallel passes of `benchmark_nova --release`. Raw logs land in
-`benchmarks/results/<timestamp>/`.
+The harness compiles circuits from `circom/` if needed, generates resumable
+step witnesses via snarkjs, then measures baseline and parallel passes of
+`benchmark_nova --release`. Raw logs land in `benchmarks/results/<timestamp>/`.
+
+### Synthetic benchmarks (all curves)
+
+These skip circom/snarkjs entirely and generate random in-memory witnesses.
+Useful for comparing curve performance when real-circuit witnesses are not
+available (e.g. Pallas / Vesta).
+
+```bash
+# BLS12-381
+cargo run --release --manifest-path prover/Cargo.toml --bin benchmark_synthetic -- --curve bls12-381 --state-width 24 --steps 255
+
+# BN254
+cargo run --release --manifest-path prover/Cargo.toml --bin benchmark_synthetic -- --curve bn254 --state-width 24 --steps 255
+
+# Pallas
+cargo run --release --manifest-path prover/Cargo.toml --bin benchmark_synthetic -- --curve pallas --state-width 24 --steps 255
+
+# Vesta
+cargo run --release --manifest-path prover/Cargo.toml --bin benchmark_synthetic -- --curve vesta --state-width 24 --steps 255
+```
+
+All four curves complete fold → compress → verify end-to-end in the synthetic
+harness.
 
 </details>

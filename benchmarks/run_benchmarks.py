@@ -1,7 +1,18 @@
 #!/usr/bin/env python3
-"""NovaSlim benchmark runner — measures the slim IVC flow on real circuits.
+"""NovaSlim **traditional** benchmark runner — real circom circuits + snarkjs.
 
-For each circuit family it:
+This is the "traditional" benchmark: for each circuit family it compiles the
+step circuit with circom, generates chained step witnesses with snarkjs, then
+measures fold → compress → verify via `benchmark_nova --release`.
+
+Curves supported: BLS12-381, BN254.
+Pallas and Vesta are **NOT** available here because snarkjs does not yet
+support pasta-curve witness generation. For Pallas / Vesta, use the synthetic
+benchmark instead:
+
+    cargo run --release --manifest-path prover/Cargo.toml --bin benchmark_synthetic -- --curve pallas --state-width 24 --steps 255
+
+For each circuit family this script:
 
   1. compiles the step circuit with circom if the .r1cs/.wasm are missing,
   2. generates (or resumes) chained step witnesses with snarkjs,
@@ -77,11 +88,12 @@ def ed25519_step_family(dir_name):
     return {"inputs": inputs, "outputs": ",".join(outputs), "dir": dir_name}
 
 
-# Supported benchmark configurations.
+# Supported benchmark configurations for the TRADITIONAL benchmark runner.
 # CardanoKeyOwnership is BLS12-381 specific (originally from cardano-foundation/bls).
-# Ed25519Verify can be compiled for any curve, but Pallas and Vesta witness
-# generation is not fully supported by snarkjs (witness check fails with
-# "Curve not supported" and the generated witnesses do not satisfy constraints).
+# Ed25519Verify can be compiled for any curve, but Pallas and Vesta are
+# EXCLUDED because snarkjs does not generate valid witnesses for pasta curves
+# ("Curve not supported"). Use the synthetic benchmark for Pallas / Vesta:
+#   cargo run --release --manifest-path prover/Cargo.toml --bin benchmark_synthetic -- --curve pallas --state-width 24 --steps 255
 FAMILIES = {
     "cardano_ed25519_ownership_nova_bls12_381": {
         **ed25519_step_family("CardanoKeyOwnership"),
