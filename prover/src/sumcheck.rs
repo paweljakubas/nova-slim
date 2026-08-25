@@ -75,20 +75,21 @@ pub fn eval_row_mle<F: PrimeField>(row: &[(u32, F)], r: &[F]) -> F {
 pub fn eval_dense_mle<F: PrimeField>(v: &[F], r: &[F]) -> F {
     let k = r.len();
     assert_eq!(v.len(), 1 << k, "v length must be 2^r.len()");
-    let mut result = F::zero();
-    for (i, &val) in v.iter().enumerate() {
-        let mut term = val;
-        for (bit, &r_bit) in r.iter().enumerate().take(k) {
-            let b = (i >> bit) & 1;
-            if b == 0 {
-                term *= F::one() - r_bit;
-            } else {
-                term *= r_bit;
+    v.par_iter()
+        .enumerate()
+        .map(|(i, &val)| {
+            let mut term = val;
+            for (bit, &r_bit) in r.iter().enumerate().take(k) {
+                let b = (i >> bit) & 1;
+                if b == 0 {
+                    term *= F::one() - r_bit;
+                } else {
+                    term *= r_bit;
+                }
             }
-        }
-        result += term;
-    }
-    result
+            term
+        })
+        .sum()
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -210,18 +211,39 @@ pub fn prove_with_opts<C: NovaCurve>(
         let half = current.len() / 2;
 
         // Claimed sum: Σ_{x∈{0,1}} g(x, ...)
-        let claimed: ScalarField<C> = current.iter().sum();
+        let claimed: ScalarField<C> = if parallel {
+            current.par_iter().sum()
+        } else {
+            current.iter().sum()
+        };
         claims.push(claimed);
 
         // Build degree-1 polynomial: f(x) = Σ_j [g(2j)·(1-x) + g(2j+1)·x]
         //   f(0) = Σ_j g(2j) = sum_base
         //   f(1) = Σ_j g(2j+1) = sum_one
-        let mut sum_base = ScalarField::<C>::zero();
-        let mut sum_one = ScalarField::<C>::zero();
-        for j in 0..half {
-            sum_base += current[2 * j];
-            sum_one += current[2 * j + 1];
-        }
+        let (sum_base, sum_one) = if parallel {
+            let (sb, so) = (0..half)
+                .into_par_iter()
+                .fold(
+                    || (ScalarField::<C>::zero(), ScalarField::<C>::zero()),
+                    |acc, j| {
+                        (acc.0 + current[2 * j], acc.1 + current[2 * j + 1])
+                    },
+                )
+                .reduce(
+                    || (ScalarField::<C>::zero(), ScalarField::<C>::zero()),
+                    |a, b| (a.0 + b.0, a.1 + b.1),
+                );
+            (sb, so)
+        } else {
+            let mut sum_base = ScalarField::<C>::zero();
+            let mut sum_one = ScalarField::<C>::zero();
+            for j in 0..half {
+                sum_base += current[2 * j];
+                sum_one += current[2 * j + 1];
+            }
+            (sum_base, sum_one)
+        };
         // poly = [f(0), f(1) - f(0)] so f(x) = poly[0] + poly[1]*x
         let poly = vec![sum_base, sum_one - sum_base];
         polys.push(poly);
@@ -236,9 +258,16 @@ pub fn prove_with_opts<C: NovaCurve>(
         r_challenges.push(ri);
 
         // Fold: g'(j) = g(2j) + r_i · (g(2j+1) - g(2j))
-        current = (0..half)
-            .map(|j| current[2 * j] + ri * (current[2 * j + 1] - current[2 * j]))
-            .collect();
+        current = if parallel {
+            (0..half)
+                .into_par_iter()
+                .map(|j| current[2 * j] + ri * (current[2 * j + 1] - current[2 * j]))
+                .collect()
+        } else {
+            (0..half)
+                .map(|j| current[2 * j] + ri * (current[2 * j + 1] - current[2 * j]))
+                .collect()
+        };
     }
 
     // Final claim = the single remaining evaluation.

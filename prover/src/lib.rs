@@ -25,6 +25,7 @@
 use ark_ff::{PrimeField, Zero};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use blake2::{Blake2b512, Digest};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fs;
@@ -858,14 +859,26 @@ pub fn prove_sumcheck_compression_opt<C: NovaCurve, CS: CommitmentScheme<Scalar 
 
     // Build product vector and evaluate its MLE at r (for the final check).
     let n_padded = sumcheck::next_power_of_two(n_constraints);
-    let products: Vec<ScalarField<C>> = (0..n_constraints)
-        .map(|j| {
-            let az = sumcheck::eval_row_mle(&circuit.l[j], z);
-            let bz = sumcheck::eval_row_mle(&circuit.r[j], z);
-            let cz = sumcheck::eval_row_mle(&circuit.o[j], z);
-            az * bz - u * cz - e[j]
-        })
-        .collect();
+    let products: Vec<ScalarField<C>> = if opts.parallel {
+        (0..n_constraints)
+            .into_par_iter()
+            .map(|j| {
+                let az = sumcheck::eval_row_mle(&circuit.l[j], z);
+                let bz = sumcheck::eval_row_mle(&circuit.r[j], z);
+                let cz = sumcheck::eval_row_mle(&circuit.o[j], z);
+                az * bz - u * cz - e[j]
+            })
+            .collect()
+    } else {
+        (0..n_constraints)
+            .map(|j| {
+                let az = sumcheck::eval_row_mle(&circuit.l[j], z);
+                let bz = sumcheck::eval_row_mle(&circuit.r[j], z);
+                let cz = sumcheck::eval_row_mle(&circuit.o[j], z);
+                az * bz - u * cz - e[j]
+            })
+            .collect()
+    };
     let mut products_padded = products;
     products_padded.resize(n_padded, ScalarField::<C>::zero());
 
