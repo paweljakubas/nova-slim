@@ -487,4 +487,116 @@ mod tests {
         // Different domain separators → different commitments
         assert_ne!(cw, ce);
     }
+
+    // ── Property-based tests for HashCommitment ─────────────────────
+
+    use proptest::prelude::*;
+
+    fn arb_fr_vec(max_len: usize) -> impl Strategy<Value = Vec<Fr>> {
+        proptest::collection::vec(0u64..1000, 1..=max_len).prop_map(|v| v.into_iter().map(Fr::from).collect())
+    }
+
+    proptest! {
+        /// Property: hash commitment is additively homomorphic.
+        #[test]
+        fn prop_hash_commit_homomorphic(
+            a in arb_fr_vec(8),
+            b in arb_fr_vec(8),
+        ) {
+            // Pad to same length
+            let max_len = a.len().max(b.len());
+            let mut a_pad = a.clone();
+            let mut b_pad = b.clone();
+            a_pad.resize(max_len, Fr::zero());
+            b_pad.resize(max_len, Fr::zero());
+            let sum: Vec<Fr> = a_pad.iter().zip(&b_pad).map(|(x, y)| *x + *y).collect();
+
+            let params = HashParams::<Bls12_381>::from_seed(b"seed", max_len, max_len, HASH_OUTPUT_DIM);
+            let ca = HashCommitment::<Bls12_381>::commit_witness(&params, &a_pad);
+            let cb = HashCommitment::<Bls12_381>::commit_witness(&params, &b_pad);
+            let csum = HashCommitment::<Bls12_381>::commit_witness(&params, &sum);
+
+            prop_assert_eq!(HashCommitment::<Bls12_381>::add(&ca, &cb), csum);
+        }
+
+        /// Property: hash commitment scalar multiplication distributes.
+        #[test]
+        fn prop_hash_commit_scalar_mul(
+            v in arb_fr_vec(8),
+            s in 0u64..100,
+        ) {
+            let len = v.len();
+            let params = HashParams::<Bls12_381>::from_seed(b"seed", len, len, HASH_OUTPUT_DIM);
+            let sv: Vec<Fr> = v.iter().map(|x| *x * Fr::from(s)).collect();
+
+            let cv = HashCommitment::<Bls12_381>::commit_witness(&params, &v);
+            let csv = HashCommitment::<Bls12_381>::commit_witness(&params, &sv);
+            let scalar_mul_result = HashCommitment::<Bls12_381>::scalar_mul(&cv, &Fr::from(s));
+
+            prop_assert_eq!(scalar_mul_result, csv);
+        }
+
+        /// Property: commit of zero vector is zero.
+        #[test]
+        fn prop_hash_commit_zero(
+            n in 1usize..10,
+        ) {
+            let params = HashParams::<Bls12_381>::from_seed(b"seed", n, n, HASH_OUTPUT_DIM);
+            let zeros = vec![Fr::zero(); n];
+            let cz = HashCommitment::<Bls12_381>::commit_witness(&params, &zeros);
+            prop_assert_eq!(cz, HashCommitment::<Bls12_381>::zero(HASH_OUTPUT_DIM));
+        }
+
+        /// Property: distinct non-zero inputs produce distinct commitments
+        /// (collision resistance).
+        #[test]
+        fn prop_hash_commit_collision_resistant(
+            a in arb_fr_vec(8),
+            b in arb_fr_vec(8),
+        ) {
+            let max_len = a.len().max(b.len());
+            let mut a_pad = a;
+            let mut b_pad = b;
+            a_pad.resize(max_len, Fr::zero());
+            b_pad.resize(max_len, Fr::zero());
+            prop_assume!(a_pad != b_pad);
+
+            let params = HashParams::<Bls12_381>::from_seed(b"seed", max_len, max_len, HASH_OUTPUT_DIM);
+            let ca = HashCommitment::<Bls12_381>::commit_witness(&params, &a_pad);
+            let cb = HashCommitment::<Bls12_381>::commit_witness(&params, &b_pad);
+
+            prop_assert_ne!(ca, cb);
+        }
+
+        /// Property: distinct seeds produce distinct commitments for the
+        /// same input (seed separation).
+        #[test]
+        fn prop_hash_commit_seed_separation(
+            v in arb_fr_vec(8),
+            seed_a in proptest::collection::vec(0u8..255, 1..32),
+            seed_b in proptest::collection::vec(0u8..255, 1..32),
+        ) {
+            prop_assume!(seed_a != seed_b);
+            let len = v.len();
+            let pa = HashParams::<Bls12_381>::from_seed(&seed_a, len, len, HASH_OUTPUT_DIM);
+            let pb = HashParams::<Bls12_381>::from_seed(&seed_b, len, len, HASH_OUTPUT_DIM);
+            let ca = HashCommitment::<Bls12_381>::commit_witness(&pa, &v);
+            let cb = HashCommitment::<Bls12_381>::commit_witness(&pb, &v);
+
+            prop_assert_ne!(ca, cb);
+        }
+
+        /// Property: witness and error domain separation.
+        #[test]
+        fn prop_hash_commit_domain_separation(
+            v in arb_fr_vec(8),
+        ) {
+            let len = v.len();
+            let params = HashParams::<Bls12_381>::from_seed(b"seed", len, len, HASH_OUTPUT_DIM);
+            let cw = HashCommitment::<Bls12_381>::commit_witness(&params, &v);
+            let ce = HashCommitment::<Bls12_381>::commit_error(&params, &v);
+            prop_assume!(!v.is_empty() && v.iter().any(|x| *x != Fr::zero()));
+            prop_assert_ne!(cw, ce);
+        }
+    }
 }

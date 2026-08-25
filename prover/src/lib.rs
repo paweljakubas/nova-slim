@@ -2143,4 +2143,37 @@ mod tests {
             prop_assert_eq!(slim.bundle_final_instance_hash, expected);
         }
     }
+
+    // ── HashCommitment E2E tests ───────────────────────────────────
+
+    use crate::commitment::HashCommitment;
+
+    /// E2E: fold → compress → slim → verify with HashCommitment.
+    #[test]
+    fn hash_commit_e2e_fold_compress_slim_verify() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r1cs_path = tmp.path().join("step.r1cs");
+        let steps_dir = tmp.path().join("steps");
+        fs::write(&r1cs_path, step_r1cs_bytes()).unwrap();
+        fs::create_dir(&steps_dir).unwrap();
+
+        let mut state = 2u64;
+        for (i, x) in [3u64, 5, 7].iter().enumerate() {
+            state = write_step_wtns(&steps_dir, i, state, *x);
+        }
+
+        let fold_out = run_fold_nifs::<crate::curve::Bls12_381, HashCommitment<crate::curve::Bls12_381>>(&r1cs_path, &steps_dir).unwrap();
+        let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
+        let mut rng = rand::thread_rng();
+        let sc = prove_sumcheck_compression::<crate::curve::Bls12_381, HashCommitment<crate::curve::Bls12_381>>(&c, &fold_out, &mut rng).unwrap();
+
+        // Full verify
+        verify_sumcheck_compression::<crate::curve::Bls12_381, HashCommitment<crate::curve::Bls12_381>>(&fold_out.bundle, &sc).unwrap();
+
+        // Slim verify
+        let slim = sc.to_slim();
+        let v = verify_slim::<crate::curve::Bls12_381, HashCommitment<crate::curve::Bls12_381>>(&fold_out.bundle, &slim).unwrap();
+        assert_eq!(v.steps, 3);
+        assert!(!v.transcript_final.is_empty());
+    }
 }
