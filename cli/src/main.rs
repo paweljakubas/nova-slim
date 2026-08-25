@@ -25,8 +25,11 @@ pub enum CommitmentSchemeArg {
     /// Pedersen (elliptic-curve) commitments — default, transparent.
     #[default]
     Pedersen,
-    /// SIS/Ajtai lattice commitments — not yet implemented.
+    /// SIS/Ajtai lattice commitments — vector commitments over a lattice.
     Sis,
+    /// Hash-based commitments — on-the-fly Blake2b coefficient derivation,
+    /// no stored matrix, O(m·n) computation per commitment.
+    Hash,
 }
 
 /// Supported elliptic curves.

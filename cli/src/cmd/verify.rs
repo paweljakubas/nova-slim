@@ -1,7 +1,7 @@
 //! `verify` subcommand — verify a NIFS bundle against a compression proof.
 
 use clap::Parser;
-use prover::{run_verify_slim, run_verify_sumcheck_opt, DEFAULT_SIS_PARAM, commitment::{PedersenCommitment, SisCommitment}, curve::{Bls12_381, Bn254, Pallas, Vesta}};
+use prover::{run_verify_slim, run_verify_sumcheck_opt, DEFAULT_SIS_PARAM, commitment::{PedersenCommitment, SisCommitment, HashCommitment}, curve::{Bls12_381, Bn254, Pallas, Vesta}};
 use std::error::Error;
 use std::path::PathBuf;
 use crate::Curve;
@@ -45,12 +45,16 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
         let out = match (args.curve, args.commitment) {
             (Curve::Bls12_381, crate::CommitmentSchemeArg::Pedersen) => run_verify_slim::<Bls12_381, PedersenCommitment<Bls12_381>>(&args.ivc, sp)?,
             (Curve::Bls12_381, crate::CommitmentSchemeArg::Sis) => run_verify_slim::<Bls12_381, SisCommitment<Bls12_381>>(&args.ivc, sp)?,
+            (Curve::Bls12_381, crate::CommitmentSchemeArg::Hash) => run_verify_slim::<Bls12_381, HashCommitment<Bls12_381>>(&args.ivc, sp)?,
             (Curve::Bn254, crate::CommitmentSchemeArg::Pedersen) => run_verify_slim::<Bn254, PedersenCommitment<Bn254>>(&args.ivc, sp)?,
             (Curve::Bn254, crate::CommitmentSchemeArg::Sis) => run_verify_slim::<Bn254, SisCommitment<Bn254>>(&args.ivc, sp)?,
+            (Curve::Bn254, crate::CommitmentSchemeArg::Hash) => run_verify_slim::<Bn254, HashCommitment<Bn254>>(&args.ivc, sp)?,
             (Curve::Pallas, crate::CommitmentSchemeArg::Pedersen) => run_verify_slim::<Pallas, PedersenCommitment<Pallas>>(&args.ivc, sp)?,
             (Curve::Pallas, crate::CommitmentSchemeArg::Sis) => run_verify_slim::<Pallas, SisCommitment<Pallas>>(&args.ivc, sp)?,
+            (Curve::Pallas, crate::CommitmentSchemeArg::Hash) => run_verify_slim::<Pallas, HashCommitment<Pallas>>(&args.ivc, sp)?,
             (Curve::Vesta, crate::CommitmentSchemeArg::Pedersen) => run_verify_slim::<Vesta, PedersenCommitment<Vesta>>(&args.ivc, sp)?,
             (Curve::Vesta, crate::CommitmentSchemeArg::Sis) => run_verify_slim::<Vesta, SisCommitment<Vesta>>(&args.ivc, sp)?,
+            (Curve::Vesta, crate::CommitmentSchemeArg::Hash) => run_verify_slim::<Vesta, HashCommitment<Vesta>>(&args.ivc, sp)?,
         };
         eprintln!(
             "Verified {} steps: slim sumcheck proof OK, state chain OK (no opening proofs — off-chain audit trail)",
@@ -64,12 +68,16 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
         let out = match (args.curve, args.commitment) {
             (Curve::Bls12_381, crate::CommitmentSchemeArg::Pedersen) => run_verify_sumcheck_opt::<Bls12_381, PedersenCommitment<Bls12_381>>(&args.ivc, sc_proof, args.sis_param)?,
             (Curve::Bls12_381, crate::CommitmentSchemeArg::Sis) => run_verify_sumcheck_opt::<Bls12_381, SisCommitment<Bls12_381>>(&args.ivc, sc_proof, args.sis_param)?,
+            (Curve::Bls12_381, crate::CommitmentSchemeArg::Hash) => run_verify_sumcheck_opt::<Bls12_381, HashCommitment<Bls12_381>>(&args.ivc, sc_proof, args.sis_param)?,
             (Curve::Bn254, crate::CommitmentSchemeArg::Pedersen) => run_verify_sumcheck_opt::<Bn254, PedersenCommitment<Bn254>>(&args.ivc, sc_proof, args.sis_param)?,
             (Curve::Bn254, crate::CommitmentSchemeArg::Sis) => run_verify_sumcheck_opt::<Bn254, SisCommitment<Bn254>>(&args.ivc, sc_proof, args.sis_param)?,
+            (Curve::Bn254, crate::CommitmentSchemeArg::Hash) => run_verify_sumcheck_opt::<Bn254, HashCommitment<Bn254>>(&args.ivc, sc_proof, args.sis_param)?,
             (Curve::Pallas, crate::CommitmentSchemeArg::Pedersen) => run_verify_sumcheck_opt::<Pallas, PedersenCommitment<Pallas>>(&args.ivc, sc_proof, args.sis_param)?,
             (Curve::Pallas, crate::CommitmentSchemeArg::Sis) => run_verify_sumcheck_opt::<Pallas, SisCommitment<Pallas>>(&args.ivc, sc_proof, args.sis_param)?,
+            (Curve::Pallas, crate::CommitmentSchemeArg::Hash) => run_verify_sumcheck_opt::<Pallas, HashCommitment<Pallas>>(&args.ivc, sc_proof, args.sis_param)?,
             (Curve::Vesta, crate::CommitmentSchemeArg::Pedersen) => run_verify_sumcheck_opt::<Vesta, PedersenCommitment<Vesta>>(&args.ivc, sc_proof, args.sis_param)?,
             (Curve::Vesta, crate::CommitmentSchemeArg::Sis) => run_verify_sumcheck_opt::<Vesta, SisCommitment<Vesta>>(&args.ivc, sc_proof, args.sis_param)?,
+            (Curve::Vesta, crate::CommitmentSchemeArg::Hash) => run_verify_sumcheck_opt::<Vesta, HashCommitment<Vesta>>(&args.ivc, sc_proof, args.sis_param)?,
         };
         eprintln!(
             "Verified {} steps: sumcheck compression proof OK, commitments OK, state chain OK",

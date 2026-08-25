@@ -2,7 +2,7 @@
 //! instance (NIFS) and emit the O(1) bundle.
 
 use clap::Parser;
-use prover::{run_fold_nifs_opt, OptFlags, NifsBundle, DEFAULT_SIS_PARAM, commitment::{PedersenCommitment, SisCommitment}, curve::{Bls12_381, Bn254, Pallas, Vesta, NovaCurve, ScalarField}};
+use prover::{run_fold_nifs_opt, OptFlags, NifsBundle, DEFAULT_SIS_PARAM, commitment::{PedersenCommitment, SisCommitment, HashCommitment}, curve::{Bls12_381, Bn254, Pallas, Vesta, NovaCurve, ScalarField}};
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
@@ -89,12 +89,20 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
             let out = run_fold_nifs_opt::<Bls12_381, SisCommitment<Bls12_381>>(&args.circuit, &args.steps, opts, args.sis_param)?;
             write_bundle::<Bls12_381>(&out.bundle, &args.out, opts)?;
         }
+        (Curve::Bls12_381, crate::CommitmentSchemeArg::Hash) => {
+            let out = run_fold_nifs_opt::<Bls12_381, HashCommitment<Bls12_381>>(&args.circuit, &args.steps, opts, args.sis_param)?;
+            write_bundle::<Bls12_381>(&out.bundle, &args.out, opts)?;
+        }
         (Curve::Bn254, crate::CommitmentSchemeArg::Pedersen) => {
             let out = run_fold_nifs_opt::<Bn254, PedersenCommitment<Bn254>>(&args.circuit, &args.steps, opts, args.sis_param)?;
             write_bundle::<Bn254>(&out.bundle, &args.out, opts)?;
         }
         (Curve::Bn254, crate::CommitmentSchemeArg::Sis) => {
             let out = run_fold_nifs_opt::<Bn254, SisCommitment<Bn254>>(&args.circuit, &args.steps, opts, args.sis_param)?;
+            write_bundle::<Bn254>(&out.bundle, &args.out, opts)?;
+        }
+        (Curve::Bn254, crate::CommitmentSchemeArg::Hash) => {
+            let out = run_fold_nifs_opt::<Bn254, HashCommitment<Bn254>>(&args.circuit, &args.steps, opts, args.sis_param)?;
             write_bundle::<Bn254>(&out.bundle, &args.out, opts)?;
         }
         (Curve::Pallas, crate::CommitmentSchemeArg::Pedersen) => {
@@ -105,12 +113,20 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
             let out = run_fold_nifs_opt::<Pallas, SisCommitment<Pallas>>(&args.circuit, &args.steps, opts, args.sis_param)?;
             write_bundle::<Pallas>(&out.bundle, &args.out, opts)?;
         }
+        (Curve::Pallas, crate::CommitmentSchemeArg::Hash) => {
+            let out = run_fold_nifs_opt::<Pallas, HashCommitment<Pallas>>(&args.circuit, &args.steps, opts, args.sis_param)?;
+            write_bundle::<Pallas>(&out.bundle, &args.out, opts)?;
+        }
         (Curve::Vesta, crate::CommitmentSchemeArg::Pedersen) => {
             let out = run_fold_nifs_opt::<Vesta, PedersenCommitment<Vesta>>(&args.circuit, &args.steps, opts, args.sis_param)?;
             write_bundle::<Vesta>(&out.bundle, &args.out, opts)?;
         }
         (Curve::Vesta, crate::CommitmentSchemeArg::Sis) => {
             let out = run_fold_nifs_opt::<Vesta, SisCommitment<Vesta>>(&args.circuit, &args.steps, opts, args.sis_param)?;
+            write_bundle::<Vesta>(&out.bundle, &args.out, opts)?;
+        }
+        (Curve::Vesta, crate::CommitmentSchemeArg::Hash) => {
+            let out = run_fold_nifs_opt::<Vesta, HashCommitment<Vesta>>(&args.circuit, &args.steps, opts, args.sis_param)?;
             write_bundle::<Vesta>(&out.bundle, &args.out, opts)?;
         }
     }
