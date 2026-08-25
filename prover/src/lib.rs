@@ -269,6 +269,7 @@ pub mod codec {
         product_at_r: FrCbor,
         w_hash: ByteBuf,
         e_hash: ByteBuf,
+        bundle_instance_hash: ByteBuf,
     }
 
     #[derive(Serialize, Deserialize)]
@@ -346,6 +347,7 @@ pub mod codec {
             product_at_r: fr_enc(&fr_parse::<F>(&p.claimed_product_at_r)?),
             w_hash: hash_enc(&p.w_commit_hash)?,
             e_hash: hash_enc(&p.e_commit_hash)?,
+            bundle_instance_hash: hash_enc(&p.bundle_final_instance_hash)?,
         };
         write(&dto)
     }
@@ -364,6 +366,7 @@ pub mod codec {
             claimed_product_at_r: super::fr_to_string(&fr_dec::<F>(&d.product_at_r)?),
             w_commit_hash: hex::encode(&d.w_hash),
             e_commit_hash: hex::encode(&d.e_hash),
+            bundle_final_instance_hash: hex::encode(&d.bundle_instance_hash),
         })
     }
 
@@ -1076,6 +1079,10 @@ pub struct NifsSlimProof {
     pub w_commit_hash: String,
     /// BLAKE2b-512 hash of the committed error E (for off-chain audit).
     pub e_commit_hash: String,
+    /// Hash of the bundle's `final_instance` — binds the slim proof to the
+    /// specific folded instance it was generated for.  The verifier checks
+    /// this matches the bundle, preventing proof re-use across bundles.
+    pub bundle_final_instance_hash: String,
 }
 
 impl NifsSumcheckProof {
@@ -1083,12 +1090,25 @@ impl NifsSumcheckProof {
     /// on-chain proof.  Circuit metadata and the final instance are
     /// excluded — the verifier reads them from the NIFS bundle.
     pub fn to_slim(&self) -> NifsSlimProof {
+        // Hash the full final_instance (x, u, w_commit, e_commit) to bind
+        // the slim proof to the specific folded instance.
+        let instance_str = format!(
+            "{}|{}|{}|{}",
+            self.final_instance.x.join(":"),
+            self.final_instance.u,
+            self.final_instance.w_commit,
+            self.final_instance.e_commit,
+        );
+        let hash = blake2::Blake2b512::digest(instance_str.as_bytes());
+        let bundle_final_instance_hash = hex::encode(&hash[..32]);
+
         NifsSlimProof {
             sumcheck_polys: self.sumcheck_polys.clone(),
             r_challenges: self.r_challenges.clone(),
             claimed_product_at_r: self.claimed_product_at_r.clone(),
             w_commit_hash: self.w_commit_hash.clone(),
             e_commit_hash: self.e_commit_hash.clone(),
+            bundle_final_instance_hash,
         }
     }
 }
@@ -1119,6 +1139,22 @@ pub fn verify_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
         .map(|row| frs_from_strings::<ScalarField<C>>(row))
         .collect::<Result<Vec<_>, _>>()?;
     let claimed_r = frs_from_strings::<ScalarField<C>>(&proof.r_challenges)?;
+
+    // 0. Bundle binding: the proof must be tied to this specific bundle's
+    //    final instance (hash of x || u || w_commit || e_commit).
+    {
+        let instance_str = format!(
+            "{}|{}|{}|{}",
+            bundle.final_instance.x.join(":"),
+            bundle.final_instance.u,
+            bundle.final_instance.w_commit,
+            bundle.final_instance.e_commit,
+        );
+        let expected_hash = hex::encode(&blake2::Blake2b512::digest(instance_str.as_bytes())[..32]);
+        if proof.bundle_final_instance_hash != expected_hash {
+            return Err("slim proof is not bound to this NIFS bundle (final instance hash mismatch)".into());
+        }
+    }
 
     let num_rounds = polys.len();
 
