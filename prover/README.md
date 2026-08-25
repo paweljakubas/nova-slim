@@ -74,7 +74,7 @@ nova-slim verify --curve bls12-381 --ivc bundle.ivc.cbor --sumcheck-proof sumche
 ### Parallel mode
 
 Add `--opt parallel` to the fold or compress phases for rayon-parallelized
-cross-term and sumcheck row computation:
+cross-term, sumcheck row, and sumcheck compression computation:
 
 ```bash
 nova-slim fold --opt parallel --curve bls12-381 --circuit step_circuit.r1cs --steps ./step_witnesses/ --out bundle.ivc.cbor

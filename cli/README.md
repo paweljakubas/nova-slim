@@ -109,7 +109,8 @@ nova-slim fold --curve bls12-381 --circuit step_circuit.r1cs \
   --steps ./step_witnesses/ --out bundle.ivc.cbor
 ```
 
-Add `--opt parallel` for rayon-parallelized cross-term computation.
+Add `--opt parallel` for rayon-parallelized cross-term computation and
+sumcheck compression (MLE evaluation, round sums, fold steps).
 
 ### `compress` — compress into one proof
 
