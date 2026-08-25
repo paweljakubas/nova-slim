@@ -2,7 +2,7 @@
 
 Transparent folding-scheme proofs sized for on-chain verification:
 NIFS-fold a chain of identical step circuits into one accumulator, compress
-with a sumcheck argument, and verify a **~2.5 KiB** proof with **no pairing,
+with a sumcheck argument, and verify a **~0.4 KiB** proof with **no pairing,
 no trusted setup, and sub-millisecond verification**.
 
 Supports **BLS12-381** (Cardano), **BN254** (Ethereum), **Pallas** (Zcash), and **Vesta**. Both **Pedersen** (fast, classical) and **SIS** (faster folding, quantum-ready) commitments are selectable at runtime — the first Nova-family system to combine sub-3 KiB proofs, no trusted setup, and a post-quantum commitment path.
@@ -11,24 +11,24 @@ Supports **BLS12-381** (Cardano), **BN254** (Ethereum), **Pallas** (Zcash), and 
 nova-slim params   → inspect a step circuit (n_pub_in must equal n_pub_out)
 nova-slim fold     → NIFS-fold N step witnesses into one O(1) bundle
 nova-slim compress → sumcheck compression (--slim for the on-chain variant)
-nova-slim verify   → check bundle + proof (slim: ~0.5 ms)
+nova-slim verify   → check bundle + proof (slim: ~0.2 ms)
 ```
 
 ## What is a slim proof?
 
 The **full** sumcheck proof includes the entire HashPC opening (the witness
  truth table) and is ~240 KiB. The **slim** proof strips this opening, keeping
- only the sumcheck protocol data and commitment hashes, yielding a **~2.5 KiB**
- on-chain payload.
+ only the sumcheck protocol data, yielding a **~0.4 KiB** on-chain payload that
+ is **independent of the commitment scheme and its security parameter**.
 
 | Property | Full proof | Slim proof |
 |---|---|---|
 | Soundness | Yes | Yes |
 | Knowledge-soundness | Yes (explicit witness) | Yes (implicit witness) |
-| On-chain size | ~240 KiB | **~2.5 KiB** |
+| On-chain size | ~240 KiB | **~0.4 KiB** (independent of m) |
 | Auditability | Full witness reconstruction | Commitment binding only |
 | Trusted setup | None | None |
-| Verifier time | ~8 s (HashPC recompute) | **~0.7 ms** (sumcheck only) |
+| Verifier time | ~8 s (HashPC recompute) | **~0.2 ms** (sumcheck only) |
 
 **Do we lose security? No.** The slim proof is still a sound argument of
 knowledge: the prover cannot forge it without knowing a valid witness (W, E)
@@ -80,7 +80,7 @@ $NOVA params --curve bn254 --circuit circom/Ed25519Verify/ed25519_verify_nova.r1
 $NOVA fold --curve bn254 --circuit circom/Ed25519Verify/ed25519_verify_nova.r1cs \
     --steps <witness-dir> --out ed25519.ivc.cbor
 
-# 6a. On-chain path: slim proof (~2.5 KiB CBOR, no openings)
+# 6a. On-chain path: slim proof (~0.4 KiB CBOR, no openings)
 $NOVA compress --slim --curve bn254 --circuit ... --steps <witness-dir> --out ed25519_slim.proof.cbor
 $NOVA verify --curve bn254 --ivc ed25519.ivc.cbor --slim-proof ed25519_slim.proof.cbor
 
@@ -95,7 +95,7 @@ $NOVA verify --curve bn254 --ivc ed25519.ivc.cbor --sumcheck-proof ed25519_full.
 <summary><b>How to run the test suites</b></summary>
 
 ```bash
-# Library tests (65 tests)
+# Library tests (70 tests)
 cargo test --release --manifest-path prover/Cargo.toml
 
 # CLI integration tests (15 tests; includes real-circuit end-to-end flows)
@@ -133,11 +133,11 @@ Latest run (2026-08-24, 4-core desktop, release build, 255 chained steps):
 
 | Step circuit | Curve | Commitment | Constraints | Steps | Fold total | Fold/step | Compress | Verify (full) | Verify (slim) | Slim proof | Bundle |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| `ed25519_verify_nova` | bls12-381 | Pedersen | 7,724 | 255 | 138.5 / 145.7 s | 543 / 571 ms | 25.44 / 24.30 s | 28.59 / 25.49 s | **0.7 ms** | **2.5 KiB** | 2.2 KiB |
-| `ed25519_verify_nova` | bn254 | Pedersen | 7,724 | 255 | 74.2 / 66.7 s | 347 / 312 ms | 12.23 / 11.14 s | 12.22 / 11.53 s | **0.6 ms** | **2.4 KiB** | 2.2 KiB |
-| `ed25519_verify_nova` | bn254 | **SIS** | 7,724 | 214 | 8.5 s | **39.9 ms** | 14.2 s | **1.1 s** | **0.6 ms** | **2.6 KiB** | 2.4 KiB |
-| `vrf_verify_nova` | bn254 | Pedersen | 9 | 254 | 2.1 s | 8.4 ms | 0.02 s | 0.03 s | **0.1 ms** | **0.8 KiB** | 0.7 KiB |
-| `vrf_verify_nova` | bn254 | **SIS** | 9 | 254 | **0.04 s** | **0.17 ms** | 0.03 s | 0.002 s | **0.2 ms** | **1.0 KiB** | 0.9 KiB |
+| `ed25519_verify_nova` | bls12-381 | Pedersen | 7,724 | 255 | 138.5 / 145.7 s | 543 / 571 ms | 25.44 / 24.30 s | 28.59 / 25.49 s | **0.7 ms** | **~1 KiB** | 2.2 KiB |
+| `ed25519_verify_nova` | bn254 | Pedersen | 7,724 | 255 | 74.2 / 66.7 s | 347 / 312 ms | 12.23 / 11.14 s | 12.22 / 11.53 s | **0.6 ms** | **~1 KiB** | 2.2 KiB |
+| `ed25519_verify_nova` | bn254 | **SIS** | 7,724 | 214 | 8.5 s | **39.9 ms** | 14.2 s | **1.1 s** | **0.6 ms** | **~1 KiB** | 2.4 KiB |
+| `vrf_verify_nova` | bn254 | Pedersen | 9 | 254 | 2.1 s | 8.4 ms | 0.02 s | 0.03 s | **0.1 ms** | **~0.4 KiB** | 0.7 KiB |
+| `vrf_verify_nova` | bn254 | **SIS** | 9 | 254 | **0.04 s** | **0.17 ms** | 0.03 s | 0.002 s | **0.2 ms** | **~0.4 KiB** | 0.9 KiB |
 
 *Each cell shows baseline / `--opt-parallel` where two values are shown.
 The slim proof is constant in step count and step width. Artifacts use a
@@ -148,23 +148,25 @@ sizes shown for CBOR; the legacy decimal/hex JSON encoding is ~2.6× larger).*
 because it replaces elliptic-curve MSM with simple matrix-vector multiplication
 over the scalar field. The bundle grows slightly (~200 B) because each SIS
 commitment is a short vector (`m = 4` field elements) rather than a single
-curve point.
+curve point. The slim proof is **independent of the commitment scheme** — the
+same ~0.4 KiB payload works for Pedersen, SIS-m=4, and SIS-m=128.
 
 **SIS security scaling (`--sis-param`).** The SIS output dimension `m` is
 configurable via `--sis-param <M>`. Scaling `m` from 4 to 128 provides 128-bit
-post-quantum security at the cost of ~8× slower folding and ~5× larger proofs:
+post-quantum security at the cost of ~8× slower folding and ~5× larger bundles.
+The slim proof remains constant because it contains only the sumcheck data:
 
 | SIS m | Fold/step | Verify (full) | Slim proof | Bundle | PQ security |
 |---|---|---|---|---|---|
-| 4 (POC) | 0.41 ms | 0.006 s | 2.3 KiB | 2.1 KiB | ~4-bit |
-| **128 (target)** | 3.12 ms | 0.15 s | 10.1 KiB | 9.8 KiB | **128-bit** |
+| 4 (POC) | 0.83 ms | 0.007 s | **0.4 KiB** | 2.1 KiB | ~4-bit |
+| **128 (target)** | 5.40 ms | 0.20 s | **0.4 KiB** | 9.8 KiB | **128-bit** |
 
 *BN254, state-width 24, 200 steps, baseline.*
 
 Even at `m = 128`, the slim proof remains well within Cardano's 16 KiB
-transaction limit at **10.1 KiB**, and slim verification stays sub-millisecond.
+transaction limit at **0.4 KiB**, and slim verification stays sub-millisecond.
 The key result is architectural: NovaSlim is the first Nova-family system that
-simultaneously delivers **sub-3 KiB proofs**, **no trusted setup**, and a
+simultaneously delivers **sub-kilobyte proofs**, **no trusted setup**, and a
 **post-quantum commitment path** — a combination no prior system achieves.*
 
 Run them with:
@@ -213,9 +215,9 @@ cargo run --release --manifest-path prover/Cargo.toml --bin benchmark_synthetic 
 
 | Commitment | Fold/step | Compress | Verify (full) | Verify (slim) | Slim proof | Bundle |
 |---|---|---|---|---|---|---|
-| Pedersen | 3.83 ms | 0.134 s | 0.124 s | 0.2 ms | 2.2 KiB | 1.9 KiB |
-| **SIS (m=4)** | **0.41 ms** (9.3×) | 0.088 s | **0.006 s** (20×) | 0.2 ms | 2.3 KiB | 2.1 KiB |
-| **SIS (m=128)** | **3.12 ms** (1.2×) | 0.072 s | 0.15 s | 0.2 ms | 10.1 KiB | 9.8 KiB |
+| Pedersen | 3.76 ms | 0.088 s | 0.092 s | 0.3 ms | **0.4 KiB** | 1.9 KiB |
+| **SIS (m=4)** | **0.83 ms** (4.5×) | 0.221 s | **0.007 s** (13×) | 0.2 ms | **0.4 KiB** | 2.1 KiB |
+| **SIS (m=128)** | **5.40 ms** (0.7×) | 0.082 s | 0.20 s | 0.3 ms | **0.4 KiB** | 9.8 KiB |
 
 **Memory scaling (synthetic, BN254, state_width=24, Pedersen):**
 
