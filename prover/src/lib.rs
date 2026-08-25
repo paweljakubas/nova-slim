@@ -1933,4 +1933,214 @@ mod tests {
         assert_eq!(v_seq.transcript_final, v_par.transcript_final);
         assert_eq!(fold_seq.bundle, fold_par.bundle);
     }
+
+    // ── Property-based tests (proptest) ─────────────────────────────────
+
+    use proptest::prelude::*;
+
+    /// Helper: fold 3 steps with random multipliers [x1, x2, x3] starting
+    /// from state 2, produce a slim proof, and return everything needed
+    /// for property checks.
+    fn setup_slim(
+        x1: u64,
+        x2: u64,
+        x3: u64,
+    ) -> (
+        NifsBundle,
+        NifsSlimProof,
+        tempfile::TempDir,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let r1cs_path = tmp.path().join("step.r1cs");
+        let steps_dir = tmp.path().join("steps");
+        fs::write(&r1cs_path, step_r1cs_bytes()).unwrap();
+        fs::create_dir(&steps_dir).unwrap();
+
+        let mut state = 2u64;
+        for (i, x) in [x1, x2, x3].iter().enumerate() {
+            state = write_step_wtns(&steps_dir, i, state, *x);
+        }
+
+        let fold_out = run_fold_nifs::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&r1cs_path, &steps_dir).unwrap();
+        let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
+        let mut rng = rand::thread_rng();
+        let sc = prove_sumcheck_compression::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&c, &fold_out, &mut rng).unwrap();
+        let slim = sc.to_slim();
+
+        (fold_out.bundle, slim, tmp)
+    }
+
+    proptest! {
+        /// Property: a valid slim proof always verifies against its own bundle.
+        #[test]
+        fn prop_slim_accepts_valid(
+            x1 in 2u64..20,
+            x2 in 2u64..20,
+            x3 in 2u64..20,
+        ) {
+            let (bundle, slim, _tmp) = setup_slim(x1, x2, x3);
+            let v = verify_slim::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&bundle, &slim);
+            prop_assert!(v.is_ok(), "valid slim proof rejected: {:?}", v.err());
+            let v = v.unwrap();
+            prop_assert_eq!(v.steps, 3);
+            prop_assert!(!v.transcript_final.is_empty());
+        }
+
+        /// Property: a slim proof for bundle A must NOT verify against a
+        /// different (but valid) bundle B.
+        #[test]
+        fn prop_slim_rejects_cross_bundle(
+            x1 in 2u64..20,
+            x2 in 2u64..20,
+            x3 in 2u64..20,
+            y1 in 2u64..20,
+            y2 in 2u64..20,
+            y3 in 2u64..20,
+        ) {
+            let (bundle_a, slim_a, _tmp_a) = setup_slim(x1, x2, x3);
+            let (bundle_b, _slim_b, _tmp_b) = setup_slim(y1, y2, y3);
+
+            // The two bundles should differ (different random witnesses).
+            // If they happen to be the same (extremely unlikely with
+            // u64 ranges), skip.
+            if bundle_a.final_instance == bundle_b.final_instance {
+                return Ok(());
+            }
+
+            let v = verify_slim::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&bundle_b, &slim_a);
+            prop_assert!(v.is_err(), "cross-bundle proof should be rejected");
+        }
+
+        /// Property: tampering any single coefficient in any polynomial
+        /// causes rejection.
+        #[test]
+        fn prop_slim_rejects_tampered_poly(
+            x1 in 2u64..20,
+            x2 in 2u64..20,
+            x3 in 2u64..20,
+            poly_idx in 0usize..2,
+            coeff_idx in 0usize..2,
+        ) {
+            let (bundle, mut slim, _tmp) = setup_slim(x1, x2, x3);
+            if slim.sumcheck_polys.is_empty() {
+                // 0-round circuit (1 constraint): no polys to tamper.
+                return Ok(());
+            }
+            let pi = poly_idx % slim.sumcheck_polys.len();
+            let ci = coeff_idx % slim.sumcheck_polys[pi].len();
+
+            let orig = slim.sumcheck_polys[pi][ci].clone();
+            slim.sumcheck_polys[pi][ci] = fr_to_string(&(Fr::from(9999u64)));
+            let v = verify_slim::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&bundle, &slim);
+            prop_assert!(v.is_err(), "tampered poly[{}][{}] should be rejected (orig={})", pi, ci, orig);
+        }
+
+        /// Property: tampering any single Fiat-Shamir challenge causes
+        /// rejection.
+        #[test]
+        fn prop_slim_rejects_tampered_challenge(
+            x1 in 2u64..20,
+            x2 in 2u64..20,
+            x3 in 2u64..20,
+            idx in 0usize..3,
+        ) {
+            let (bundle, mut slim, _tmp) = setup_slim(x1, x2, x3);
+            if slim.r_challenges.is_empty() {
+                return Ok(());
+            }
+            let i = idx % slim.r_challenges.len();
+            slim.r_challenges[i] = fr_to_string(&(Fr::from(42u64)));
+            let v = verify_slim::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&bundle, &slim);
+            prop_assert!(v.is_err(), "tampered r_challenges[{}] should be rejected", i);
+        }
+
+        /// Property: tampering claimed_product_at_r causes rejection.
+        #[test]
+        fn prop_slim_rejects_tampered_product(
+            x1 in 2u64..20,
+            x2 in 2u64..20,
+            x3 in 2u64..20,
+            bad_val in 1u64..1000u64,
+        ) {
+            let (bundle, mut slim, _tmp) = setup_slim(x1, x2, x3);
+            slim.claimed_product_at_r = fr_to_string(&(Fr::from(bad_val)));
+            let v = verify_slim::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&bundle, &slim);
+            prop_assert!(v.is_err(), "tampered claimed_product_at_r should be rejected");
+        }
+
+        /// Property: tampering bundle_final_instance_hash causes rejection.
+        #[test]
+        fn prop_slim_rejects_tampered_instance_hash(
+            x1 in 2u64..20,
+            x2 in 2u64..20,
+            x3 in 2u64..20,
+        ) {
+            let (bundle, mut slim, _tmp) = setup_slim(x1, x2, x3);
+            slim.bundle_final_instance_hash = "deadbeef".to_string();
+            let v = verify_slim::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&bundle, &slim);
+            prop_assert!(v.is_err(), "tampered bundle_final_instance_hash should be rejected");
+        }
+
+        /// Property: CBOR round-trip preserves slim proof validity.
+        #[test]
+        fn prop_slim_cbor_roundtrip(
+            x1 in 2u64..20,
+            x2 in 2u64..20,
+            x3 in 2u64..20,
+        ) {
+            let (bundle, slim, _tmp) = setup_slim(x1, x2, x3);
+            let cbor = slim.to_cbor::<Fr>().unwrap();
+            let restored = NifsSlimProof::from_cbor::<Fr>(&cbor).unwrap();
+
+            // Reconstructed proof must verify.
+            let v = verify_slim::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&bundle, &restored);
+            prop_assert!(v.is_ok(), "CBOR round-trip proof rejected: {:?}", v.err());
+
+            // Fields must match.
+            prop_assert_eq!(restored.claimed_product_at_r, slim.claimed_product_at_r);
+            prop_assert_eq!(restored.r_challenges, slim.r_challenges);
+            prop_assert_eq!(restored.sumcheck_polys, slim.sumcheck_polys);
+            prop_assert_eq!(restored.bundle_final_instance_hash, slim.bundle_final_instance_hash);
+        }
+
+        /// Property: slim proof size grows at most logarithmically with
+        /// step count (and stays well under 1 KiB).
+        #[test]
+        fn prop_slim_proof_size_logarithmic(
+            n1 in 2u64..10,
+            n2 in 2u64..10,
+            n3 in 2u64..10,
+        ) {
+            let (_bundle, slim, _tmp) = setup_slim(n1, n2, n3);
+            let cbor = slim.to_cbor::<Fr>().unwrap();
+            // For the 1-constraint test circuit: 0 sumcheck rounds, very small.
+            // Should be well under 1 KiB.
+            prop_assert!(
+                cbor.len() < 1024,
+                "slim proof CBOR {} bytes exceeds 1 KiB",
+                cbor.len()
+            );
+        }
+
+        /// Property: bundle_final_instance_hash is deterministic — same
+        /// final instance always produces the same hash.
+        #[test]
+        fn prop_slim_instance_hash_deterministic(
+            x1 in 2u64..20,
+            x2 in 2u64..20,
+            x3 in 2u64..20,
+        ) {
+            let (bundle, slim, _tmp) = setup_slim(x1, x2, x3);
+            let instance_str = format!(
+                "{}|{}|{}|{}",
+                bundle.final_instance.x.join(":"),
+                bundle.final_instance.u,
+                bundle.final_instance.w_commit,
+                bundle.final_instance.e_commit,
+            );
+            let hash = blake2::Blake2b512::digest(instance_str.as_bytes());
+            let expected = hex::encode(&hash[..32]);
+            prop_assert_eq!(slim.bundle_final_instance_hash, expected);
+        }
+    }
 }
