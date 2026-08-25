@@ -247,6 +247,100 @@ impl<C: NovaCurve> CommitmentScheme for SisCommitment<C> {
     }
 }
 
+// ------------------------------------------------------------------
+// Hash-based commitment implementation
+// ------------------------------------------------------------------
+
+/// Hash-based commitment using on-the-fly Blake2b coefficient derivation.
+///
+/// Like SIS, the commitment is a vector of `m` field elements, but the
+/// matrix is never stored — each coefficient is re-derived from the seed
+/// via `Blake2b(seed ‖ domain ‖ row ‖ col)`.  This trades O(m·n) storage
+/// for O(m·n) computation per commitment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HashCommitment<C: NovaCurve> {
+    _phantom: std::marker::PhantomData<C>,
+}
+
+/// Hash-based commitment parameters: just a seed and the output dimension.
+/// No matrix is stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HashParams<C: NovaCurve> {
+    /// Number of output elements (same role as SIS `m`).
+    pub m: usize,
+    /// Deterministic seed for coefficient derivation.
+    pub seed: Vec<u8>,
+    _phantom: std::marker::PhantomData<C>,
+}
+
+impl<C: NovaCurve> HashParams<C> {
+    pub fn from_seed(seed: &[u8], _n_wires: usize, _n_constraints: usize, m: usize) -> Self {
+        Self {
+            m,
+            seed: seed.to_vec(),
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+/// Derive a single scalar: `Blake2b(seed ‖ domain ‖ row ‖ col) → F`.
+fn derive_scalar<C: NovaCurve>(seed: &[u8], domain: &[u8], row: usize, col: usize) -> ScalarField<C> {
+    let mut h = Blake2b512::new();
+    h.update(seed);
+    h.update(domain);
+    h.update((row as u64).to_le_bytes());
+    h.update((col as u64).to_le_bytes());
+    ScalarField::<C>::from_le_bytes_mod_order(&h.finalize())
+}
+
+/// Compute the i-th row of the hash-derived commitment: `Σ_j h[i][j] * v[j]`.
+fn hash_commit_row<C: NovaCurve>(
+    seed: &[u8],
+    domain: &[u8],
+    row: usize,
+    values: &[ScalarField<C>],
+) -> ScalarField<C> {
+    values
+        .iter()
+        .enumerate()
+        .map(|(j, v_j)| derive_scalar::<C>(seed, domain, row, j) * v_j)
+        .fold(ScalarField::<C>::zero(), |acc, x| acc + x)
+}
+
+impl<C: NovaCurve> CommitmentScheme for HashCommitment<C> {
+    type Scalar = ScalarField<C>;
+    type Commitment = Vec<ScalarField<C>>;
+    type Params = HashParams<C>;
+
+    fn params_from_seed(seed: &[u8], n_wires: usize, n_constraints: usize, m: usize) -> Self::Params {
+        HashParams::from_seed(seed, n_wires, n_constraints, m)
+    }
+
+    fn commit_witness(params: &Self::Params, values: &[Self::Scalar]) -> Self::Commitment {
+        (0..params.m)
+            .map(|i| hash_commit_row::<C>(&params.seed, b"witness", i, values))
+            .collect()
+    }
+
+    fn commit_error(params: &Self::Params, values: &[Self::Scalar]) -> Self::Commitment {
+        (0..params.m)
+            .map(|i| hash_commit_row::<C>(&params.seed, b"error", i, values))
+            .collect()
+    }
+
+    fn add(c1: &Self::Commitment, c2: &Self::Commitment) -> Self::Commitment {
+        c1.iter().zip(c2).map(|(a, b)| *a + *b).collect()
+    }
+
+    fn scalar_mul(c: &Self::Commitment, scalar: &Self::Scalar) -> Self::Commitment {
+        c.iter().map(|a| *a * *scalar).collect()
+    }
+
+    fn zero(m: usize) -> Self::Commitment {
+        vec![ScalarField::<C>::zero(); m]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,5 +399,92 @@ mod tests {
         let a = SisParams::<Bls12_381>::from_seed(b"seed-a", 4, 1, SIS_OUTPUT_DIM);
         let b = SisParams::<Bls12_381>::from_seed(b"seed-b", 4, 1, SIS_OUTPUT_DIM);
         assert_ne!(a.a_w, b.a_w);
+    }
+
+    // ── Hash-based commitment tests ────────────────────────────────
+
+    const HASH_OUTPUT_DIM: usize = 4;
+
+    #[test]
+    fn hash_params_are_deterministic() {
+        let a = HashParams::<Bls12_381>::from_seed(b"seed", 8, 4, HASH_OUTPUT_DIM);
+        let b = HashParams::<Bls12_381>::from_seed(b"seed", 8, 4, HASH_OUTPUT_DIM);
+        assert_eq!(a.seed, b.seed);
+        assert_eq!(a.m, b.m);
+    }
+
+    #[test]
+    fn hash_commit_is_homomorphic() {
+        let params = HashParams::<Bls12_381>::from_seed(b"seed", 4, 1, HASH_OUTPUT_DIM);
+        let a: Vec<Fr> = (1..=4).map(Fr::from).collect();
+        let b: Vec<Fr> = (5..=8).map(Fr::from).collect();
+        let sum: Vec<Fr> = a.iter().zip(&b).map(|(x, y)| *x + *y).collect();
+
+        let ca = HashCommitment::<Bls12_381>::commit_witness(&params, &a);
+        let cb = HashCommitment::<Bls12_381>::commit_witness(&params, &b);
+        let csum = HashCommitment::<Bls12_381>::commit_witness(&params, &sum);
+
+        assert_eq!(HashCommitment::<Bls12_381>::add(&ca, &cb), csum);
+    }
+
+    #[test]
+    fn hash_commit_scalar_mul() {
+        let params = HashParams::<Bls12_381>::from_seed(b"seed", 4, 1, HASH_OUTPUT_DIM);
+        let a: Vec<Fr> = (1..=4).map(Fr::from).collect();
+        let scalar = Fr::from(7u64);
+
+        let ca = HashCommitment::<Bls12_381>::commit_witness(&params, &a);
+        let expected = HashCommitment::<Bls12_381>::commit_witness(
+            &params,
+            &a.iter().map(|x| *x * scalar).collect::<Vec<_>>(),
+        );
+
+        assert_eq!(HashCommitment::<Bls12_381>::scalar_mul(&ca, &scalar), expected);
+    }
+
+    #[test]
+    fn hash_commit_zero_vector_is_zero() {
+        let params = HashParams::<Bls12_381>::from_seed(b"seed", 4, 1, HASH_OUTPUT_DIM);
+        let zeros = vec![Fr::zero(); 4];
+        let cz = HashCommitment::<Bls12_381>::commit_witness(&params, &zeros);
+        assert_eq!(cz, HashCommitment::<Bls12_381>::zero(HASH_OUTPUT_DIM));
+    }
+
+    #[test]
+    fn hash_commit_distinct_seeds_differ() {
+        let params_a = HashParams::<Bls12_381>::from_seed(b"seed-a", 4, 1, HASH_OUTPUT_DIM);
+        let params_b = HashParams::<Bls12_381>::from_seed(b"seed-b", 4, 1, HASH_OUTPUT_DIM);
+        let v: Vec<Fr> = (1..=4).map(Fr::from).collect();
+        let ca = HashCommitment::<Bls12_381>::commit_witness(&params_a, &v);
+        let cb = HashCommitment::<Bls12_381>::commit_witness(&params_b, &v);
+        assert_ne!(ca, cb);
+    }
+
+    #[test]
+    fn hash_commit_distinct_inputs_differ() {
+        let params = HashParams::<Bls12_381>::from_seed(b"seed", 4, 1, HASH_OUTPUT_DIM);
+        let a: Vec<Fr> = (1..=4).map(Fr::from).collect();
+        let b: Vec<Fr> = (5..=8).map(Fr::from).collect();
+        let ca = HashCommitment::<Bls12_381>::commit_witness(&params, &a);
+        let cb = HashCommitment::<Bls12_381>::commit_witness(&params, &b);
+        assert_ne!(ca, cb);
+    }
+
+    #[test]
+    fn hash_commit_no_matrix_stored() {
+        let params = HashParams::<Bls12_381>::from_seed(b"seed", 8, 4, HASH_OUTPUT_DIM);
+        // HashParams stores only seed + m, no matrix
+        assert!(params.seed.len() > 0);
+        assert_eq!(params.m, HASH_OUTPUT_DIM);
+    }
+
+    #[test]
+    fn hash_commit_witness_and_error_differ() {
+        let params = HashParams::<Bls12_381>::from_seed(b"seed", 4, 4, HASH_OUTPUT_DIM);
+        let v: Vec<Fr> = (1..=4).map(Fr::from).collect();
+        let cw = HashCommitment::<Bls12_381>::commit_witness(&params, &v);
+        let ce = HashCommitment::<Bls12_381>::commit_error(&params, &v);
+        // Different domain separators → different commitments
+        assert_ne!(cw, ce);
     }
 }
