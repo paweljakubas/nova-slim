@@ -927,6 +927,15 @@ pub fn verify_sumcheck_compression<C: NovaCurve, CS: CommitmentScheme<Scalar = S
     verify_sumcheck_compression_inner::<C, CS>(bundle, proof, DEFAULT_SIS_PARAM)
 }
 
+/// Like [`verify_sumcheck_compression`] but with configurable SIS output dimension.
+pub fn verify_sumcheck_compression_opt<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
+    bundle: &NifsBundle,
+    proof: &NifsSumcheckProof,
+    sis_param: usize,
+) -> Result<VerifyOutput, Box<dyn Error>> {
+    verify_sumcheck_compression_inner::<C, CS>(bundle, proof, sis_param)
+}
+
 fn verify_sumcheck_compression_inner<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     bundle: &NifsBundle,
     proof: &NifsSumcheckProof,

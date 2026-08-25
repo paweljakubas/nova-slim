@@ -12,7 +12,7 @@ use blake2::Digest;
 use prover::circuit::{r1cs_to_bytes_sparse, SparseCircuit};
 use prover::commitment::{CommitmentScheme, PedersenCommitment, SisCommitment};
 use prover::{
-    prove_sumcheck_compression_opt, verify_slim, verify_sumcheck_compression,
+    prove_sumcheck_compression_opt, verify_slim, verify_sumcheck_compression_opt,
     NifsBundle, NifsFinalInstance, NifsFoldOutput, OptFlags, NIFS_PARAMS_SEED,
     NIFS_TRANSCRIPT_PREFIX, DEFAULT_SIS_PARAM, fr_to_string, curve::{NovaCurve, ScalarField},
 };
@@ -116,7 +116,7 @@ fn benchmark<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(state_
     println!("sumcheck compress: {:.3} s", compress_s);
 
     let t = Instant::now();
-    verify_sumcheck_compression::<C, CS>(&folded.bundle, &sc_proof)
+    verify_sumcheck_compression_opt::<C, CS>(&folded.bundle, &sc_proof, sis_param)
         .unwrap_or_else(|e| panic!("full verification failed: {e}"));
     println!("verify (full): {:.4} s", t.elapsed().as_secs_f64());
 
