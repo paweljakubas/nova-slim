@@ -111,14 +111,14 @@ pub struct SumcheckProof<C: NovaCurve> {
 }
 
 /// Fiat-Shamir challenge from accumulated hash state.
-fn challenge_from_hash<C: NovaCurve>(hash: &[u8]) -> ScalarField<C> {
+pub fn challenge_from_hash<C: NovaCurve>(hash: &[u8]) -> ScalarField<C> {
     ScalarField::<C>::from_le_bytes_mod_order(hash)
 }
 
 /// Hash a sequence of field elements (for Fiat-Shamir).
 ///
 /// Uses BLAKE2b-256 to match the Aiken on-chain verifier's built-in blake2b_256.
-fn hash_field_elements<C: NovaCurve>(elems: &[ScalarField<C>]) -> Vec<u8> {
+pub fn hash_field_elements<C: NovaCurve>(elems: &[ScalarField<C>]) -> Vec<u8> {
     let mut h = blake2::Blake2b::<U32>::new();
     for e in elems {
         h.update(e.into_bigint().to_bytes_le());

@@ -265,7 +265,6 @@ pub mod codec {
     struct SlimProofCbor {
         v: u8,
         polys: Vec<Vec<FrCbor>>,
-        claims: Vec<FrCbor>,
         r_challenges: Vec<FrCbor>,
         product_at_r: FrCbor,
         w_hash: ByteBuf,
@@ -343,7 +342,6 @@ pub mod codec {
                 .iter()
                 .map(|row| frs_enc::<F>(row))
                 .collect::<Result<_, _>>()?,
-            claims: frs_enc::<F>(&p.sumcheck_claims)?,
             r_challenges: frs_enc::<F>(&p.r_challenges)?,
             product_at_r: fr_enc(&fr_parse::<F>(&p.claimed_product_at_r)?),
             w_hash: hash_enc(&p.w_commit_hash)?,
@@ -362,7 +360,6 @@ pub mod codec {
                 .iter()
                 .map(|row| frs_dec::<F>(row))
                 .collect::<Result<Vec<_>, _>>()?,
-            sumcheck_claims: frs_dec::<F>(&d.claims)?,
             r_challenges: frs_dec::<F>(&d.r_challenges)?,
             claimed_product_at_r: super::fr_to_string(&fr_dec::<F>(&d.product_at_r)?),
             w_commit_hash: hex::encode(&d.w_hash),
@@ -1069,8 +1066,10 @@ fn verify_sumcheck_compression_inner<C: NovaCurve, CS: CommitmentScheme<Scalar =
 /// trail — they are not needed for on-chain soundness.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NifsSlimProof {
+    /// Sumcheck round polynomials (each is `[f(0), f(1)-f(0)]`).
+    /// The round claims are implicitly `f(0) + f(1)` for each poly —
+    /// the verifier re-derives them from the polys alone.
     pub sumcheck_polys: Vec<Vec<String>>,
-    pub sumcheck_claims: Vec<String>,
     pub r_challenges: Vec<String>,
     pub claimed_product_at_r: String,
     /// BLAKE2b-512 hash of the committed witness Z (for off-chain audit).
@@ -1086,7 +1085,6 @@ impl NifsSumcheckProof {
     pub fn to_slim(&self) -> NifsSlimProof {
         NifsSlimProof {
             sumcheck_polys: self.sumcheck_polys.clone(),
-            sumcheck_claims: self.sumcheck_claims.clone(),
             r_challenges: self.r_challenges.clone(),
             claimed_product_at_r: self.claimed_product_at_r.clone(),
             w_commit_hash: self.w_commit_hash.clone(),
@@ -1104,49 +1102,102 @@ impl NifsSumcheckProof {
 /// The bundle supplies all circuit metadata and the folded final instance;
 /// the slim proof contains only the sumcheck data.
 ///
+/// Round claims are not stored in the proof — the verifier re-derives them
+/// from the polynomial coefficients (`claims[r] = polys[r][0] + polys[r][1]`).
+///
 /// Full soundness (including commitment binding) requires an off-chain
 /// verifier to check the opening proofs against `w_commit_hash`/`e_commit_hash`.
+#[allow(unused_assignments)]
 pub fn verify_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     bundle: &NifsBundle,
     proof: &NifsSlimProof,
 ) -> Result<VerifyOutput, Box<dyn Error>> {
-    // 1. Reconstruct the sumcheck proof from the slim proof.
-    let sc_proof = sumcheck::SumcheckProof::<C> {
-        claims: frs_from_strings::<ScalarField<C>>(&proof.sumcheck_claims)?,
-        polys: proof
-            .sumcheck_polys
-            .iter()
-            .map(|p| frs_from_strings::<ScalarField<C>>(p))
-            .collect::<Result<Vec<_>, _>>()?,
-    };
+    // Parse round polynomials from string encoding.
+    let polys: Vec<Vec<ScalarField<C>>> = proof
+        .sumcheck_polys
+        .iter()
+        .map(|row| frs_from_strings::<ScalarField<C>>(row))
+        .collect::<Result<Vec<_>, _>>()?;
+    let claimed_r = frs_from_strings::<ScalarField<C>>(&proof.r_challenges)?;
 
-    // 2. Verify the sumcheck.
-    let (sc_ok, verifier_r, final_claim) = sumcheck::verify::<C>(&sc_proof);
-    if !sc_ok {
-        return Err("sumcheck proof failed: round polynomials are inconsistent".into());
+    let num_rounds = polys.len();
+
+    // 1. Verifier-side sumcheck: reconstruct claims from polys and verify
+    //    consistency + Fiat-Shamir challenges.
+    //
+    //    Each round's claim = polys[round][0] + polys[round][1].
+    //    Fiat-Shamir challenge = HASH(claims[..=round] ++ polys[round]).
+    let mut reconstructed_r: Vec<ScalarField<C>> = Vec::with_capacity(num_rounds);
+    let mut claims: Vec<ScalarField<C>> = Vec::with_capacity(num_rounds + 1);
+    let mut current_sum = ScalarField::<C>::zero();
+
+    if num_rounds == 0 {
+        // Trivial case: 0 rounds means the sole check is that
+        // claimed_product_at_r == 0.
+        let claimed_product = proof
+            .claimed_product_at_r
+            .parse::<ScalarField<C>>()
+            .map_err(|_| "invalid claimed_product_at_r")?;
+        if !claimed_product.is_zero() {
+            return Err(format!(
+                "sumcheck final claim is non-zero ({}) — the relaxed R1CS equation does not hold",
+                fr_to_string(&claimed_product)
+            )
+            .into());
+        }
+        return Ok(VerifyOutput {
+            steps: bundle.n_steps,
+            transcript_final: bundle.transcript_final.clone(),
+        });
     }
 
-    // Verify Fiat-Shamir challenges match.
-    let claimed_r = frs_from_strings::<ScalarField<C>>(&proof.r_challenges)?;
-    if verifier_r != claimed_r {
+    for round in 0..num_rounds {
+        let poly = &polys[round];
+        if poly.len() < 2 {
+            return Err("sumcheck polynomial has < 2 coefficients".into());
+        }
+        let claimed_sum = poly[0] + poly[1];
+
+        // Verify: f(0) + f(1) == current_sum.
+        if round == 0 {
+            current_sum = claimed_sum;
+        } else if claimed_sum != current_sum {
+            return Err("sumcheck round polynomial inconsistent with previous claim".into());
+        }
+        claims.push(claimed_sum);
+
+        // Re-derive Fiat-Shamir challenge (must match prover transcript).
+        // hash_input = claims[..=round] ++ polys[round]
+        let mut hash_input = claims.clone();
+        hash_input.extend_from_slice(poly);
+        let h = sumcheck::hash_field_elements::<C>(&hash_input);
+        let ri = sumcheck::challenge_from_hash::<C>(&h);
+        reconstructed_r.push(ri);
+
+        // Fold for next round: current_sum = f(r_i).
+        current_sum = poly[0] + poly[1] * ri;
+    }
+
+    // Verify Fiat-Shamir challenges match the prover's transcript.
+    if reconstructed_r != claimed_r {
         return Err("sumcheck Fiat-Shamir challenges do not match".into());
     }
 
-    // 3. Check final_claim == 0.
-    if !final_claim.is_zero() {
+    // 2. Final claim must be zero (relaxed R1CS satisfied at random point).
+    if !current_sum.is_zero() {
         return Err(format!(
             "sumcheck final claim is non-zero ({}) — the relaxed R1CS equation does not hold",
-            fr_to_string(&final_claim)
+            fr_to_string(&current_sum)
         )
         .into());
     }
 
-    // 4. Consistency check: claimed_product_at_r must match the sumcheck final claim.
+    // 3. Consistency check: claimed_product_at_r must match the sumcheck final claim.
     let claimed_product = proof
         .claimed_product_at_r
         .parse::<ScalarField<C>>()
-        .map_err(|_| format!("invalid claimed_product_at_r"))?;
-    if claimed_product != final_claim {
+        .map_err(|_| "invalid claimed_product_at_r")?;
+    if claimed_product != current_sum {
         return Err("claimed product MLE evaluation does not match sumcheck final claim".into());
     }
 
@@ -1554,7 +1605,7 @@ mod tests {
     }
 
     #[test]
-    fn slim_verify_rejects_tampered_claims() {
+    fn slim_verify_rejects_tampered_poly() {
         let tmp = tempfile::tempdir().unwrap();
         let r1cs_path = tmp.path().join("step.r1cs");
         let steps_dir = tmp.path().join("steps");
@@ -1573,8 +1624,16 @@ mod tests {
             .unwrap()
             .to_slim();
 
-        slim.sumcheck_claims[0] = fr_to_string(&(Fr::from(42u64)));
-        assert!(verify_slim::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&fold_out.bundle, &slim).is_err());
+        // The 1-constraint test circuit produces 0 sumcheck rounds (empty polys).
+        // For circuits with >= 2 constraints, tamper a polynomial coefficient.
+        if !slim.sumcheck_polys.is_empty() {
+            slim.sumcheck_polys[0][0] = fr_to_string(&(Fr::from(42u64)));
+            assert!(verify_slim::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&fold_out.bundle, &slim).is_err());
+        } else {
+            // 1-constraint edge case: tamper claimed_product_at_r to verify it is checked.
+            slim.claimed_product_at_r = fr_to_string(&(Fr::from(42u64)));
+            assert!(verify_slim::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&fold_out.bundle, &slim).is_err());
+        }
     }
 
     #[test]
