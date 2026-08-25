@@ -1556,6 +1556,81 @@ mod tests {
         assert_eq!(fold_seq.bundle, fold_par.bundle);
     }
 
+    /// E2E: parallel sumcheck compression produces byte-identical proof
+    /// to sequential, and both slim proofs verify identically.
+    #[test]
+    fn parallel_sumcheck_proof_byte_identical() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r1cs_path = tmp.path().join("step.r1cs");
+        let steps_dir = tmp.path().join("steps");
+        fs::write(&r1cs_path, step_r1cs_bytes()).unwrap();
+        fs::create_dir(&steps_dir).unwrap();
+
+        let mut state = 2u64;
+        for (i, x) in [3u64, 5, 7].iter().enumerate() {
+            state = write_step_wtns(&steps_dir, i, state, *x);
+        }
+
+        let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
+        let fold = run_fold_nifs_opt::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&r1cs_path, &steps_dir, OptFlags::NONE, DEFAULT_SIS_PARAM).unwrap();
+
+        // Sequential
+        let mut rng = rand::thread_rng();
+        let sc_seq = prove_sumcheck_compression_opt::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&c, &fold, &mut rng, OptFlags::NONE).unwrap();
+
+        // Parallel
+        let mut rng = rand::thread_rng();
+        let sc_par = prove_sumcheck_compression_opt::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&c, &fold, &mut rng, OptFlags::PARALLEL).unwrap();
+
+        // Proofs must be byte-identical
+        let seq_json = serde_json::to_string(&sc_seq).unwrap();
+        let par_json = serde_json::to_string(&sc_par).unwrap();
+        assert_eq!(seq_json, par_json, "parallel and sequential proofs must be byte-identical");
+
+        // Slim proofs must be identical
+        let slim_seq = sc_seq.to_slim();
+        let slim_par = sc_par.to_slim();
+        assert_eq!(slim_seq.sumcheck_polys, slim_par.sumcheck_polys);
+        assert_eq!(slim_seq.r_challenges, slim_par.r_challenges);
+        assert_eq!(slim_seq.claimed_product_at_r, slim_par.claimed_product_at_r);
+        assert_eq!(slim_seq.bundle_final_instance_hash, slim_par.bundle_final_instance_hash);
+
+        // Both slim proofs must verify
+        let v_seq = verify_slim::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&fold.bundle, &slim_seq).unwrap();
+        let v_par = verify_slim::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&fold.bundle, &slim_par).unwrap();
+        assert_eq!(v_seq.steps, v_par.steps);
+        assert_eq!(v_seq.transcript_final, v_par.transcript_final);
+    }
+
+    /// E2E: parallel sumcheck compression with --opt=all produces valid proof.
+    #[test]
+    fn parallel_sumcheck_opt_all_valid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r1cs_path = tmp.path().join("step.r1cs");
+        let steps_dir = tmp.path().join("steps");
+        fs::write(&r1cs_path, step_r1cs_bytes()).unwrap();
+        fs::create_dir(&steps_dir).unwrap();
+
+        let mut state = 2u64;
+        for (i, x) in [3u64, 5, 7].iter().enumerate() {
+            state = write_step_wtns(&steps_dir, i, state, *x);
+        }
+
+        let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
+        let fold = run_fold_nifs_opt::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&r1cs_path, &steps_dir, OptFlags::ALL, DEFAULT_SIS_PARAM).unwrap();
+
+        let mut rng = rand::thread_rng();
+        let sc = prove_sumcheck_compression_opt::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&c, &fold, &mut rng, OptFlags::ALL).unwrap();
+
+        // Must verify
+        verify_sumcheck_compression::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&fold.bundle, &sc).unwrap();
+
+        // Slim must verify
+        let slim = sc.to_slim();
+        let v = verify_slim::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&fold.bundle, &slim).unwrap();
+        assert_eq!(v.steps, 3);
+    }
+
     /// E2E: --opt=all flag works through the CLI fold path.
     #[test]
     fn opt_all_flag_produces_valid_bundle() {
@@ -2188,5 +2263,56 @@ mod tests {
         let v = verify_slim::<crate::curve::Bls12_381, HashCommitment<crate::curve::Bls12_381>>(&fold_out.bundle, &slim).unwrap();
         assert_eq!(v.steps, 3);
         assert!(!v.transcript_final.is_empty());
+    }
+
+    // ── Parallel sumcheck proptests ────────────────────────────────
+
+    proptest! {
+        /// Property: parallel and sequential sumcheck compression
+        /// produce byte-identical proofs and identical slim proofs.
+        #[test]
+        fn prop_parallel_sumcheck_matches_sequential_full(
+            x1 in 2u64..20,
+            x2 in 2u64..20,
+            x3 in 2u64..20,
+        ) {
+            let tmp = tempfile::tempdir().unwrap();
+            let r1cs_path = tmp.path().join("step.r1cs");
+            let steps_dir = tmp.path().join("steps");
+            fs::write(&r1cs_path, step_r1cs_bytes()).unwrap();
+            fs::create_dir(&steps_dir).unwrap();
+
+            let mut state = 2u64;
+            for (i, x) in [x1, x2, x3].iter().enumerate() {
+                state = write_step_wtns(&steps_dir, i, state, *x);
+            }
+
+            let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
+            let fold = run_fold_nifs_opt::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&r1cs_path, &steps_dir, OptFlags::NONE, DEFAULT_SIS_PARAM).unwrap();
+
+            let mut rng = rand::thread_rng();
+            let sc_seq = prove_sumcheck_compression_opt::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&c, &fold, &mut rng, OptFlags::NONE).unwrap();
+
+            let mut rng = rand::thread_rng();
+            let sc_par = prove_sumcheck_compression_opt::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&c, &fold, &mut rng, OptFlags::PARALLEL).unwrap();
+
+            // Proofs must be byte-identical
+            let seq_json = serde_json::to_string(&sc_seq).unwrap();
+            let par_json = serde_json::to_string(&sc_par).unwrap();
+            prop_assert_eq!(seq_json, par_json);
+
+            // Both must verify
+            let v1 = verify_sumcheck_compression::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&fold.bundle, &sc_seq);
+            let v2 = verify_sumcheck_compression::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&fold.bundle, &sc_par);
+            prop_assert!(v1.is_ok(), "sequential proof rejected: {:?}", v1.err());
+            prop_assert!(v2.is_ok(), "parallel proof rejected: {:?}", v2.err());
+
+            // Slim proofs must be identical
+            let slim_seq = sc_seq.to_slim();
+            let slim_par = sc_par.to_slim();
+            prop_assert_eq!(slim_seq.sumcheck_polys, slim_par.sumcheck_polys);
+            prop_assert_eq!(slim_seq.r_challenges, slim_par.r_challenges);
+            prop_assert_eq!(slim_seq.claimed_product_at_r, slim_par.claimed_product_at_r);
+        }
     }
 }
