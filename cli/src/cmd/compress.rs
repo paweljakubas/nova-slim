@@ -10,7 +10,7 @@
 //! little-endian values).
 
 use clap::Parser;
-use prover::{run_compress_sumcheck_opt, NifsSumcheckProof, OptFlags, commitment::{PedersenCommitment, SisCommitment}, curve::{Bls12_381, Bn254, Pallas, Vesta, NovaCurve, ScalarField}};
+use prover::{run_compress_sumcheck_opt, NifsSumcheckProof, OptFlags, DEFAULT_SIS_PARAM, commitment::{PedersenCommitment, SisCommitment}, curve::{Bls12_381, Bn254, Pallas, Vesta, NovaCurve, ScalarField}};
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
@@ -55,6 +55,11 @@ pub struct Args {
     ///   all       — enable all optimizations
     #[arg(long, value_name = "OPTS", default_value = "none")]
     pub opt: String,
+
+    /// SIS output dimension (m).  Only used with --commitment sis.
+    /// A value of 128 provides 128-bit post-quantum security.
+    #[arg(long, value_name = "M", default_value_t = DEFAULT_SIS_PARAM)]
+    pub sis_param: usize,
 }
 
 fn parse_opt_flags(s: &str) -> Result<OptFlags, Box<dyn Error>> {
@@ -93,14 +98,14 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
         // Sumcheck compress, then strip opening proofs for on-chain proof.
         let tmp = args.out.with_extension("full.cbor");
         match (args.curve, args.commitment) {
-            (Curve::Bls12_381, crate::CommitmentSchemeArg::Pedersen) => run_compress_sumcheck_opt::<Bls12_381, PedersenCommitment<Bls12_381>>(&args.circuit, &args.steps, &tmp, opts)?,
-            (Curve::Bls12_381, crate::CommitmentSchemeArg::Sis) => run_compress_sumcheck_opt::<Bls12_381, SisCommitment<Bls12_381>>(&args.circuit, &args.steps, &tmp, opts)?,
-            (Curve::Bn254, crate::CommitmentSchemeArg::Pedersen) => run_compress_sumcheck_opt::<Bn254, PedersenCommitment<Bn254>>(&args.circuit, &args.steps, &tmp, opts)?,
-            (Curve::Bn254, crate::CommitmentSchemeArg::Sis) => run_compress_sumcheck_opt::<Bn254, SisCommitment<Bn254>>(&args.circuit, &args.steps, &tmp, opts)?,
-            (Curve::Pallas, crate::CommitmentSchemeArg::Pedersen) => run_compress_sumcheck_opt::<Pallas, PedersenCommitment<Pallas>>(&args.circuit, &args.steps, &tmp, opts)?,
-            (Curve::Pallas, crate::CommitmentSchemeArg::Sis) => run_compress_sumcheck_opt::<Pallas, SisCommitment<Pallas>>(&args.circuit, &args.steps, &tmp, opts)?,
-            (Curve::Vesta, crate::CommitmentSchemeArg::Pedersen) => run_compress_sumcheck_opt::<Vesta, PedersenCommitment<Vesta>>(&args.circuit, &args.steps, &tmp, opts)?,
-            (Curve::Vesta, crate::CommitmentSchemeArg::Sis) => run_compress_sumcheck_opt::<Vesta, SisCommitment<Vesta>>(&args.circuit, &args.steps, &tmp, opts)?,
+            (Curve::Bls12_381, crate::CommitmentSchemeArg::Pedersen) => run_compress_sumcheck_opt::<Bls12_381, PedersenCommitment<Bls12_381>>(&args.circuit, &args.steps, &tmp, opts, args.sis_param)?,
+            (Curve::Bls12_381, crate::CommitmentSchemeArg::Sis) => run_compress_sumcheck_opt::<Bls12_381, SisCommitment<Bls12_381>>(&args.circuit, &args.steps, &tmp, opts, args.sis_param)?,
+            (Curve::Bn254, crate::CommitmentSchemeArg::Pedersen) => run_compress_sumcheck_opt::<Bn254, PedersenCommitment<Bn254>>(&args.circuit, &args.steps, &tmp, opts, args.sis_param)?,
+            (Curve::Bn254, crate::CommitmentSchemeArg::Sis) => run_compress_sumcheck_opt::<Bn254, SisCommitment<Bn254>>(&args.circuit, &args.steps, &tmp, opts, args.sis_param)?,
+            (Curve::Pallas, crate::CommitmentSchemeArg::Pedersen) => run_compress_sumcheck_opt::<Pallas, PedersenCommitment<Pallas>>(&args.circuit, &args.steps, &tmp, opts, args.sis_param)?,
+            (Curve::Pallas, crate::CommitmentSchemeArg::Sis) => run_compress_sumcheck_opt::<Pallas, SisCommitment<Pallas>>(&args.circuit, &args.steps, &tmp, opts, args.sis_param)?,
+            (Curve::Vesta, crate::CommitmentSchemeArg::Pedersen) => run_compress_sumcheck_opt::<Vesta, PedersenCommitment<Vesta>>(&args.circuit, &args.steps, &tmp, opts, args.sis_param)?,
+            (Curve::Vesta, crate::CommitmentSchemeArg::Sis) => run_compress_sumcheck_opt::<Vesta, SisCommitment<Vesta>>(&args.circuit, &args.steps, &tmp, opts, args.sis_param)?,
         };
         let full_bytes = fs::read(&tmp)?;
         match args.curve {
@@ -113,14 +118,14 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
     } else {
         // Default: full sumcheck compression (transparent, O(log N)).
         match (args.curve, args.commitment) {
-            (Curve::Bls12_381, crate::CommitmentSchemeArg::Pedersen) => run_compress_sumcheck_opt::<Bls12_381, PedersenCommitment<Bls12_381>>(&args.circuit, &args.steps, &args.out, opts)?,
-            (Curve::Bls12_381, crate::CommitmentSchemeArg::Sis) => run_compress_sumcheck_opt::<Bls12_381, SisCommitment<Bls12_381>>(&args.circuit, &args.steps, &args.out, opts)?,
-            (Curve::Bn254, crate::CommitmentSchemeArg::Pedersen) => run_compress_sumcheck_opt::<Bn254, PedersenCommitment<Bn254>>(&args.circuit, &args.steps, &args.out, opts)?,
-            (Curve::Bn254, crate::CommitmentSchemeArg::Sis) => run_compress_sumcheck_opt::<Bn254, SisCommitment<Bn254>>(&args.circuit, &args.steps, &args.out, opts)?,
-            (Curve::Pallas, crate::CommitmentSchemeArg::Pedersen) => run_compress_sumcheck_opt::<Pallas, PedersenCommitment<Pallas>>(&args.circuit, &args.steps, &args.out, opts)?,
-            (Curve::Pallas, crate::CommitmentSchemeArg::Sis) => run_compress_sumcheck_opt::<Pallas, SisCommitment<Pallas>>(&args.circuit, &args.steps, &args.out, opts)?,
-            (Curve::Vesta, crate::CommitmentSchemeArg::Pedersen) => run_compress_sumcheck_opt::<Vesta, PedersenCommitment<Vesta>>(&args.circuit, &args.steps, &args.out, opts)?,
-            (Curve::Vesta, crate::CommitmentSchemeArg::Sis) => run_compress_sumcheck_opt::<Vesta, SisCommitment<Vesta>>(&args.circuit, &args.steps, &args.out, opts)?,
+            (Curve::Bls12_381, crate::CommitmentSchemeArg::Pedersen) => run_compress_sumcheck_opt::<Bls12_381, PedersenCommitment<Bls12_381>>(&args.circuit, &args.steps, &args.out, opts, args.sis_param)?,
+            (Curve::Bls12_381, crate::CommitmentSchemeArg::Sis) => run_compress_sumcheck_opt::<Bls12_381, SisCommitment<Bls12_381>>(&args.circuit, &args.steps, &args.out, opts, args.sis_param)?,
+            (Curve::Bn254, crate::CommitmentSchemeArg::Pedersen) => run_compress_sumcheck_opt::<Bn254, PedersenCommitment<Bn254>>(&args.circuit, &args.steps, &args.out, opts, args.sis_param)?,
+            (Curve::Bn254, crate::CommitmentSchemeArg::Sis) => run_compress_sumcheck_opt::<Bn254, SisCommitment<Bn254>>(&args.circuit, &args.steps, &args.out, opts, args.sis_param)?,
+            (Curve::Pallas, crate::CommitmentSchemeArg::Pedersen) => run_compress_sumcheck_opt::<Pallas, PedersenCommitment<Pallas>>(&args.circuit, &args.steps, &args.out, opts, args.sis_param)?,
+            (Curve::Pallas, crate::CommitmentSchemeArg::Sis) => run_compress_sumcheck_opt::<Pallas, SisCommitment<Pallas>>(&args.circuit, &args.steps, &args.out, opts, args.sis_param)?,
+            (Curve::Vesta, crate::CommitmentSchemeArg::Pedersen) => run_compress_sumcheck_opt::<Vesta, PedersenCommitment<Vesta>>(&args.circuit, &args.steps, &args.out, opts, args.sis_param)?,
+            (Curve::Vesta, crate::CommitmentSchemeArg::Sis) => run_compress_sumcheck_opt::<Vesta, SisCommitment<Vesta>>(&args.circuit, &args.steps, &args.out, opts, args.sis_param)?,
         };
     }
     Ok(())
