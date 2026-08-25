@@ -33,7 +33,12 @@ pub trait CommitmentScheme: Clone + Debug + Send + Sync + 'static {
     type Params: Clone + Debug + Send + Sync;
 
     /// Derive parameters from a public seed.
-    fn params_from_seed(seed: &[u8], n_wires: usize, n_constraints: usize) -> Self::Params;
+    ///
+    /// `m` is the SIS output dimension (number of rows in the commitment
+    /// matrix).  Pedersen implementations ignore this parameter; SIS uses it
+    /// to size the commitment matrix.  A value of 0 (or for Pedersen, any
+    /// value) is acceptable.
+    fn params_from_seed(seed: &[u8], n_wires: usize, n_constraints: usize, m: usize) -> Self::Params;
 
     /// Commit to a witness vector.
     fn commit_witness(params: &Self::Params, values: &[Self::Scalar]) -> Self::Commitment;
@@ -48,7 +53,7 @@ pub trait CommitmentScheme: Clone + Debug + Send + Sync + 'static {
     fn scalar_mul(c: &Self::Commitment, scalar: &Self::Scalar) -> Self::Commitment;
 
     /// The zero commitment.
-    fn zero() -> Self::Commitment;
+    fn zero(m: usize) -> Self::Commitment;
 }
 
 // ------------------------------------------------------------------
@@ -113,7 +118,7 @@ impl<C: NovaCurve> CommitmentScheme for PedersenCommitment<C> {
     type Commitment = C::G1Affine;
     type Params = PedersenParams<C>;
 
-    fn params_from_seed(seed: &[u8], n_wires: usize, n_constraints: usize) -> Self::Params {
+    fn params_from_seed(seed: &[u8], n_wires: usize, n_constraints: usize, _m: usize) -> Self::Params {
         PedersenParams::from_seed(seed, n_wires, n_constraints)
     }
 
@@ -133,7 +138,7 @@ impl<C: NovaCurve> CommitmentScheme for PedersenCommitment<C> {
         C::G1Affine::from(G1Projective::<C>::from(*c) * *scalar)
     }
 
-    fn zero() -> Self::Commitment {
+    fn zero(_m: usize) -> Self::Commitment {
         C::G1Affine::zero()
     }
 }
@@ -167,11 +172,11 @@ pub struct SisParams<C: NovaCurve> {
 
 impl<C: NovaCurve> SisParams<C> {
     /// Derive the matrices deterministically from a seed.
-    pub fn from_seed(seed: &[u8], n_wires: usize, n_constraints: usize) -> Self {
+    pub fn from_seed(seed: &[u8], n_wires: usize, n_constraints: usize, m: usize) -> Self {
         Self {
-            m: SIS_OUTPUT_DIM,
-            a_w: derive_matrix::<C>(seed, b"witness", SIS_OUTPUT_DIM, n_wires),
-            a_e: derive_matrix::<C>(seed, b"error", SIS_OUTPUT_DIM, n_constraints),
+            m,
+            a_w: derive_matrix::<C>(seed, b"witness", m, n_wires),
+            a_e: derive_matrix::<C>(seed, b"error", m, n_constraints),
         }
     }
 }
@@ -217,8 +222,8 @@ impl<C: NovaCurve> CommitmentScheme for SisCommitment<C> {
     type Commitment = Vec<ScalarField<C>>;
     type Params = SisParams<C>;
 
-    fn params_from_seed(seed: &[u8], n_wires: usize, n_constraints: usize) -> Self::Params {
-        SisParams::from_seed(seed, n_wires, n_constraints)
+    fn params_from_seed(seed: &[u8], n_wires: usize, n_constraints: usize, m: usize) -> Self::Params {
+        SisParams::from_seed(seed, n_wires, n_constraints, m)
     }
 
     fn commit_witness(params: &Self::Params, values: &[Self::Scalar]) -> Self::Commitment {
@@ -237,8 +242,8 @@ impl<C: NovaCurve> CommitmentScheme for SisCommitment<C> {
         c.iter().map(|a| *a * *scalar).collect()
     }
 
-    fn zero() -> Self::Commitment {
-        vec![ScalarField::<C>::zero(); SIS_OUTPUT_DIM]
+    fn zero(m: usize) -> Self::Commitment {
+        vec![ScalarField::<C>::zero(); m]
     }
 }
 
@@ -251,8 +256,8 @@ mod tests {
 
     #[test]
     fn sis_params_are_deterministic() {
-        let a = SisParams::<Bls12_381>::from_seed(b"seed", 8, 4);
-        let b = SisParams::<Bls12_381>::from_seed(b"seed", 8, 4);
+        let a = SisParams::<Bls12_381>::from_seed(b"seed", 8, 4, SIS_OUTPUT_DIM);
+        let b = SisParams::<Bls12_381>::from_seed(b"seed", 8, 4, SIS_OUTPUT_DIM);
         assert_eq!(a.a_w, b.a_w);
         assert_eq!(a.a_e, b.a_e);
         assert_eq!(a.m, SIS_OUTPUT_DIM);
@@ -260,7 +265,7 @@ mod tests {
 
     #[test]
     fn sis_commit_is_homomorphic() {
-        let params = SisParams::<Bls12_381>::from_seed(b"seed", 4, 1);
+        let params = SisParams::<Bls12_381>::from_seed(b"seed", 4, 1, SIS_OUTPUT_DIM);
         let a: Vec<Fr> = (1..=4).map(|i| Fr::from(i)).collect();
         let b: Vec<Fr> = (5..=8).map(|i| Fr::from(i)).collect();
         let sum: Vec<Fr> = a.iter().zip(&b).map(|(x, y)| *x + *y).collect();
@@ -274,7 +279,7 @@ mod tests {
 
     #[test]
     fn sis_commit_scalar_mul() {
-        let params = SisParams::<Bls12_381>::from_seed(b"seed", 4, 1);
+        let params = SisParams::<Bls12_381>::from_seed(b"seed", 4, 1, SIS_OUTPUT_DIM);
         let a: Vec<Fr> = (1..=4).map(|i| Fr::from(i)).collect();
         let scalar = Fr::from(7u64);
 
@@ -289,16 +294,16 @@ mod tests {
 
     #[test]
     fn sis_commit_zero_vector_is_zero() {
-        let params = SisParams::<Bls12_381>::from_seed(b"seed", 4, 1);
+        let params = SisParams::<Bls12_381>::from_seed(b"seed", 4, 1, SIS_OUTPUT_DIM);
         let zeros = vec![Fr::zero(); 4];
         let cz = SisCommitment::<Bls12_381>::commit_witness(&params, &zeros);
-        assert_eq!(cz, SisCommitment::<Bls12_381>::zero());
+        assert_eq!(cz, SisCommitment::<Bls12_381>::zero(SIS_OUTPUT_DIM));
     }
 
     #[test]
     fn sis_commit_distinct_seeds_differ() {
-        let a = SisParams::<Bls12_381>::from_seed(b"seed-a", 4, 1);
-        let b = SisParams::<Bls12_381>::from_seed(b"seed-b", 4, 1);
+        let a = SisParams::<Bls12_381>::from_seed(b"seed-a", 4, 1, SIS_OUTPUT_DIM);
+        let b = SisParams::<Bls12_381>::from_seed(b"seed-b", 4, 1, SIS_OUTPUT_DIM);
         assert_ne!(a.a_w, b.a_w);
     }
 }
