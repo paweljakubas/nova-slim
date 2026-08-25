@@ -262,6 +262,17 @@ pub mod codec {
     }
 
     #[derive(Serialize, Deserialize)]
+    struct SlimProofCbor {
+        v: u8,
+        polys: Vec<Vec<FrCbor>>,
+        claims: Vec<FrCbor>,
+        r_challenges: Vec<FrCbor>,
+        product_at_r: FrCbor,
+        w_hash: ByteBuf,
+        e_hash: ByteBuf,
+    }
+
+    #[derive(Serialize, Deserialize)]
     struct SumcheckProofCbor {
         #[serde(flatten)]
         core: ProofCoreCbor,
@@ -325,13 +336,8 @@ pub mod codec {
     }
 
     pub fn slim_proof_encode<F: PrimeField>(p: &NifsSlimProof) -> Result<Vec<u8>, Box<dyn Error>> {
-        let (circuit, dims) =
-            (p.circuit.clone(), Dims([p.n_wires, p.n_constraints, p.n_pub_out, p.n_pub_in]));
-        let dto = ProofCoreCbor {
+        let dto = SlimProofCbor {
             v: FORMAT_VERSION,
-            circuit,
-            dims,
-            final_instance: instance_enc::<F>(&p.final_instance)?,
             polys: p
                 .sumcheck_polys
                 .iter()
@@ -347,26 +353,15 @@ pub mod codec {
     }
 
     pub fn slim_proof_decode<F: PrimeField>(bytes: &[u8]) -> Result<NifsSlimProof, Box<dyn Error>> {
-        let d: ProofCoreCbor =
-            ciborium::from_reader(bytes).map_err(|e| format!("invalid CBOR proof: {e}"))?;
-        proof_core_to_slim::<F>(d)
-    }
-
-    fn proof_core_to_slim<F: PrimeField>(d: ProofCoreCbor) -> Result<NifsSlimProof, Box<dyn Error>> {
+        let d: SlimProofCbor =
+            ciborium::from_reader(bytes).map_err(|e| format!("invalid CBOR slim proof: {e}"))?;
         check_version(d.v)?;
-        let [nw, nc, npo, npi] = d.dims.0;
         Ok(NifsSlimProof {
-            circuit: d.circuit,
-            n_wires: nw,
-            n_constraints: nc,
-            n_pub_out: npo,
-            n_pub_in: npi,
-            final_instance: instance_dec::<F>(&d.final_instance)?,
             sumcheck_polys: d
                 .polys
                 .iter()
                 .map(|row| frs_dec::<F>(row))
-                .collect::<Result<_, _>>()?,
+                .collect::<Result<Vec<_>, _>>()?,
             sumcheck_claims: frs_dec::<F>(&d.claims)?,
             r_challenges: frs_dec::<F>(&d.r_challenges)?,
             claimed_product_at_r: super::fr_to_string(&fr_dec::<F>(&d.product_at_r)?),
@@ -374,6 +369,8 @@ pub mod codec {
             e_commit_hash: hex::encode(&d.e_hash),
         })
     }
+
+    // ── slim proof helpers ──────────────────────────────────────────────
 
     pub fn sumcheck_proof_encode<F: PrimeField>(p: &NifsSumcheckProof) -> Result<Vec<u8>, Box<dyn Error>> {
         let (circuit, dims) = core_of(p)?;
@@ -1055,11 +1052,14 @@ fn verify_sumcheck_compression_inner<C: NovaCurve, CS: CommitmentScheme<Scalar =
 
 /// Slim sumcheck compression proof — on-chain friendly.
 ///
-/// Identical to [`NifsSumcheckProof`] but **omits the HashPC opening proofs**
-/// (`w_opening`, `e_opening`), which contain the full Z/E truth tables
-/// (~2× `n_wires` / `n_constraints` field elements).  This cuts proof size
-/// from O(n) to O(log n) field elements, making it small enough for a
-/// Cardano transaction.
+/// Minimal on-chain proof: sumcheck protocol data + audit hashes only.
+///
+/// Circuit metadata (`circuit`, `n_wires`, `n_constraints`, `n_pub_out`,
+/// `n_pub_in`) and the folded final instance (`x`, `u`, `w_commit`,
+/// `e_commit`) are **not** included — the verifier reads them from the
+/// [`NifsBundle`] that is always co-located with the proof.  This keeps the
+/// on-chain payload small regardless of the commitment scheme's security
+/// parameter or the circuit's public-input dimensions.
 ///
 /// Soundness model: the sumcheck proves knowledge of Z,E satisfying the
 /// relaxed R1CS `(AZ)∘(BZ) = u·(CZ) + E` at a random point r.
@@ -1069,12 +1069,6 @@ fn verify_sumcheck_compression_inner<C: NovaCurve, CS: CommitmentScheme<Scalar =
 /// trail — they are not needed for on-chain soundness.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NifsSlimProof {
-    pub circuit: String,
-    pub n_wires: u32,
-    pub n_constraints: u32,
-    pub n_pub_out: u32,
-    pub n_pub_in: u32,
-    pub final_instance: NifsFinalInstance,
     pub sumcheck_polys: Vec<Vec<String>>,
     pub sumcheck_claims: Vec<String>,
     pub r_challenges: Vec<String>,
@@ -1086,15 +1080,11 @@ pub struct NifsSlimProof {
 }
 
 impl NifsSumcheckProof {
-    /// Strip the opening proofs to produce a slim on-chain proof.
+    /// Strip opening proofs and redundant metadata to produce a minimal
+    /// on-chain proof.  Circuit metadata and the final instance are
+    /// excluded — the verifier reads them from the NIFS bundle.
     pub fn to_slim(&self) -> NifsSlimProof {
         NifsSlimProof {
-            circuit: self.circuit.clone(),
-            n_wires: self.n_wires,
-            n_constraints: self.n_constraints,
-            n_pub_out: self.n_pub_out,
-            n_pub_in: self.n_pub_in,
-            final_instance: self.final_instance.clone(),
             sumcheck_polys: self.sumcheck_polys.clone(),
             sumcheck_claims: self.sumcheck_claims.clone(),
             r_challenges: self.r_challenges.clone(),
@@ -1111,24 +1101,16 @@ impl NifsSumcheckProof {
 /// but **skips** the HashPC opening proofs and Pedersen commitment checks.
 /// This is the on-chain verification path — lightweight enough for Plutus.
 ///
+/// The bundle supplies all circuit metadata and the folded final instance;
+/// the slim proof contains only the sumcheck data.
+///
 /// Full soundness (including commitment binding) requires an off-chain
 /// verifier to check the opening proofs against `w_commit_hash`/`e_commit_hash`.
 pub fn verify_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     bundle: &NifsBundle,
     proof: &NifsSlimProof,
 ) -> Result<VerifyOutput, Box<dyn Error>> {
-    if proof.final_instance != bundle.final_instance {
-        return Err("slim proof was not created for this NIFS bundle".into());
-    }
-    if proof.n_wires != bundle.n_wires
-        || proof.n_constraints != bundle.n_constraints
-        || proof.n_pub_out != bundle.n_pub_out
-        || proof.n_pub_in != bundle.n_pub_in
-    {
-        return Err("slim proof does not match the NIFS bundle parameters".into());
-    }
-
-    // 1. Reconstruct the sumcheck proof.
+    // 1. Reconstruct the sumcheck proof from the slim proof.
     let sc_proof = sumcheck::SumcheckProof::<C> {
         claims: frs_from_strings::<ScalarField<C>>(&proof.sumcheck_claims)?,
         polys: proof
@@ -1596,7 +1578,7 @@ mod tests {
     }
 
     #[test]
-    fn slim_verify_rejects_tampered_final_instance() {
+    fn slim_verify_rejects_tampered_product_at_r() {
         let tmp = tempfile::tempdir().unwrap();
         let r1cs_path = tmp.path().join("step.r1cs");
         let steps_dir = tmp.path().join("steps");
@@ -1615,7 +1597,7 @@ mod tests {
             .unwrap()
             .to_slim();
 
-        slim.final_instance.u = fr_to_string(&(Fr::from(999u64)));
+        slim.claimed_product_at_r = fr_to_string(&(Fr::from(999u64)));
         assert!(verify_slim::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&fold_out.bundle, &slim).is_err());
     }
 
