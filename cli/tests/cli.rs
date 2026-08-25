@@ -116,6 +116,82 @@ fn build_synthetic_step_r1cs() -> Vec<u8> {
     out
 }
 
+/// Generate a synthetic `.r1cs` for a 3-constraint step circuit with
+/// `n_pub_out == n_pub_in == 1`.  Wires `[1, out, in, x, t1, t2]`:
+///   C1: in·x = t1
+///   C2: t1·x = t2
+///   C3: t2·1 = out
+fn build_multi_constraint_step_r1cs() -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"r1cs");
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&2u32.to_le_bytes());
+
+    let field_size = 32u32;
+    let n_wires = 6u32;
+    let n_pub_out = 1u32;
+    let n_pub_in = 1u32;
+    let n_prv_in = 3u32;
+    let n_labels = 6u64;
+    let n_constraints = 3u32;
+
+    let mut header = Vec::new();
+    header.extend_from_slice(&field_size.to_le_bytes());
+    header.extend_from_slice(&[0u8; 32]);
+    header.extend_from_slice(&n_wires.to_le_bytes());
+    header.extend_from_slice(&n_pub_out.to_le_bytes());
+    header.extend_from_slice(&n_pub_in.to_le_bytes());
+    header.extend_from_slice(&n_prv_in.to_le_bytes());
+    header.extend_from_slice(&n_labels.to_le_bytes());
+    header.extend_from_slice(&n_constraints.to_le_bytes());
+
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+    out.extend_from_slice(&header);
+
+    let mut constraints = Vec::new();
+    let mut write_vec = |terms: &[(u32, u64)]| {
+        constraints.extend_from_slice(&(terms.len() as u32).to_le_bytes());
+        for &(w, v) in terms {
+            constraints.extend_from_slice(&w.to_le_bytes());
+            constraints.push(v as u8);
+            constraints.extend_from_slice(&vec![0u8; field_size as usize - 1]);
+        }
+    };
+
+    // C1: in(2) * x(3) = t1(4)
+    write_vec(&[(2, 1)]);
+    write_vec(&[(3, 1)]);
+    write_vec(&[(4, 1)]);
+    // C2: t1(4) * x(3) = t2(5)
+    write_vec(&[(4, 1)]);
+    write_vec(&[(3, 1)]);
+    write_vec(&[(5, 1)]);
+    // C3: t2(5) * 1(0) = out(1)
+    write_vec(&[(5, 1)]);
+    write_vec(&[(0, 1)]);
+    write_vec(&[(1, 1)]);
+
+    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&(constraints.len() as u64).to_le_bytes());
+    out.extend_from_slice(&constraints);
+    out
+}
+
+/// Write one chained step witness for the 3-constraint step circuit:
+/// `[1, out, in, x, t1, t2]` with `t1 = in·x`, `t2 = t1·x`, `out = t2`.
+fn write_multi_step_wtns(dir: &std::path::Path, idx: usize, st_in: u64, x: u64) -> u64 {
+    let t1 = st_in * x;
+    let t2 = t1 * x;
+    let st_out = t2;
+    fs::write(
+        dir.join(format!("step_{idx:04}.wtns")),
+        wtns_bytes(&[1, st_out, st_in, x, t1, t2]),
+    )
+    .unwrap();
+    st_out
+}
+
 /// Serialize witness values to a valid Circom `.wtns` blob.  The values are
 /// stored as canonical little-endian field elements (the values are small
 /// u64s here, so the canonical form is 8 value bytes + 24 zero bytes), which
@@ -809,4 +885,148 @@ fn nifs_compress_verify_end_to_end() {
         .arg("--slim-proof")
         .arg(proof_file.path());
     verify2.assert().failure();
+}
+
+/// BN254 slim flow: fold → compress --slim → verify --slim-proof.
+/// Same as `nifs_compress_verify_end_to_end` but on BN254.
+#[test]
+fn bn254_compress_verify_end_to_end() {
+    let r1cs = NamedTempFile::new().unwrap();
+    fs::write(r1cs.path(), build_synthetic_step_r1cs()).unwrap();
+
+    let steps_dir = tempfile::tempdir().unwrap();
+    let mut state = 2u64;
+    for (i, x) in [3u64, 5, 7].iter().enumerate() {
+        state = write_step_wtns(steps_dir.path(), i, state, *x);
+    }
+
+    let bundle_file = NamedTempFile::new().unwrap();
+    let mut fold = Command::cargo_bin("nova-slim").unwrap();
+    fold.arg("fold")
+        .arg("--circuit").arg(r1cs.path())
+        .arg("--steps").arg(steps_dir.path())
+        .arg("--out").arg(bundle_file.path())
+        .arg("--curve").arg("bn254");
+    fold.assert().success();
+
+    let proof_file = NamedTempFile::new().unwrap();
+    let mut compress = Command::cargo_bin("nova-slim").unwrap();
+    compress.arg("compress").arg("--slim")
+        .arg("--circuit").arg(r1cs.path())
+        .arg("--steps").arg(steps_dir.path())
+        .arg("--out").arg(proof_file.path())
+        .arg("--curve").arg("bn254");
+    compress.assert().success()
+        .stderr(predicate::str::contains("Slim proof written"));
+
+    let mut verify = Command::cargo_bin("nova-slim").unwrap();
+    verify.arg("verify")
+        .arg("--ivc").arg(bundle_file.path())
+        .arg("--slim-proof").arg(proof_file.path())
+        .arg("--curve").arg("bn254");
+    verify.assert().success()
+        .stderr(predicate::str::contains("slim sumcheck proof OK"));
+}
+
+/// BN254 full flow: fold → compress → verify --sumcheck-proof.
+#[test]
+fn bn254_full_compress_verify_end_to_end() {
+    let r1cs = NamedTempFile::new().unwrap();
+    fs::write(r1cs.path(), build_synthetic_step_r1cs()).unwrap();
+
+    let steps_dir = tempfile::tempdir().unwrap();
+    let mut state = 2u64;
+    for (i, x) in [3u64, 5, 7].iter().enumerate() {
+        state = write_step_wtns(steps_dir.path(), i, state, *x);
+    }
+
+    let bundle_file = NamedTempFile::new().unwrap();
+    let mut fold = Command::cargo_bin("nova-slim").unwrap();
+    fold.arg("fold")
+        .arg("--circuit").arg(r1cs.path())
+        .arg("--steps").arg(steps_dir.path())
+        .arg("--out").arg(bundle_file.path())
+        .arg("--curve").arg("bn254");
+    fold.assert().success();
+
+    let proof_file = NamedTempFile::new().unwrap();
+    let mut compress = Command::cargo_bin("nova-slim").unwrap();
+    compress.arg("compress")
+        .arg("--circuit").arg(r1cs.path())
+        .arg("--steps").arg(steps_dir.path())
+        .arg("--out").arg(proof_file.path())
+        .arg("--curve").arg("bn254");
+    compress.assert().success();
+
+    let mut verify = Command::cargo_bin("nova-slim").unwrap();
+    verify.arg("verify")
+        .arg("--ivc").arg(bundle_file.path())
+        .arg("--sumcheck-proof").arg(proof_file.path())
+        .arg("--curve").arg("bn254");
+    verify.assert().success()
+        .stderr(predicate::str::contains("sumcheck compression proof OK"));
+}
+
+/// BN254 multi-constraint (3-gate circuit) with CBOR roundtrip: fold →
+/// compress --slim → verify.  The 3-constraint circuit produces >0 sumcheck
+/// rounds, unlike the 1-constraint synthetic step circuit.
+#[test]
+fn bn254_multi_constraint_cbor_roundtrip() {
+    let r1cs = NamedTempFile::new().unwrap();
+    fs::write(r1cs.path(), build_multi_constraint_step_r1cs()).unwrap();
+
+    let steps_dir = tempfile::tempdir().unwrap();
+    let mut state = 2u64;
+    for (i, x) in [3u64, 5, 7].iter().enumerate() {
+        state = write_multi_step_wtns(steps_dir.path(), i, state, *x);
+    }
+
+    // 1. fold
+    let bundle_file = NamedTempFile::new().unwrap();
+    let mut fold = Command::cargo_bin("nova-slim").unwrap();
+    fold.arg("fold")
+        .arg("--circuit").arg(r1cs.path())
+        .arg("--steps").arg(steps_dir.path())
+        .arg("--out").arg(bundle_file.path())
+        .arg("--curve").arg("bn254");
+    fold.assert().success();
+
+    // 2. compress --slim
+    let proof_file = NamedTempFile::new().unwrap();
+    let mut compress = Command::cargo_bin("nova-slim").unwrap();
+    compress.arg("compress").arg("--slim")
+        .arg("--circuit").arg(r1cs.path())
+        .arg("--steps").arg(steps_dir.path())
+        .arg("--out").arg(proof_file.path())
+        .arg("--curve").arg("bn254");
+    compress.assert().success()
+        .stderr(predicate::str::contains("Slim proof written"));
+
+    // 3. verify slim
+    let mut verify = Command::cargo_bin("nova-slim").unwrap();
+    verify.arg("verify")
+        .arg("--ivc").arg(bundle_file.path())
+        .arg("--slim-proof").arg(proof_file.path())
+        .arg("--curve").arg("bn254");
+    verify.assert().success()
+        .stderr(predicate::str::contains("slim sumcheck proof OK"));
+
+    // 4. compress (full)
+    let full_proof_file = NamedTempFile::new().unwrap();
+    let mut compress2 = Command::cargo_bin("nova-slim").unwrap();
+    compress2.arg("compress")
+        .arg("--circuit").arg(r1cs.path())
+        .arg("--steps").arg(steps_dir.path())
+        .arg("--out").arg(full_proof_file.path())
+        .arg("--curve").arg("bn254");
+    compress2.assert().success();
+
+    // 5. verify full
+    let mut verify2 = Command::cargo_bin("nova-slim").unwrap();
+    verify2.arg("verify")
+        .arg("--ivc").arg(bundle_file.path())
+        .arg("--sumcheck-proof").arg(full_proof_file.path())
+        .arg("--curve").arg("bn254");
+    verify2.assert().success()
+        .stderr(predicate::str::contains("sumcheck compression proof OK"));
 }

@@ -22,7 +22,7 @@
 //! `groth16-prover` crate; this crate adds the IVC folding layer on top.
 //! The `nova-slim` CLI (`cli`) wraps the operations in this crate.
 
-use ark_ff::{PrimeField, Zero};
+use ark_ff::{BigInteger, PrimeField, Zero};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use blake2::{Blake2b512, Digest};
 use rayon::prelude::*;
@@ -249,20 +249,6 @@ pub mod codec {
     }
 
     #[derive(Serialize, Deserialize)]
-    struct ProofCoreCbor {
-        v: u8,
-        circuit: String,
-        dims: Dims,
-        final_instance: InstanceCbor,
-        polys: Vec<Vec<FrCbor>>,
-        claims: Vec<FrCbor>,
-        r_challenges: Vec<FrCbor>,
-        product_at_r: FrCbor,
-        w_hash: ByteBuf,
-        e_hash: ByteBuf,
-    }
-
-    #[derive(Serialize, Deserialize)]
     struct SlimProofCbor {
         v: u8,
         polys: Vec<Vec<FrCbor>>,
@@ -275,8 +261,16 @@ pub mod codec {
 
     #[derive(Serialize, Deserialize)]
     struct SumcheckProofCbor {
-        #[serde(flatten)]
-        core: ProofCoreCbor,
+        v: u8,
+        circuit: String,
+        dims: Dims,
+        final_instance: InstanceCbor,
+        polys: Vec<Vec<FrCbor>>,
+        claims: Vec<FrCbor>,
+        r_challenges: Vec<FrCbor>,
+        product_at_r: FrCbor,
+        w_hash: ByteBuf,
+        e_hash: ByteBuf,
         w_opening: Vec<FrCbor>,
         e_opening: Vec<FrCbor>,
     }
@@ -376,22 +370,20 @@ pub mod codec {
     pub fn sumcheck_proof_encode<F: PrimeField>(p: &NifsSumcheckProof) -> Result<Vec<u8>, Box<dyn Error>> {
         let (circuit, dims) = core_of(p)?;
         let dto = SumcheckProofCbor {
-            core: ProofCoreCbor {
-                v: FORMAT_VERSION,
-                circuit,
-                dims,
-                final_instance: instance_enc::<F>(&p.final_instance)?,
-                polys: p
-                    .sumcheck_polys
-                    .iter()
-                    .map(|row| frs_enc::<F>(row))
-                    .collect::<Result<_, _>>()?,
-                claims: frs_enc::<F>(&p.sumcheck_claims)?,
-                r_challenges: frs_enc::<F>(&p.r_challenges)?,
-                product_at_r: fr_enc(&fr_parse::<F>(&p.claimed_product_at_r)?),
-                w_hash: hash_enc(&p.w_commit_hash)?,
-                e_hash: hash_enc(&p.e_commit_hash)?,
-            },
+            v: FORMAT_VERSION,
+            circuit,
+            dims,
+            final_instance: instance_enc::<F>(&p.final_instance)?,
+            polys: p
+                .sumcheck_polys
+                .iter()
+                .map(|row| frs_enc::<F>(row))
+                .collect::<Result<_, _>>()?,
+            claims: frs_enc::<F>(&p.sumcheck_claims)?,
+            r_challenges: frs_enc::<F>(&p.r_challenges)?,
+            product_at_r: fr_enc(&fr_parse::<F>(&p.claimed_product_at_r)?),
+            w_hash: hash_enc(&p.w_commit_hash)?,
+            e_hash: hash_enc(&p.e_commit_hash)?,
             w_opening: frs_enc::<F>(&p.w_opening)?,
             e_opening: frs_enc::<F>(&p.e_opening)?,
         };
@@ -401,26 +393,25 @@ pub mod codec {
     pub fn sumcheck_proof_decode<F: PrimeField>(bytes: &[u8]) -> Result<NifsSumcheckProof, Box<dyn Error>> {
         let d: SumcheckProofCbor =
             ciborium::from_reader(bytes).map_err(|e| format!("invalid CBOR proof: {e}"))?;
-        let c = &d.core;
-        check_version(c.v)?;
-        let [nw, nc, npo, npi] = c.dims.0;
+        check_version(d.v)?;
+        let [nw, nc, npo, npi] = d.dims.0;
         Ok(NifsSumcheckProof {
-            circuit: c.circuit.clone(),
+            circuit: d.circuit.clone(),
             n_wires: nw,
             n_constraints: nc,
             n_pub_out: npo,
             n_pub_in: npi,
-            final_instance: instance_dec::<F>(&c.final_instance)?,
-            sumcheck_polys: c
+            final_instance: instance_dec::<F>(&d.final_instance)?,
+            sumcheck_polys: d
                 .polys
                 .iter()
                 .map(|row| frs_dec::<F>(row))
                 .collect::<Result<_, _>>()?,
-            sumcheck_claims: frs_dec::<F>(&c.claims)?,
-            r_challenges: frs_dec::<F>(&c.r_challenges)?,
-            claimed_product_at_r: super::fr_to_string(&fr_dec::<F>(&c.product_at_r)?),
-            w_commit_hash: hex::encode(&c.w_hash),
-            e_commit_hash: hex::encode(&c.e_hash),
+            sumcheck_claims: frs_dec::<F>(&d.claims)?,
+            r_challenges: frs_dec::<F>(&d.r_challenges)?,
+            claimed_product_at_r: super::fr_to_string(&fr_dec::<F>(&d.product_at_r)?),
+            w_commit_hash: hex::encode(&d.w_hash),
+            e_commit_hash: hex::encode(&d.e_hash),
             w_opening: frs_dec::<F>(&d.w_opening)?,
             e_opening: frs_dec::<F>(&d.e_opening)?,
         })
@@ -510,11 +501,26 @@ pub struct VerifyOutput {
 
 /// Load a step circuit from a `.r1cs` file.
 pub fn load_circuit<C: NovaCurve>(path: &Path) -> Result<SparseCircuit<ScalarField<C>>, Box<dyn Error>> {
-    SparseCircuit::from_r1cs(
+    let c = SparseCircuit::from_r1cs(
         path.to_str()
             .ok_or_else(|| format!("circuit path is not valid UTF-8: {path:?}"))?,
     )
-    .map_err(|e| format!("failed to load circuit {}: {e}", path.display()).into())
+    .map_err(|e| format!("failed to load circuit {}: {e}", path.display()))?;
+
+    let expected_prime = ScalarField::<C>::MODULUS.to_bytes_le();
+    if c.prime.iter().any(|&b| b != 0) && c.prime != expected_prime {
+        let got_hex: String = c.prime.iter().rev().map(|b| format!("{b:02x}")).collect();
+        let exp_hex: String = expected_prime.iter().rev().map(|b| format!("{b:02x}")).collect();
+        return Err(format!(
+            "circuit prime mismatch: the .r1cs file was compiled for a different field \
+             (got 0x{got_hex}, expected 0x{exp_hex}). \
+             Use --curve to match the field the circuit was compiled for, \
+             or recompile the circuit for this curve."
+        )
+        .into());
+    }
+
+    Ok(c)
 }
 
 /// Enforce the step-chain invariant: the public-input block (state in)
@@ -1205,7 +1211,10 @@ pub fn verify_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
         if poly.len() < 2 {
             return Err("sumcheck polynomial has < 2 coefficients".into());
         }
-        let claimed_sum = poly[0] + poly[1];
+        // poly = [f(0), f(1) - f(0)], so f(0) + f(1) = 2*poly[0] + poly[1].
+        let f0 = poly[0];
+        let f1 = poly[0] + poly[1];
+        let claimed_sum = f0 + f1;
 
         // Verify: f(0) + f(1) == current_sum.
         if round == 0 {
@@ -1355,6 +1364,7 @@ mod tests {
     use super::*;
     use crate::circuit::{r1cs_to_bytes_sparse, wtns_to_bytes};
     use crate::commitment::PedersenCommitment;
+    use ark_ff::UniformRand;
     use ark_bls12_381::Fr;
 
     /// One-constraint step circuit `out = in · x` (wires `[1, out, in, x]`).
@@ -2313,6 +2323,176 @@ mod tests {
             prop_assert_eq!(slim_seq.sumcheck_polys, slim_par.sumcheck_polys);
             prop_assert_eq!(slim_seq.r_challenges, slim_par.r_challenges);
             prop_assert_eq!(slim_seq.claimed_product_at_r, slim_par.claimed_product_at_r);
+        }
+    }
+
+    /// Build a 3-constraint step circuit: in·x = t1, t1·x = t2, t2·1 = out.
+    /// This produces 2 sumcheck rounds (log2ceil(next_power_of_two(3)) = 2).
+    fn multi_constraint_r1cs_bytes_bn254() -> Vec<u8> {
+        type Fr = ScalarField<crate::curve::Bn254>;
+        crate::circuit::r1cs_to_bytes_sparse(
+            6,    // n_wires: [1, out, in, x, t1, t2]
+            1,    // n_pub_out
+            1,    // n_pub_in
+            3,    // n_prv_in (x, t1, t2)
+            // A (L): [in·x=t1, t1·x=t2, t2·1=out]
+            &[
+                vec![(2u32, Fr::from(1u64))],   // in
+                vec![(4u32, Fr::from(1u64))],   // t1
+                vec![(5u32, Fr::from(1u64))],   // t2
+            ],
+            // B (R): [x, x, 1]
+            &[
+                vec![(3u32, Fr::from(1u64))],   // x
+                vec![(3u32, Fr::from(1u64))],   // x
+                vec![(0u32, Fr::from(1u64))],   // 1
+            ],
+            // C (O): [t1, t2, out]
+            &[
+                vec![(4u32, Fr::from(1u64))],   // t1
+                vec![(5u32, Fr::from(1u64))],   // t2
+                vec![(1u32, Fr::from(1u64))],   // out
+            ],
+        )
+    }
+
+    fn write_bn254_step_wtns(dir: &std::path::Path, idx: usize, st_in: u64, x: u64) -> u64 {
+        type Fr = ScalarField<crate::curve::Bn254>;
+        let t1 = st_in * x;
+        let t2 = t1 * x;
+        let st_out = t2; // t2·1 = out
+        fs::write(
+            dir.join(format!("step_{idx:04}.wtns")),
+            crate::circuit::wtns_to_bytes(&[
+                Fr::from(1u64),
+                Fr::from(st_out),
+                Fr::from(st_in),
+                Fr::from(x),
+                Fr::from(t1),
+                Fr::from(t2),
+            ]),
+        )
+        .unwrap();
+        st_out
+    }
+
+    /// BN254 CBOR roundtrip: fold 3 steps with a 3-constraint circuit (2 sumcheck
+    /// rounds), CBOR-encode the sumcheck proof, decode, and verify.
+    /// Also CBOR-roundtrips the bundle to mirror the CLI path.
+    #[test]
+    fn bn254_sumcheck_cbor_roundtrip() {
+        use crate::curve::Bn254;
+        type Fr = ScalarField<Bn254>;
+        let tmp = tempfile::tempdir().unwrap();
+        let r1cs_path = tmp.path().join("step.r1cs");
+        let steps_dir = tmp.path().join("steps");
+        fs::write(&r1cs_path, multi_constraint_r1cs_bytes_bn254()).unwrap();
+        fs::create_dir(&steps_dir).unwrap();
+
+        let mut state = 2u64;
+        for (i, x) in [3u64, 5, 7].iter().enumerate() {
+            state = write_bn254_step_wtns(&steps_dir, i, state, *x);
+        }
+        assert_eq!(state, 2 * 9 * 25 * 49);
+
+        let fold = run_fold_nifs::<Bn254, PedersenCommitment<Bn254>>(&r1cs_path, &steps_dir).unwrap();
+        assert_eq!(fold.bundle.n_steps, 3);
+
+        let c = load_circuit::<Bn254>(&r1cs_path).unwrap();
+        let mut rng = rand::thread_rng();
+        let sc_proof = prove_sumcheck_compression_opt::<Bn254, PedersenCommitment<Bn254>>(
+            &c, &fold, &mut rng, OptFlags::NONE,
+        )
+        .unwrap();
+
+        // Verify in-memory (should pass).
+        let v1 = verify_sumcheck_compression::<Bn254, PedersenCommitment<Bn254>>(&fold.bundle, &sc_proof);
+        assert!(v1.is_ok(), "in-memory verify failed: {:?}", v1.err());
+
+        // CBOR roundtrip BOTH the bundle and the proof (mirrors CLI path).
+        let bundle_cbor = fold.bundle.to_cbor::<Fr>().unwrap();
+        let bundle_decoded = NifsBundle::from_cbor::<Fr>(&bundle_cbor).unwrap();
+        assert_eq!(fold.bundle.final_instance, bundle_decoded.final_instance,
+            "bundle final_instance changed after CBOR");
+
+        let proof_cbor = sc_proof.to_cbor::<Fr>().unwrap();
+        let proof_decoded = NifsSumcheckProof::from_cbor::<Fr>(&proof_cbor).unwrap();
+
+        // Verify with CBOR-roundtripped bundle and proof.
+        let v2 = verify_sumcheck_compression::<Bn254, PedersenCommitment<Bn254>>(&bundle_decoded, &proof_decoded);
+        assert!(v2.is_ok(), "CBOR roundtrip verify failed: {:?}", v2.err());
+
+        // CBOR roundtrip the slim proof.
+        let slim = sc_proof.to_slim();
+        let slim_cbor = slim.to_cbor::<Fr>().unwrap();
+        let slim_decoded = NifsSlimProof::from_cbor::<Fr>(&slim_cbor).unwrap();
+        assert_eq!(slim.sumcheck_polys, slim_decoded.sumcheck_polys, "slim polys changed");
+
+        let v3 = verify_slim::<Bn254, PedersenCommitment<Bn254>>(&bundle_decoded, &slim_decoded);
+        assert!(v3.is_ok(), "slim CBOR roundtrip verify failed: {:?}", v3.err());
+    }
+
+    /// BN254 CBOR roundtrip with a single FrCbor element.
+    #[test]
+    fn bn254_frcbor_roundtrip() {
+        use crate::curve::Bn254;
+        type Fr = ScalarField<Bn254>;
+        let mut rng = rand::thread_rng();
+
+        // Build a minimal sumcheck proof with BN254 field elements.
+        let polys: Vec<Vec<String>> = (0..5)
+            .map(|_| {
+                vec![
+                    fr_to_string(&Fr::rand(&mut rng)),
+                    fr_to_string(&Fr::rand(&mut rng)),
+                ]
+            })
+            .collect();
+        let claims: Vec<String> = (0..6).map(|_| fr_to_string(&Fr::rand(&mut rng))).collect();
+        let r_challenges: Vec<String> = (0..5).map(|_| fr_to_string(&Fr::rand(&mut rng))).collect();
+
+        let proof = NifsSumcheckProof {
+            circuit: "test".into(),
+            n_wires: 4,
+            n_constraints: 3,
+            n_pub_out: 1,
+            n_pub_in: 2,
+            final_instance: NifsFinalInstance {
+                x: vec![fr_to_string(&Fr::rand(&mut rng))],
+                u: fr_to_string(&Fr::rand(&mut rng)),
+                w_commit: "aabb".into(),
+                e_commit: "ccdd".into(),
+            },
+            sumcheck_polys: polys.clone(),
+            sumcheck_claims: claims.clone(),
+            r_challenges: r_challenges.clone(),
+            claimed_product_at_r: fr_to_string(&Fr::rand(&mut rng)),
+            w_commit_hash: "112233".into(),
+            e_commit_hash: "445566".into(),
+            w_opening: vec![fr_to_string(&Fr::rand(&mut rng))],
+            e_opening: vec![fr_to_string(&Fr::rand(&mut rng))],
+        };
+
+        // CBOR roundtrip.
+        let cbor = proof.to_cbor::<Fr>().unwrap();
+        let decoded = NifsSumcheckProof::from_cbor::<Fr>(&cbor).unwrap();
+        assert_eq!(proof.sumcheck_polys, decoded.sumcheck_polys, "polys changed after CBOR");
+        assert_eq!(proof.sumcheck_claims, decoded.sumcheck_claims, "claims changed after CBOR");
+        assert_eq!(proof.r_challenges, decoded.r_challenges, "r_challenges changed after CBOR");
+        assert_eq!(proof.claimed_product_at_r, decoded.claimed_product_at_r, "product changed after CBOR");
+
+        // Verify that each field element is actually the same value.
+        for (i, (orig, rest)) in proof.sumcheck_claims.iter().zip(decoded.sumcheck_claims.iter()).enumerate() {
+            let o: Fr = orig.parse().unwrap();
+            let d: Fr = rest.parse().unwrap();
+            assert_eq!(o, d, "sumcheck_claims[{i}] value mismatch: {o} -> {d}");
+        }
+        for (i, (orig, rest)) in proof.sumcheck_polys.iter().zip(decoded.sumcheck_polys.iter()).enumerate() {
+            for (j, (a, b)) in orig.iter().zip(rest.iter()).enumerate() {
+                let va: Fr = a.parse().unwrap();
+                let vb: Fr = b.parse().unwrap();
+                assert_eq!(va, vb, "polys[{i}][{j}] value mismatch: {va} -> {vb}");
+            }
         }
     }
 }
