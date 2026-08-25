@@ -10,7 +10,7 @@ use ark_ff::Zero;
 use ark_serialize::CanonicalSerialize;
 use blake2::Digest;
 use prover::circuit::{r1cs_to_bytes_sparse, SparseCircuit};
-use prover::commitment::{CommitmentScheme, PedersenCommitment, SisCommitment};
+use prover::commitment::{CommitmentScheme, PedersenCommitment, SisCommitment, HashCommitment};
 use prover::{
     prove_sumcheck_compression_opt, verify_slim, verify_sumcheck_compression_opt,
     NifsBundle, NifsFinalInstance, NifsFoldOutput, OptFlags, NIFS_PARAMS_SEED,
@@ -51,15 +51,23 @@ fn main() {
         ("pallas", "sis") => benchmark::<prover::curve::Pallas, SisCommitment<prover::curve::Pallas>>(state_width, n_steps, opt_parallel, sis_param),
         #[cfg(feature = "vesta")]
         ("vesta", "sis") => benchmark::<prover::curve::Vesta, SisCommitment<prover::curve::Vesta>>(state_width, n_steps, opt_parallel, sis_param),
+        ("bls12-381", "hash") => benchmark::<prover::curve::Bls12_381, HashCommitment<prover::curve::Bls12_381>>(state_width, n_steps, opt_parallel, sis_param),
+        #[cfg(feature = "bn254")]
+        ("bn254", "hash") => benchmark::<prover::curve::Bn254, HashCommitment<prover::curve::Bn254>>(state_width, n_steps, opt_parallel, sis_param),
+        #[cfg(feature = "pallas")]
+        ("pallas", "hash") => benchmark::<prover::curve::Pallas, HashCommitment<prover::curve::Pallas>>(state_width, n_steps, opt_parallel, sis_param),
+        #[cfg(feature = "vesta")]
+        ("vesta", "hash") => benchmark::<prover::curve::Vesta, HashCommitment<prover::curve::Vesta>>(state_width, n_steps, opt_parallel, sis_param),
         _ => {
-            eprintln!("unknown curve/commitment: {curve}/{commitment} — valid curves: bls12-381, bn254, pallas, vesta; valid commitments: pedersen, sis");
+            eprintln!("unknown curve/commitment: {curve}/{commitment} — valid curves: bls12-381, bn254, pallas, vesta; valid commitments: pedersen, sis, hash");
             std::process::exit(2);
         }
     }
 }
 
 fn benchmark<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(state_width: usize, n_steps: usize, opt_parallel: bool, sis_param: usize) {
-    let scheme_name = if std::any::type_name::<CS>().contains("Sis") { "sis" } else { "pedersen" };
+    let type_name = std::any::type_name::<CS>();
+    let scheme_name = if type_name.contains("Sis") { "sis" } else if type_name.contains("Hash") { "hash" } else { "pedersen" };
     println!("synthetic benchmark: state_width={state_width}, steps={n_steps}, curve={}, commitment={scheme_name}", std::any::type_name::<C>());
 
     let n_wires = 1 + 2 * state_width;

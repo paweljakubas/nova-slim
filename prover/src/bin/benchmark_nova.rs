@@ -19,7 +19,7 @@ use ark_ff::Zero;
 use ark_serialize::CanonicalSerialize;
 use blake2::{Blake2b512, Digest};
 use prover::circuit::SparseCircuit;
-use prover::commitment::{CommitmentScheme, PedersenCommitment, SisCommitment};
+use prover::commitment::{CommitmentScheme, PedersenCommitment, SisCommitment, HashCommitment};
 use prover::nifs;
 use prover::{
     fr_to_string, prove_sumcheck_compression_opt, verify_slim, verify_sumcheck_compression,
@@ -45,7 +45,7 @@ fn main() {
         .map(|w| w[1].clone());
     let (Some(circuit_path), Some(steps_dir)) = (circuit_path, steps_dir) else {
         eprintln!(
-            "usage: benchmark_nova [--curve bls12-381|bn254|pallas|vesta] [--commitment pedersen|sis] [--opt-parallel] --circuit <step.r1cs> --steps <witness-dir> [--limit N]"
+            "usage: benchmark_nova [--curve bls12-381|bn254|pallas|vesta] [--commitment pedersen|sis|hash] [--opt-parallel] --circuit <step.r1cs> --steps <witness-dir> [--limit N]"
         );
         std::process::exit(2);
     };
@@ -75,8 +75,15 @@ fn main() {
         ("pallas", "sis") => benchmark::<prover::curve::Pallas, SisCommitment<prover::curve::Pallas>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
         #[cfg(feature = "vesta")]
         ("vesta", "sis") => benchmark::<prover::curve::Vesta, SisCommitment<prover::curve::Vesta>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        ("bls12-381", "hash") => benchmark::<prover::curve::Bls12_381, HashCommitment<prover::curve::Bls12_381>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        #[cfg(feature = "bn254")]
+        ("bn254", "hash") => benchmark::<prover::curve::Bn254, HashCommitment<prover::curve::Bn254>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        #[cfg(feature = "pallas")]
+        ("pallas", "hash") => benchmark::<prover::curve::Pallas, HashCommitment<prover::curve::Pallas>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        #[cfg(feature = "vesta")]
+        ("vesta", "hash") => benchmark::<prover::curve::Vesta, HashCommitment<prover::curve::Vesta>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
         _ => {
-            eprintln!("unknown curve/commitment: {curve}/{commitment} — valid curves: bls12-381, bn254, pallas, vesta; valid commitments: pedersen, sis");
+            eprintln!("unknown curve/commitment: {curve}/{commitment} — valid curves: bls12-381, bn254, pallas, vesta; valid commitments: pedersen, sis, hash");
             std::process::exit(2);
         }
     }
@@ -104,7 +111,7 @@ fn benchmark<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(circui
     assert!(!wtns.is_empty(), "no .wtns files in steps dir");
 
     let n_steps = wtns.len();
-    let scheme_name = if std::any::type_name::<CS>().contains("Sis") { "sis" } else { "pedersen" };
+    let scheme_name = { let tn = std::any::type_name::<CS>(); if tn.contains("Sis") { "sis" } else if tn.contains("Hash") { "hash" } else { "pedersen" } };
 
     println!(
         "step circuit: {} wires, {} constraints, pub {} out + {} in, private {}",
