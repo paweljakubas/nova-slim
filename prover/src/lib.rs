@@ -80,6 +80,11 @@ impl OptFlags {
 pub const NIFS_PARAMS_SEED: &[u8] = b"groth16-prover-nova-nifs-params-v1";
 pub const NIFS_TRANSCRIPT_PREFIX: &[u8] = b"groth16-prover-nova-nifs-transcript-v1";
 
+/// Default SIS output dimension (`m`).  Used as the default for the
+/// `--sis-param` CLI argument.  Production deployments should scale `m`
+/// with the security parameter (e.g., `m = 128` for 128-bit PQ security).
+pub const DEFAULT_SIS_PARAM: usize = commitment::SIS_OUTPUT_DIM;
+
 /// Generic sparse R1CS circuit parser.
 pub mod circuit;
 
@@ -561,16 +566,18 @@ pub fn run_fold_nifs<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>
     circuit: &Path,
     steps: &Path,
 ) -> Result<NifsFoldOutput<CS>, Box<dyn Error>> {
-    fold_nifs::<C, CS>(circuit, steps, OptFlags::NONE)
+    fold_nifs::<C, CS>(circuit, steps, OptFlags::NONE, DEFAULT_SIS_PARAM)
 }
 
-/// Like [`run_fold_nifs`] but with optimization flags.
+/// Like [`run_fold_nifs`] but with optimization flags and configurable SIS
+/// output dimension.
 pub fn run_fold_nifs_opt<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     circuit: &Path,
     steps: &Path,
     opts: OptFlags,
+    sis_param: usize,
 ) -> Result<NifsFoldOutput<CS>, Box<dyn Error>> {
-    fold_nifs::<C, CS>(circuit, steps, opts)
+    fold_nifs::<C, CS>(circuit, steps, opts, sis_param)
 }
 
 /// Core folding routine shared by [`run_fold_nifs`] and [`run_compress`]
@@ -579,6 +586,7 @@ fn fold_nifs<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     circuit: &Path,
     steps: &Path,
     opts: OptFlags,
+    sis_param: usize,
 ) -> Result<NifsFoldOutput<CS>, Box<dyn Error>> {
     let circuit_path_str = circuit.to_string_lossy().into_owned();
     let mut circuit = load_circuit::<C>(circuit)?;
@@ -589,7 +597,7 @@ fn fold_nifs<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     let n_wires = circuit.n_wires as usize;
     let n_constraints = circuit.n_constraints as usize;
 
-    let params = CS::params_from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints);
+    let params = CS::params_from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints, sis_param);
     let zero_e = vec![ScalarField::<C>::zero(); n_constraints];
 
     let mut wtns_paths: Vec<PathBuf> = Vec::new();
@@ -652,7 +660,7 @@ fn fold_nifs<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
             x,
             u: ScalarField::<C>::from(1u64),
             w_commit: CS::commit_witness(&params, w),
-            e_commit: CS::zero(),
+            e_commit: CS::zero(sis_param),
         };
         let step_w = nifs::RelaxedR1csWitness {
             w: w.to_vec(),
@@ -727,20 +735,22 @@ pub fn run_compress_sumcheck<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarF
     steps: &Path,
     out: &Path,
 ) -> Result<CompressOutput, Box<dyn Error>> {
-    run_compress_sumcheck_opt::<C, CS>(circuit, steps, out, OptFlags::NONE)
+    run_compress_sumcheck_opt::<C, CS>(circuit, steps, out, OptFlags::NONE, DEFAULT_SIS_PARAM)
 }
 
-/// Like [`run_compress_sumcheck`] but with optimization flags.
+/// Like [`run_compress_sumcheck`] but with optimization flags and configurable
+/// SIS output dimension.
 pub fn run_compress_sumcheck_opt<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     circuit: &Path,
     steps: &Path,
     out: &Path,
     opts: OptFlags,
+    sis_param: usize,
 ) -> Result<CompressOutput, Box<dyn Error>> {
     let c = load_circuit::<C>(circuit)?;
     check_step_circuit::<C>(&c)?;
 
-    let folded = fold_nifs::<C, CS>(circuit, steps, opts)?;
+    let folded = fold_nifs::<C, CS>(circuit, steps, opts, sis_param)?;
     let mut rng = rand::thread_rng();
     let cproof = prove_sumcheck_compression_opt::<C, CS>(&c, &folded, &mut rng, opts)?;
 
@@ -768,6 +778,15 @@ pub fn run_verify_sumcheck<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarFie
     ivc: &Path,
     sumcheck_proof: &Path,
 ) -> Result<VerifyOutput, Box<dyn Error>> {
+    run_verify_sumcheck_opt::<C, CS>(ivc, sumcheck_proof, DEFAULT_SIS_PARAM)
+}
+
+/// Like [`run_verify_sumcheck`] but with configurable SIS output dimension.
+pub fn run_verify_sumcheck_opt<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
+    ivc: &Path,
+    sumcheck_proof: &Path,
+    sis_param: usize,
+) -> Result<VerifyOutput, Box<dyn Error>> {
     let bundle_bytes =
         fs::read(ivc).map_err(|e| format!("failed to read IVC bundle {}: {e}", ivc.display()))?;
     let bundle: NifsBundle = codec::bundle_decode::<ScalarField<C>>(&bundle_bytes)
@@ -782,7 +801,7 @@ pub fn run_verify_sumcheck<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarFie
     let sc_proof: NifsSumcheckProof = codec::sumcheck_proof_decode::<ScalarField<C>>(&proof_bytes)
         .map_err(|e| format!("failed to parse sumcheck proof: {e}"))?;
 
-    verify_sumcheck_compression::<C, CS>(&bundle, &sc_proof)
+    verify_sumcheck_compression_inner::<C, CS>(&bundle, &sc_proof, sis_param)
 }
 
 fn circuit_path_display<C: NovaCurve>(_c: &SparseCircuit<ScalarField<C>>) -> String {
@@ -905,6 +924,14 @@ pub fn verify_sumcheck_compression<C: NovaCurve, CS: CommitmentScheme<Scalar = S
     bundle: &NifsBundle,
     proof: &NifsSumcheckProof,
 ) -> Result<VerifyOutput, Box<dyn Error>> {
+    verify_sumcheck_compression_inner::<C, CS>(bundle, proof, DEFAULT_SIS_PARAM)
+}
+
+fn verify_sumcheck_compression_inner<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
+    bundle: &NifsBundle,
+    proof: &NifsSumcheckProof,
+    sis_param: usize,
+) -> Result<VerifyOutput, Box<dyn Error>> {
     if proof.final_instance != bundle.final_instance {
         return Err("sumcheck proof was not created for this NIFS bundle".into());
     }
@@ -999,7 +1026,7 @@ pub fn verify_sumcheck_compression<C: NovaCurve, CS: CommitmentScheme<Scalar = S
     }
 
     // 5. Verify commitments match the bundle.
-    let params = CS::params_from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints);
+    let params = CS::params_from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints, sis_param);
     let w_vec = &w_opening.table[..n_wires.min(w_opening.table.len())];
     let expected_w_commit: CS::Commitment = commitment_parse(&bundle.final_instance.w_commit)?;
     if CS::commit_witness(&params, w_vec) != expected_w_commit {
@@ -1394,8 +1421,8 @@ mod tests {
             state = write_step_wtns(&steps_dir, i, state, *x);
         }
 
-        let seq = run_fold_nifs_opt::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&r1cs_path, &steps_dir, OptFlags::NONE).unwrap();
-        let par = run_fold_nifs_opt::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&r1cs_path, &steps_dir, OptFlags::PARALLEL).unwrap();
+        let seq = run_fold_nifs_opt::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&r1cs_path, &steps_dir, OptFlags::NONE, DEFAULT_SIS_PARAM).unwrap();
+        let par = run_fold_nifs_opt::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&r1cs_path, &steps_dir, OptFlags::PARALLEL, DEFAULT_SIS_PARAM).unwrap();
 
         assert_eq!(seq.bundle, par.bundle);
         assert_eq!(seq.final_instance, par.final_instance);
@@ -1419,12 +1446,12 @@ mod tests {
         let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
 
         // Sequential fold
-        let fold_seq = run_fold_nifs_opt::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&r1cs_path, &steps_dir, OptFlags::NONE).unwrap();
+        let fold_seq = run_fold_nifs_opt::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&r1cs_path, &steps_dir, OptFlags::NONE, DEFAULT_SIS_PARAM).unwrap();
         let mut rng = rand::thread_rng();
         let sc_seq = prove_sumcheck_compression_opt::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&c, &fold_seq, &mut rng, OptFlags::NONE).unwrap();
 
         // Parallel fold
-        let fold_par = run_fold_nifs_opt::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&r1cs_path, &steps_dir, OptFlags::PARALLEL).unwrap();
+        let fold_par = run_fold_nifs_opt::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&r1cs_path, &steps_dir, OptFlags::PARALLEL, DEFAULT_SIS_PARAM).unwrap();
         let mut rng = rand::thread_rng();
         let sc_par = prove_sumcheck_compression_opt::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&c, &fold_par, &mut rng, OptFlags::PARALLEL).unwrap();
 
@@ -1452,7 +1479,7 @@ mod tests {
             state = write_step_wtns(&steps_dir, i, state, *x);
         }
 
-        let fold_out = run_fold_nifs_opt::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&r1cs_path, &steps_dir, OptFlags::ALL).unwrap();
+        let fold_out = run_fold_nifs_opt::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&r1cs_path, &steps_dir, OptFlags::ALL, DEFAULT_SIS_PARAM).unwrap();
         assert_eq!(fold_out.bundle.n_steps, 3);
 
         // Verify the fold produced a valid instance
@@ -1682,7 +1709,7 @@ mod tests {
         let state1 = write_step_wtns(&steps_dir, 0, state0, 3u64);
         let _ = write_step_wtns(&steps_dir, 1, state1 + 1, 5u64); // break chain
 
-        let err = fold_nifs::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&r1cs_path, &steps_dir, OptFlags::NONE).unwrap_err();
+        let err = fold_nifs::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&r1cs_path, &steps_dir, OptFlags::NONE, DEFAULT_SIS_PARAM).unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("state_in does not chain"),
@@ -1802,8 +1829,8 @@ mod tests {
 
         let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
 
-        let fold_seq = run_fold_nifs_opt::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&r1cs_path, &steps_dir, OptFlags::NONE).unwrap();
-        let fold_par = run_fold_nifs_opt::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&r1cs_path, &steps_dir, OptFlags::PARALLEL).unwrap();
+        let fold_seq = run_fold_nifs_opt::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&r1cs_path, &steps_dir, OptFlags::NONE, DEFAULT_SIS_PARAM).unwrap();
+        let fold_par = run_fold_nifs_opt::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&r1cs_path, &steps_dir, OptFlags::PARALLEL, DEFAULT_SIS_PARAM).unwrap();
 
         let mut rng = rand::thread_rng();
         let slim_seq = prove_sumcheck_compression_opt::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(&c, &fold_seq, &mut rng, OptFlags::NONE)
