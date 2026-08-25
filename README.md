@@ -5,7 +5,7 @@ NIFS-fold a chain of identical step circuits into one accumulator, compress
 with a sumcheck argument, and verify a **~0.4 KiB** proof with **no pairing,
 no trusted setup, and sub-millisecond verification**.
 
-Supports **BLS12-381** (Cardano), **BN254** (Ethereum), **Pallas** (Zcash), and **Vesta**. Both **Pedersen** (fast, classical) and **SIS** (faster folding, quantum-ready) commitments are selectable at runtime — the first Nova-family system to combine sub-3 KiB proofs, no trusted setup, and a post-quantum commitment path.
+Supports **BLS12-381** (Cardano), **BN254** (Ethereum), **Pallas** (Zcash), and **Vesta**. Three commitment schemes — **Pedersen** (fast, classical), **SIS** (faster folding, quantum-ready), and **Hash** (zero-param, on-the-fly derivation) — are selectable at runtime via `--commitment {pedersen,sis,hash}`.
 
 ```
 nova-slim params   → inspect a step circuit (n_pub_in must equal n_pub_out)
@@ -75,8 +75,8 @@ cd -
 $NOVA params --curve bn254 --circuit circom/Ed25519Verify/ed25519_verify_nova.r1cs
 
 # 5. Fold 255 steps into one transparent bundle (~2 min)
-#    Use --commitment pedersen (default, fast, classical) or --commitment sis
-#    (lattice-based, faster folding, quantum-ready architecture)
+#    Use --commitment pedersen (default), --commitment sis (lattice-based,
+#    faster folding), or --commitment hash (zero-param, on-the-fly derivation)
 $NOVA fold --curve bn254 --circuit circom/Ed25519Verify/ed25519_verify_nova.r1cs \
     --steps <witness-dir> --out ed25519.ivc.cbor
 
@@ -149,7 +149,15 @@ because it replaces elliptic-curve MSM with simple matrix-vector multiplication
 over the scalar field. The bundle grows slightly (~200 B) because each SIS
 commitment is a short vector (`m = 4` field elements) rather than a single
 curve point. The slim proof is **independent of the commitment scheme** — the
-same ~0.4 KiB payload works for Pedersen, SIS-m=4, and SIS-m=128.
+same ~0.4 KiB payload works for Pedersen, SIS, and Hash.
+
+**Hash (on-the-fly Blake2b derivation)** stores only a seed in params (no
+matrix, no basis points) and re-derives commitment coefficients via Blake2b
+per commitment. This trades O(m·n) storage for O(m·n) computation, making
+it the simplest scheme to audit: the entire security argument reduces to
+Blake2b collision resistance. The bundle and slim proof are the same size as
+SIS. Hash folds ~10× slower than SIS and ~1.7× slower than Pedersen because
+it recomputes coefficients on every commitment.
 
 **SIS security scaling (`--sis-param`).** The SIS output dimension `m` is
 configurable via `--sis-param <M>`. Scaling `m` from 4 to 128 provides 128-bit
@@ -194,8 +202,8 @@ step witnesses via snarkjs, then measures baseline and parallel passes of
 
 These skip circom/snarkjs entirely and generate random in-memory witnesses.
 Useful for comparing curve performance when real-circuit witnesses are not
-available (e.g. Pallas / Vesta). Add `--commitment sis` to use lattice
-commitments instead of Pedersen.
+available (e.g. Pallas / Vesta). Use `--commitment {pedersen,sis,hash}` to
+select the commitment scheme.
 
 ```bash
 # BLS12-381
@@ -218,6 +226,7 @@ cargo run --release --manifest-path prover/Cargo.toml --bin benchmark_synthetic 
 | Pedersen | 3.76 ms | 0.088 s | 0.092 s | 0.3 ms | **0.4 KiB** | 1.9 KiB |
 | **SIS (m=4)** | **0.83 ms** (4.5×) | 0.221 s | **0.007 s** (13×) | 0.2 ms | **0.4 KiB** | 2.1 KiB |
 | **SIS (m=128)** | **5.40 ms** (0.7×) | 0.082 s | 0.20 s | 0.3 ms | **0.4 KiB** | 9.8 KiB |
+| **Hash** | 7.15 ms (0.5×) | 0.091 s | 0.008 s (12×) | 0.4 ms | **0.4 KiB** | 2.1 KiB |
 
 **Memory scaling (synthetic, BN254, state_width=24, Pedersen):**
 
