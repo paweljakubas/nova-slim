@@ -90,7 +90,8 @@ fn main() {
 }
 
 fn benchmark<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(circuit_path: &str, steps_dir: &str, limit: Option<usize>, opt_parallel: bool, sis_param: usize) {
-    let mut circuit = SparseCircuit::<ScalarField<C>>::from_r1cs(circuit_path)
+    use std::path::Path;
+    let mut circuit = prover::load_circuit::<C>(Path::new(circuit_path))
         .unwrap_or_else(|e| panic!("failed to load circuit {circuit_path}: {e}"));
     if circuit.n_pub_in != circuit.n_pub_out {
         panic!(
