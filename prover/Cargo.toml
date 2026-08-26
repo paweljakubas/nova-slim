@@ -31,6 +31,7 @@ bls12-381 = ["dep:ark-bls12-381"]
 bn254 = ["dep:ark-bn254"]
 pallas = ["dep:ark-pallas"]
 vesta = ["dep:ark-vesta"]
+grumpkin = ["dep:ark-bn254"]
 bandersnatch = ["dep:ark-ed-on-bls12-381-bandersnatch"]
 
 [dev-dependencies]

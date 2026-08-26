@@ -45,7 +45,7 @@ fn main() {
         .map(|w| w[1].clone());
     let (Some(circuit_path), Some(steps_dir)) = (circuit_path, steps_dir) else {
         eprintln!(
-            "usage: benchmark_nova [--curve bls12-381|bn254|pallas|vesta] [--commitment pedersen|sis|hash] [--opt-parallel] --circuit <step.r1cs> --steps <witness-dir> [--limit N]"
+            "usage: benchmark_nova [--curve bls12-381|bn254|pallas|vesta|grumpkin|bandersnatch] [--commitment pedersen|sis|hash] [--opt-parallel] --circuit <step.r1cs> --steps <witness-dir> [--limit N]"
         );
         std::process::exit(2);
     };
@@ -68,6 +68,10 @@ fn main() {
         ("pallas", "pedersen") => benchmark::<prover::curve::Pallas, PedersenCommitment<prover::curve::Pallas>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
         #[cfg(feature = "vesta")]
         ("vesta", "pedersen") => benchmark::<prover::curve::Vesta, PedersenCommitment<prover::curve::Vesta>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        #[cfg(feature = "grumpkin")]
+        ("grumpkin", "pedersen") => benchmark::<prover::curve::Grumpkin, PedersenCommitment<prover::curve::Grumpkin>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        #[cfg(feature = "bandersnatch")]
+        ("bandersnatch", "pedersen") => benchmark::<prover::curve::Bandersnatch, PedersenCommitment<prover::curve::Bandersnatch>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
         ("bls12-381", "sis") => benchmark::<prover::curve::Bls12_381, SisCommitment<prover::curve::Bls12_381>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
         #[cfg(feature = "bn254")]
         ("bn254", "sis") => benchmark::<prover::curve::Bn254, SisCommitment<prover::curve::Bn254>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
@@ -75,6 +79,10 @@ fn main() {
         ("pallas", "sis") => benchmark::<prover::curve::Pallas, SisCommitment<prover::curve::Pallas>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
         #[cfg(feature = "vesta")]
         ("vesta", "sis") => benchmark::<prover::curve::Vesta, SisCommitment<prover::curve::Vesta>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        #[cfg(feature = "grumpkin")]
+        ("grumpkin", "sis") => benchmark::<prover::curve::Grumpkin, SisCommitment<prover::curve::Grumpkin>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        #[cfg(feature = "bandersnatch")]
+        ("bandersnatch", "sis") => benchmark::<prover::curve::Bandersnatch, SisCommitment<prover::curve::Bandersnatch>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
         ("bls12-381", "hash") => benchmark::<prover::curve::Bls12_381, HashCommitment<prover::curve::Bls12_381>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
         #[cfg(feature = "bn254")]
         ("bn254", "hash") => benchmark::<prover::curve::Bn254, HashCommitment<prover::curve::Bn254>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
@@ -82,8 +90,12 @@ fn main() {
         ("pallas", "hash") => benchmark::<prover::curve::Pallas, HashCommitment<prover::curve::Pallas>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
         #[cfg(feature = "vesta")]
         ("vesta", "hash") => benchmark::<prover::curve::Vesta, HashCommitment<prover::curve::Vesta>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        #[cfg(feature = "grumpkin")]
+        ("grumpkin", "hash") => benchmark::<prover::curve::Grumpkin, HashCommitment<prover::curve::Grumpkin>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        #[cfg(feature = "bandersnatch")]
+        ("bandersnatch", "hash") => benchmark::<prover::curve::Bandersnatch, HashCommitment<prover::curve::Bandersnatch>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
         _ => {
-            eprintln!("unknown curve/commitment: {curve}/{commitment} — valid curves: bls12-381, bn254, pallas, vesta; valid commitments: pedersen, sis, hash");
+            eprintln!("unknown curve/commitment: {curve}/{commitment} — valid curves: bls12-381, bn254, pallas, vesta, grumpkin, bandersnatch; valid commitments: pedersen, sis, hash");
             std::process::exit(2);
         }
     }

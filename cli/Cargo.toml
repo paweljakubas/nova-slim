@@ -14,7 +14,7 @@ name = "nova-slim"
 path = "src/main.rs"
 
 [dependencies]
-prover = { path = "../prover", default-features = false, features = ["bls12-381", "bn254", "pallas", "vesta", "bandersnatch"] }
+prover = { path = "../prover", default-features = false, features = ["bls12-381", "bn254", "pallas", "vesta", "grumpkin", "bandersnatch"] }
 ark-bls12-381 = "0.4"
 ark-bn254 = "0.4"
 ark-pallas = "0.4"

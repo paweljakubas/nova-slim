@@ -1,7 +1,7 @@
 //! `params` subcommand — inspect a step circuit and emit a JSON descriptor.
 
 use clap::Parser;
-use prover::{run_params, curve::{Bls12_381, Bn254, Pallas, Vesta, Bandersnatch}};
+use prover::{run_params, curve::{Bls12_381, Bn254, Pallas, Vesta, Grumpkin, Bandersnatch}};
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
@@ -31,6 +31,7 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
         Curve::Bn254 => run_params::<Bn254>(&args.circuit)?,
         Curve::Pallas => run_params::<Pallas>(&args.circuit)?,
         Curve::Vesta => run_params::<Vesta>(&args.circuit)?,
+        Curve::Grumpkin => run_params::<Grumpkin>(&args.circuit)?,
         Curve::Bandersnatch => run_params::<Bandersnatch>(&args.circuit)?,
     };
     let json = serde_json::to_string_pretty(&desc)?;

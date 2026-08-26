@@ -10,7 +10,11 @@
 //! pairings, or a secondary curve. Any curve with hard DLOG works.
 
 use ark_ec::AffineRepr;
+#[cfg(feature = "grumpkin")]
+use ark_ec::{models::CurveConfig, short_weierstrass::{self as sw, SWCurveConfig}};
 use ark_ff::PrimeField;
+#[cfg(feature = "grumpkin")]
+use ark_ff::{Field, MontFp, Zero};
 
 /// Trait abstracting the elliptic curve used by the Nova IVC scheme.
 ///
@@ -80,6 +84,46 @@ pub struct Vesta;
 impl NovaCurve for Vesta {
     type ScalarField = ark_vesta::Fr;
     type G1Affine = ark_vesta::Affine;
+}
+
+/// Grumpkin — the BN254 complement in the BN254/Grumpkin cycle.
+/// Defined inline using ark-bn254 fields (no extra dependency).
+#[cfg(feature = "grumpkin")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Grumpkin;
+
+#[cfg(feature = "grumpkin")]
+#[derive(Copy, Clone, Default, PartialEq, Eq)]
+pub struct GrumpkinConfig;
+
+#[cfg(feature = "grumpkin")]
+impl CurveConfig for GrumpkinConfig {
+    type BaseField = ark_bn254::Fr;   // Grumpkin base field = BN254 scalar field
+    type ScalarField = ark_bn254::Fq; // Grumpkin scalar field = BN254 base field
+
+    const COFACTOR: &'static [u64] = &[0x1];
+    const COFACTOR_INV: Self::ScalarField = ark_bn254::Fq::ONE;
+}
+
+#[cfg(feature = "grumpkin")]
+impl SWCurveConfig for GrumpkinConfig {
+    const COEFF_A: Self::BaseField = ark_bn254::Fr::ZERO;
+    const COEFF_B: Self::BaseField = MontFp!("-17");
+    const GENERATOR: sw::Affine<Self> = sw::Affine::new_unchecked(
+        MontFp!("1"),
+        MontFp!("17631683881184975370165255887551781615748388533673675138860"),
+    );
+
+    #[inline(always)]
+    fn mul_by_a(_: Self::BaseField) -> Self::BaseField {
+        Self::BaseField::zero()
+    }
+}
+
+#[cfg(feature = "grumpkin")]
+impl NovaCurve for Grumpkin {
+    type ScalarField = ark_bn254::Fq;
+    type G1Affine = sw::Affine<GrumpkinConfig>;
 }
 
 /// Bandersnatch — a fast prime-order curve over the BLS12-381 scalar field.

@@ -10,7 +10,7 @@
 //! little-endian values).
 
 use clap::Parser;
-use prover::{run_compress_sumcheck_opt, NifsSumcheckProof, OptFlags, DEFAULT_SIS_PARAM, commitment::{PedersenCommitment, SisCommitment, HashCommitment}, curve::{Bls12_381, Bn254, Pallas, Vesta, Bandersnatch, NovaCurve, ScalarField}};
+use prover::{run_compress_sumcheck_opt, NifsSumcheckProof, OptFlags, DEFAULT_SIS_PARAM, commitment::{PedersenCommitment, SisCommitment, HashCommitment}, curve::{Bls12_381, Bn254, Pallas, Vesta, Grumpkin, Bandersnatch, NovaCurve, ScalarField}};
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
@@ -110,6 +110,9 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
             (Curve::Vesta, crate::CommitmentSchemeArg::Pedersen) => run_compress_sumcheck_opt::<Vesta, PedersenCommitment<Vesta>>(&args.circuit, &args.steps, &tmp, opts, args.sis_param)?,
             (Curve::Vesta, crate::CommitmentSchemeArg::Sis) => run_compress_sumcheck_opt::<Vesta, SisCommitment<Vesta>>(&args.circuit, &args.steps, &tmp, opts, args.sis_param)?,
             (Curve::Vesta, crate::CommitmentSchemeArg::Hash) => run_compress_sumcheck_opt::<Vesta, HashCommitment<Vesta>>(&args.circuit, &args.steps, &tmp, opts, args.sis_param)?,
+            (Curve::Grumpkin, crate::CommitmentSchemeArg::Pedersen) => run_compress_sumcheck_opt::<Grumpkin, PedersenCommitment<Grumpkin>>(&args.circuit, &args.steps, &tmp, opts, args.sis_param)?,
+            (Curve::Grumpkin, crate::CommitmentSchemeArg::Sis) => run_compress_sumcheck_opt::<Grumpkin, SisCommitment<Grumpkin>>(&args.circuit, &args.steps, &tmp, opts, args.sis_param)?,
+            (Curve::Grumpkin, crate::CommitmentSchemeArg::Hash) => run_compress_sumcheck_opt::<Grumpkin, HashCommitment<Grumpkin>>(&args.circuit, &args.steps, &tmp, opts, args.sis_param)?,
             (Curve::Bandersnatch, crate::CommitmentSchemeArg::Pedersen) => run_compress_sumcheck_opt::<Bandersnatch, PedersenCommitment<Bandersnatch>>(&args.circuit, &args.steps, &tmp, opts, args.sis_param)?,
             (Curve::Bandersnatch, crate::CommitmentSchemeArg::Sis) => run_compress_sumcheck_opt::<Bandersnatch, SisCommitment<Bandersnatch>>(&args.circuit, &args.steps, &tmp, opts, args.sis_param)?,
             (Curve::Bandersnatch, crate::CommitmentSchemeArg::Hash) => run_compress_sumcheck_opt::<Bandersnatch, HashCommitment<Bandersnatch>>(&args.circuit, &args.steps, &tmp, opts, args.sis_param)?,
@@ -120,6 +123,7 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
             Curve::Bn254 => strip_and_write::<Bn254>(&full_bytes, &args.out)?,
             Curve::Pallas => strip_and_write::<Pallas>(&full_bytes, &args.out)?,
             Curve::Vesta => strip_and_write::<Vesta>(&full_bytes, &args.out)?,
+            Curve::Grumpkin => strip_and_write::<Grumpkin>(&full_bytes, &args.out)?,
             Curve::Bandersnatch => strip_and_write::<Bandersnatch>(&full_bytes, &args.out)?,
         };
         fs::remove_file(&tmp).ok();
@@ -138,6 +142,9 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
             (Curve::Vesta, crate::CommitmentSchemeArg::Pedersen) => run_compress_sumcheck_opt::<Vesta, PedersenCommitment<Vesta>>(&args.circuit, &args.steps, &args.out, opts, args.sis_param)?,
             (Curve::Vesta, crate::CommitmentSchemeArg::Sis) => run_compress_sumcheck_opt::<Vesta, SisCommitment<Vesta>>(&args.circuit, &args.steps, &args.out, opts, args.sis_param)?,
             (Curve::Vesta, crate::CommitmentSchemeArg::Hash) => run_compress_sumcheck_opt::<Vesta, HashCommitment<Vesta>>(&args.circuit, &args.steps, &args.out, opts, args.sis_param)?,
+            (Curve::Grumpkin, crate::CommitmentSchemeArg::Pedersen) => run_compress_sumcheck_opt::<Grumpkin, PedersenCommitment<Grumpkin>>(&args.circuit, &args.steps, &args.out, opts, args.sis_param)?,
+            (Curve::Grumpkin, crate::CommitmentSchemeArg::Sis) => run_compress_sumcheck_opt::<Grumpkin, SisCommitment<Grumpkin>>(&args.circuit, &args.steps, &args.out, opts, args.sis_param)?,
+            (Curve::Grumpkin, crate::CommitmentSchemeArg::Hash) => run_compress_sumcheck_opt::<Grumpkin, HashCommitment<Grumpkin>>(&args.circuit, &args.steps, &args.out, opts, args.sis_param)?,
             (Curve::Bandersnatch, crate::CommitmentSchemeArg::Pedersen) => run_compress_sumcheck_opt::<Bandersnatch, PedersenCommitment<Bandersnatch>>(&args.circuit, &args.steps, &args.out, opts, args.sis_param)?,
             (Curve::Bandersnatch, crate::CommitmentSchemeArg::Sis) => run_compress_sumcheck_opt::<Bandersnatch, SisCommitment<Bandersnatch>>(&args.circuit, &args.steps, &args.out, opts, args.sis_param)?,
             (Curve::Bandersnatch, crate::CommitmentSchemeArg::Hash) => run_compress_sumcheck_opt::<Bandersnatch, HashCommitment<Bandersnatch>>(&args.circuit, &args.steps, &args.out, opts, args.sis_param)?,

@@ -1,7 +1,7 @@
 //! `verify` subcommand — verify a NIFS bundle against a compression proof.
 
 use clap::Parser;
-use prover::{run_verify_slim, run_verify_sumcheck_opt, DEFAULT_SIS_PARAM, commitment::{PedersenCommitment, SisCommitment, HashCommitment}, curve::{Bls12_381, Bn254, Pallas, Vesta, Bandersnatch}};
+use prover::{run_verify_slim, run_verify_sumcheck_opt, DEFAULT_SIS_PARAM, commitment::{PedersenCommitment, SisCommitment, HashCommitment}, curve::{Bls12_381, Bn254, Pallas, Vesta, Grumpkin, Bandersnatch}};
 use std::error::Error;
 use std::path::PathBuf;
 use crate::Curve;
@@ -55,6 +55,9 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
             (Curve::Vesta, crate::CommitmentSchemeArg::Pedersen) => run_verify_slim::<Vesta, PedersenCommitment<Vesta>>(&args.ivc, sp)?,
             (Curve::Vesta, crate::CommitmentSchemeArg::Sis) => run_verify_slim::<Vesta, SisCommitment<Vesta>>(&args.ivc, sp)?,
             (Curve::Vesta, crate::CommitmentSchemeArg::Hash) => run_verify_slim::<Vesta, HashCommitment<Vesta>>(&args.ivc, sp)?,
+            (Curve::Grumpkin, crate::CommitmentSchemeArg::Pedersen) => run_verify_slim::<Grumpkin, PedersenCommitment<Grumpkin>>(&args.ivc, sp)?,
+            (Curve::Grumpkin, crate::CommitmentSchemeArg::Sis) => run_verify_slim::<Grumpkin, SisCommitment<Grumpkin>>(&args.ivc, sp)?,
+            (Curve::Grumpkin, crate::CommitmentSchemeArg::Hash) => run_verify_slim::<Grumpkin, HashCommitment<Grumpkin>>(&args.ivc, sp)?,
             (Curve::Bandersnatch, crate::CommitmentSchemeArg::Pedersen) => run_verify_slim::<Bandersnatch, PedersenCommitment<Bandersnatch>>(&args.ivc, sp)?,
             (Curve::Bandersnatch, crate::CommitmentSchemeArg::Sis) => run_verify_slim::<Bandersnatch, SisCommitment<Bandersnatch>>(&args.ivc, sp)?,
             (Curve::Bandersnatch, crate::CommitmentSchemeArg::Hash) => run_verify_slim::<Bandersnatch, HashCommitment<Bandersnatch>>(&args.ivc, sp)?,
@@ -81,6 +84,9 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
             (Curve::Vesta, crate::CommitmentSchemeArg::Pedersen) => run_verify_sumcheck_opt::<Vesta, PedersenCommitment<Vesta>>(&args.ivc, sc_proof, args.sis_param)?,
             (Curve::Vesta, crate::CommitmentSchemeArg::Sis) => run_verify_sumcheck_opt::<Vesta, SisCommitment<Vesta>>(&args.ivc, sc_proof, args.sis_param)?,
             (Curve::Vesta, crate::CommitmentSchemeArg::Hash) => run_verify_sumcheck_opt::<Vesta, HashCommitment<Vesta>>(&args.ivc, sc_proof, args.sis_param)?,
+            (Curve::Grumpkin, crate::CommitmentSchemeArg::Pedersen) => run_verify_sumcheck_opt::<Grumpkin, PedersenCommitment<Grumpkin>>(&args.ivc, sc_proof, args.sis_param)?,
+            (Curve::Grumpkin, crate::CommitmentSchemeArg::Sis) => run_verify_sumcheck_opt::<Grumpkin, SisCommitment<Grumpkin>>(&args.ivc, sc_proof, args.sis_param)?,
+            (Curve::Grumpkin, crate::CommitmentSchemeArg::Hash) => run_verify_sumcheck_opt::<Grumpkin, HashCommitment<Grumpkin>>(&args.ivc, sc_proof, args.sis_param)?,
             (Curve::Bandersnatch, crate::CommitmentSchemeArg::Pedersen) => run_verify_sumcheck_opt::<Bandersnatch, PedersenCommitment<Bandersnatch>>(&args.ivc, sc_proof, args.sis_param)?,
             (Curve::Bandersnatch, crate::CommitmentSchemeArg::Sis) => run_verify_sumcheck_opt::<Bandersnatch, SisCommitment<Bandersnatch>>(&args.ivc, sc_proof, args.sis_param)?,
             (Curve::Bandersnatch, crate::CommitmentSchemeArg::Hash) => run_verify_sumcheck_opt::<Bandersnatch, HashCommitment<Bandersnatch>>(&args.ivc, sc_proof, args.sis_param)?,

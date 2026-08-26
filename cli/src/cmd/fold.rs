@@ -2,7 +2,7 @@
 //! instance (NIFS) and emit the O(1) bundle.
 
 use clap::Parser;
-use prover::{run_fold_nifs_opt, OptFlags, NifsBundle, DEFAULT_SIS_PARAM, commitment::{PedersenCommitment, SisCommitment, HashCommitment}, curve::{Bls12_381, Bn254, Pallas, Vesta, Bandersnatch, NovaCurve, ScalarField}};
+use prover::{run_fold_nifs_opt, OptFlags, NifsBundle, DEFAULT_SIS_PARAM, commitment::{PedersenCommitment, SisCommitment, HashCommitment}, curve::{Bls12_381, Bn254, Pallas, Vesta, Grumpkin, Bandersnatch, NovaCurve, ScalarField}};
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
@@ -128,6 +128,18 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
         (Curve::Vesta, crate::CommitmentSchemeArg::Hash) => {
             let out = run_fold_nifs_opt::<Vesta, HashCommitment<Vesta>>(&args.circuit, &args.steps, opts, args.sis_param)?;
             write_bundle::<Vesta>(&out.bundle, &args.out, opts)?;
+        }
+        (Curve::Grumpkin, crate::CommitmentSchemeArg::Pedersen) => {
+            let out = run_fold_nifs_opt::<Grumpkin, PedersenCommitment<Grumpkin>>(&args.circuit, &args.steps, opts, args.sis_param)?;
+            write_bundle::<Grumpkin>(&out.bundle, &args.out, opts)?;
+        }
+        (Curve::Grumpkin, crate::CommitmentSchemeArg::Sis) => {
+            let out = run_fold_nifs_opt::<Grumpkin, SisCommitment<Grumpkin>>(&args.circuit, &args.steps, opts, args.sis_param)?;
+            write_bundle::<Grumpkin>(&out.bundle, &args.out, opts)?;
+        }
+        (Curve::Grumpkin, crate::CommitmentSchemeArg::Hash) => {
+            let out = run_fold_nifs_opt::<Grumpkin, HashCommitment<Grumpkin>>(&args.circuit, &args.steps, opts, args.sis_param)?;
+            write_bundle::<Grumpkin>(&out.bundle, &args.out, opts)?;
         }
         (Curve::Bandersnatch, crate::CommitmentSchemeArg::Pedersen) => {
             let out = run_fold_nifs_opt::<Bandersnatch, PedersenCommitment<Bandersnatch>>(&args.circuit, &args.steps, opts, args.sis_param)?;

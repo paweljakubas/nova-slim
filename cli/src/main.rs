@@ -44,6 +44,8 @@ pub enum Curve {
     Pallas,
     /// Vesta (the other half of the Pallas/Vesta cycle).
     Vesta,
+    /// Grumpkin — the BN254 complement in the BN254/Grumpkin cycle.
+    Grumpkin,
     /// Bandersnatch — fast curve over the BLS12-381 scalar field.
     Bandersnatch,
 }
