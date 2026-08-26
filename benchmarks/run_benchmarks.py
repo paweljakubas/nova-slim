@@ -59,6 +59,7 @@ CIRCOM_PRIMES = {
     "bn254": "bn128",
     "pallas": "pallas",
     "vesta": "vesta",
+    "bandersnatch": "bls12381",
 }
 
 
@@ -244,6 +245,65 @@ FAMILIES = {
         "witness_script_args": ["--state-size", "32"],
         "build_subdir": "build_bn128",
     },
+    # Bandersnatch variants — reuse BLS12-381 R1CS/WASM (same scalar field)
+    "ed25519_verify_nova_bandersnatch": {
+        **ed25519_step_family("Ed25519Verify"),
+        "circuit_name": "ed25519_verify_nova",
+        "curve": "bandersnatch",
+        "default_steps": 255,
+        "build_subdir": "build_bls12381",
+    },
+    "poseidon_sponge_nova_bandersnatch": {
+        "circuit_name": "poseidon_sponge_nova",
+        "curve": "bandersnatch",
+        "default_steps": 255,
+        "dir": "PoseidonSponge",
+        "witness_script": "gen_poseidon_sponge_witnesses.py",
+        "build_subdir": "build_bls12381",
+    },
+    "sha256_small_nova_bandersnatch": {
+        "circuit_name": "sha256_step_small_nova",
+        "curve": "bandersnatch",
+        "default_steps": 32,
+        "dir": "Sha256Step",
+        "witness_script": "gen_sha256_witnesses.py",
+        "witness_script_args": ["--state-size", "8"],
+        "build_subdir": "build_bls12381",
+    },
+    "sha256_medium_nova_bandersnatch": {
+        "circuit_name": "sha256_step_nova",
+        "curve": "bandersnatch",
+        "default_steps": 32,
+        "dir": "Sha256Step",
+        "witness_script": "gen_sha256_witnesses.py",
+        "witness_script_args": ["--state-size", "32"],
+        "build_subdir": "build_bls12381",
+    },
+    "sha256_big_nova_bandersnatch": {
+        "circuit_name": "sha256_step_big_nova",
+        "curve": "bandersnatch",
+        "default_steps": 32,
+        "dir": "Sha256Step",
+        "witness_script": "gen_sha256_witnesses.py",
+        "witness_script_args": ["--state-size", "32"],
+        "build_subdir": "build_bls12381",
+    },
+    "vrf_verify_nova_bandersnatch": {
+        "circuit_name": "vrf_verify_nova",
+        "curve": "bandersnatch",
+        "default_steps": 254,
+        "dir": "VRF",
+        "witness_script": "gen_vrf_witnesses.py",
+        "build_subdir": "build_bls12381",
+    },
+    "poseidon_merkle_nova_bandersnatch": {
+        "circuit_name": "poseidon_merkle_nova",
+        "curve": "bandersnatch",
+        "default_steps": 254,
+        "dir": "PoseidonMerkle",
+        "witness_script": "gen_merkle_witnesses.py",
+        "build_subdir": "build_bls12381",
+    },
 }
 
 
@@ -357,7 +417,7 @@ def main():
 
     manifest = os.path.join(REPO_DIR, "prover", "Cargo.toml")
     run(["cargo", "build", "--release", "--manifest-path", manifest,
-         "--features", "bls12-381 bn254 pallas vesta",
+         "--features", "bls12-381 bn254 pallas vesta bandersnatch",
          "--bin", "benchmark_nova"])
     bench_bin = os.path.join(REPO_DIR, "prover", "target", "release", "benchmark_nova")
 
