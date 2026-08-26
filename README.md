@@ -2,10 +2,10 @@
 
 Transparent folding-scheme proofs sized for on-chain verification:
 NIFS-fold a chain of identical step circuits into one accumulator, compress
-with a sumcheck argument, and verify a **~0.4 KiB** proof with **no pairing,
+with a sumcheck argument, and verify a **~0.4–2.5 KiB** proof with **no pairing,
 no trusted setup, and sub-millisecond verification**.
 
-Supports **BLS12-381** (Cardano), **BN254** (Ethereum), **Pallas** (Zcash), and **Vesta**. Three commitment schemes — **Pedersen** (fast, classical), **SIS** (faster folding, quantum-ready), and **Hash** (zero-param, on-the-fly derivation) — are selectable at runtime via `--commitment {pedersen,sis,hash}`.
+Supports **BLS12-381** (Cardano), **BN254** (Ethereum), **Pallas** (Zcash), and **Vesta**. Three commitment schemes — **Pedersen** (fast, classical), **SIS** (faster folding, quantum-ready), and **Hash** (zero-param, on-the-fly derivation, post-quantum) — are selectable at runtime via `--commitment {pedersen,sis,hash}`.
 
 ```
 nova-slim params   → inspect a step circuit (n_pub_in must equal n_pub_out)
@@ -18,14 +18,15 @@ nova-slim verify   → check bundle + proof (slim: ~0.2 ms)
 
 The **full** sumcheck proof includes the entire HashPC opening (the witness
  truth table) and is ~240 KiB. The **slim** proof strips this opening, keeping
- only the sumcheck protocol data, yielding a **~0.4 KiB** on-chain payload that
- is **independent of the commitment scheme and its security parameter**.
+ only the sumcheck protocol data, yielding a **~0.4–2.5 KiB** on-chain payload
+ (depending on $k = \log_2 n_{constraints}$) that is **independent of the
+ commitment scheme and its security parameter**.
 
 | Property | Full proof | Slim proof |
 |---|---|---|
 | Soundness | Yes | Yes |
 | Knowledge-soundness | Yes (explicit witness) | Yes (implicit witness) |
-| On-chain size | ~240 KiB | **~0.4 KiB** (independent of m) |
+| On-chain size | ~240 KiB | **~0.4–2.5 KiB** (independent of m) |
 | Auditability | Full witness reconstruction | Commitment binding only |
 | Trusted setup | None | None |
 | Verifier time | ~8 s (HashPC recompute) | **~0.2 ms** (sumcheck only) |
@@ -40,8 +41,12 @@ anyone can verify that its commitment hashes match the slim proof, confirming
 both refer to the same witness. The full proof serves as a legally binding
 audit record, while the slim proof serves as the transaction payload.
 
-Step circuits are bundled locally in `circom/CardanoKeyOwnership` and
-`circom/Ed25519Verify` (originally from [cardano-foundation/bls](https://github.com/cardano-foundation/bls)).
+Step circuits are bundled in `circom/`:
+- `Ed25519Verify/` — Ed25519 signature verification (~7.7K constraints)
+- `PoseidonSponge/` — Poseidon hash chain (~633 constraints, comparable to Sonobe)
+- `Sha256Step/` — SHA-256 hash chain (~29K–59K constraints, small/medium/big)
+- `VRF/` — VRF ladder step (~9 constraints)
+- `PoseidonMerkle/` — Merkle path verification (~639 constraints)
 
 ## Layout
 
@@ -80,7 +85,7 @@ $NOVA params --curve bn254 --circuit circom/Ed25519Verify/ed25519_verify_nova.r1
 $NOVA fold --curve bn254 --circuit circom/Ed25519Verify/ed25519_verify_nova.r1cs \
     --steps <witness-dir> --out ed25519.ivc.cbor
 
-# 6a. On-chain path: slim proof (~0.4 KiB CBOR, no openings)
+# 6a. On-chain path: slim proof (~1.5 KiB CBOR for Ed25519, no openings)
 $NOVA compress --slim --curve bn254 --circuit ... --steps <witness-dir> --out ed25519_slim.proof.cbor
 $NOVA verify --curve bn254 --ivc ed25519.ivc.cbor --slim-proof ed25519_slim.proof.cbor
 
@@ -133,9 +138,12 @@ Latest run (2026-08-24, 4-core desktop, release build, 255 chained steps):
 
 | Step circuit | Curve | Commitment | Constraints | Steps | Fold total | Fold/step | Compress | Verify (full) | Verify (slim) | Slim proof | Bundle |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| `ed25519_verify_nova` | bls12-381 | Pedersen | 7,724 | 255 | 138.5 / 145.7 s | 543 / 571 ms | 25.44 / 24.30 s | 28.59 / 25.49 s | **0.7 ms** | **~1 KiB** | 2.2 KiB |
-| `ed25519_verify_nova` | bn254 | Pedersen | 7,724 | 255 | 74.2 / 66.7 s | 347 / 312 ms | 12.23 / 11.14 s | 12.22 / 11.53 s | **0.6 ms** | **~1 KiB** | 2.2 KiB |
-| `ed25519_verify_nova` | bn254 | **SIS** | 7,724 | 214 | 8.5 s | **39.9 ms** | 14.2 s | **1.1 s** | **0.6 ms** | **~1 KiB** | 2.4 KiB |
+| `ed25519_verify_nova` | bls12-381 | Pedersen | 7,724 | 255 | 138.5 / 145.7 s | 543 / 571 ms | 25.44 / 24.30 s | 28.59 / 25.49 s | **0.7 ms** | **~1.5 KiB** | 2.2 KiB |
+| `ed25519_verify_nova` | bn254 | Pedersen | 7,724 | 255 | 74.2 / 66.7 s | 347 / 312 ms | 12.23 / 11.14 s | 12.22 / 11.53 s | **0.6 ms** | **~1.5 KiB** | 2.2 KiB |
+| `ed25519_verify_nova` | bn254 | **SIS** | 7,724 | 214 | 8.5 s | **39.9 ms** | 14.2 s | **1.1 s** | **0.6 ms** | **~1.5 KiB** | 2.4 KiB |
+| `poseidon_sponge_nova` | bn254 | Pedersen | 633 | 255 | 24.8 s | 97 ms | 1.13 s | 1.09 s | **0.3 ms** | **~0.6 KiB** | 0.3 KiB |
+| `sha256_step_nova` | bls12-381 | Pedersen | 31,584 | 32 | 204.9 s | 6,403 ms | 90.73 s | 90.62 s | **0.6 ms** | **~0.8 KiB** | 2.5 KiB |
+| `sha256_step_big_nova` | bls12-381 | Pedersen | 58,973 | 32 | — | — | — | — | **~1.0 ms** | **~2.5 KiB** | 2.5 KiB |
 | `vrf_verify_nova` | bn254 | Pedersen | 9 | 254 | 2.1 s | 8.4 ms | 0.02 s | 0.03 s | **0.1 ms** | **~0.4 KiB** | 0.7 KiB |
 | `vrf_verify_nova` | bn254 | **SIS** | 9 | 254 | **0.04 s** | **0.17 ms** | 0.03 s | 0.002 s | **0.2 ms** | **~0.4 KiB** | 0.9 KiB |
 

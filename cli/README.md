@@ -9,10 +9,10 @@ A long computation is split into `N` identical step circuits, each proving
 | | |
 |---|---|
 | **Path** | `fold` → `compress --slim` → `verify --slim-proof` |
-| **Proof size** | **O(1) — ~2.5 KiB on-chain (CBOR)** |
+| **Proof size** | **O(1) — ~0.4–2.5 KiB on-chain (CBOR)** |
 | **Trusted setup** | **None** |
 | **On-chain verify** | **Pairing-free** — native field sumcheck |
-| **ZK** | **Yes** — witness-hiding |
+| **ZK** | **No** — the slim proof reveals sumcheck round polynomials and the claimed product evaluation, but not the witness directly |
 
 No ceremony, no proving key, no verifying key — only the step circuit and
 witnesses are needed.
@@ -149,7 +149,7 @@ nova-slim verify --curve bls12-381 --ivc bundle.ivc.cbor --sumcheck-proof sumche
 # 1. Fold (transparent, no proving key)
 nova-slim fold --curve bls12-381 --circuit step_circuit.r1cs --steps ./step_witnesses/ --out bundle.ivc.cbor
 
-# 2. Compress to slim proof (~2.5 KiB)
+# 2. Compress to slim proof (~0.4--2.5 KiB depending on circuit size)
 nova-slim compress --slim --curve bls12-381 --circuit step_circuit.r1cs --steps ./step_witnesses/ --out slim.proof.cbor
 
 # 3. Verify (pairing-free, no VK)

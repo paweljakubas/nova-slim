@@ -7,7 +7,7 @@ A long computation is split into `N` identical step circuits, each proving
 `state_{i+1} = f(step_i, state_i)`. The `fold` operation transparently accumulates
 all steps into one Relaxed-R1CS instance; `compress` produces a constant-size
 sumcheck proof; and `verify` checks it with native field operations — no
-pairings, no trusted setup, and a **~2.5 KiB** on-chain footprint with the
+pairings, no trusted setup, and a **~0.4--2.5 KiB** on-chain footprint with the
 slim proof.
 
 | | Full sumcheck proof | **Slim proof** |
@@ -16,7 +16,7 @@ slim proof.
 | Proof bundle | O(1) — sumcheck + HashPC openings | **O(1) — sumcheck only** |
 | On-chain verify | sumcheck + HashPC (pairing-free) | **sumcheck only (pairing-free)** |
 | Trusted setup | **none** | **none** |
-| ZK | Yes | **Yes** |
+| ZK | Yes (full proof) | **No** (slim proof reveals sumcheck data, but not the witness directly) |
 | On-chain size | ~240 KiB | **~2.5 KiB** (CBOR) |
 
 The R1CS parsing / circom adapter lives in the `groth16-prover` crate; this
@@ -108,7 +108,7 @@ for on-chain soundness.
 | HashPC openings (Z + E) | ~240 KiB | **off-chain** |
 | Commitment hashes | — | 128 B |
 | Final IVC state | ~1 KiB | ~0.4 KiB (binary) |
-| **On-chain total** | **~240 KiB** | **~2.5 KiB** (CBOR) |
+| **On-chain total** | **~240 KiB** | **~0.4--2.5 KiB** (CBOR) |
 
 ---
 
