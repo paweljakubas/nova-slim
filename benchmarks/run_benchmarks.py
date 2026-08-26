@@ -174,17 +174,102 @@ FAMILIES = {
         "dir": "PoseidonMerkle",
         "witness_script": "gen_poseidon_merkle_witnesses.py",
     },
+    # PoseidonSponge — comparable to Sonobe hash_chain, ~633 constraints
+    "poseidon_sponge_nova_bls12_381": {
+        "circuit_name": "poseidon_sponge_nova",
+        "curve": "bls12-381",
+        "default_steps": 255,
+        "dir": "PoseidonSponge",
+        "witness_script": "gen_poseidon_sponge_witnesses.py",
+    },
+    "poseidon_sponge_nova_bn254": {
+        "circuit_name": "poseidon_sponge_nova",
+        "curve": "bn254",
+        "default_steps": 255,
+        "dir": "PoseidonSponge",
+        "witness_script": "gen_poseidon_sponge_witnesses.py",
+    },
+    # SHA-256 step circuits — small (8 bytes, ~29K constraints), medium (32 bytes, ~31K), big (32 bytes + 256-bit padding, ~59K)
+    "sha256_small_nova_bls12_381": {
+        "circuit_name": "sha256_step_small_nova",
+        "curve": "bls12-381",
+        "default_steps": 32,
+        "dir": "Sha256Step",
+        "witness_script": "gen_sha256_witnesses.py",
+        "witness_script_args": ["--state-size", "8"],
+        "build_subdir": "build_bls12381",
+    },
+    "sha256_small_nova_bn254": {
+        "circuit_name": "sha256_step_small_nova",
+        "curve": "bn254",
+        "default_steps": 32,
+        "dir": "Sha256Step",
+        "witness_script": "gen_sha256_witnesses.py",
+        "witness_script_args": ["--state-size", "8"],
+        "build_subdir": "build_bn128",
+    },
+    "sha256_medium_nova_bls12_381": {
+        "circuit_name": "sha256_step_nova",
+        "curve": "bls12-381",
+        "default_steps": 32,
+        "dir": "Sha256Step",
+        "witness_script": "gen_sha256_witnesses.py",
+        "witness_script_args": ["--state-size", "32"],
+        "build_subdir": "build_bls12381",
+    },
+    "sha256_medium_nova_bn254": {
+        "circuit_name": "sha256_step_nova",
+        "curve": "bn254",
+        "default_steps": 32,
+        "dir": "Sha256Step",
+        "witness_script": "gen_sha256_witnesses.py",
+        "witness_script_args": ["--state-size", "32"],
+        "build_subdir": "build_bn128",
+    },
+    "sha256_big_nova_bls12_381": {
+        "circuit_name": "sha256_step_big_nova",
+        "curve": "bls12-381",
+        "default_steps": 32,
+        "dir": "Sha256Step",
+        "witness_script": "gen_sha256_witnesses.py",
+        "witness_script_args": ["--state-size", "32"],
+        "build_subdir": "build_bls12381",
+    },
+    "sha256_big_nova_bn254": {
+        "circuit_name": "sha256_step_big_nova",
+        "curve": "bn254",
+        "default_steps": 32,
+        "dir": "Sha256Step",
+        "witness_script": "gen_sha256_witnesses.py",
+        "witness_script_args": ["--state-size", "32"],
+        "build_subdir": "build_bn128",
+    },
 }
 
 
 def ensure_compiled(family, name, steps_dir):
-    """Compile the circom circuit for the target curve if missing."""
+    """Compile or copy the circom circuit for the target curve if missing."""
     circuit_name = family["circuit_name"]
     curve = family["curve"]
     r1cs = os.path.join(steps_dir, f"{circuit_name}.r1cs")
     wasm = os.path.join(steps_dir, f"{circuit_name}_js", f"{circuit_name}.wasm")
     if os.path.exists(r1cs) and os.path.exists(wasm):
         return r1cs, wasm
+
+    # Some circuits are pre-compiled in build_subdir
+    if "build_subdir" in family:
+        build_dir = os.path.join(CIRCOM_DIR, family["dir"], family["build_subdir"])
+        src_r1cs = os.path.join(build_dir, f"{circuit_name}.r1cs")
+        src_wasm = os.path.join(build_dir, f"{circuit_name}_js", f"{circuit_name}.wasm")
+        if os.path.exists(src_r1cs) and os.path.exists(src_wasm):
+            import shutil
+            shutil.copy(src_r1cs, r1cs)
+            js_dir = os.path.join(steps_dir, f"{circuit_name}_js")
+            os.makedirs(js_dir, exist_ok=True)
+            shutil.copy(src_wasm, wasm)
+            print(f"copied pre-built {circuit_name} from {build_dir}")
+            return r1cs, wasm
+
     src = os.path.join(CIRCOM_DIR, family["dir"], f"{circuit_name}.circom")
     if not os.path.exists(src):
         sys.exit(f"circuit source missing: {src}")
@@ -293,9 +378,12 @@ def main():
         steps_dir = os.path.join(work, "steps")
         if not args.skip_witness_gen:
             if "witness_script" in fam:
-                # Custom witness generator (VRF, PoseidonMerkle)
-                run([sys.executable, os.path.join(SCRIPT_DIR, fam["witness_script"]),
-                     "--wasm", wasm, "--steps", str(n_steps), "--dir", steps_dir])
+                # Custom witness generator (VRF, PoseidonMerkle, SHA-256, PoseidonSponge)
+                cmd = [sys.executable, os.path.join(SCRIPT_DIR, fam["witness_script"]),
+                       "--wasm", wasm, "--steps", str(n_steps), "--dir", steps_dir]
+                if "witness_script_args" in fam:
+                    cmd.extend(fam["witness_script_args"])
+                run(cmd)
             else:
                 # Standard chained-witness generator (Ed25519)
                 initial = os.path.join(work, "initial.json")

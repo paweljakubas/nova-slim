@@ -3,20 +3,20 @@ pragma circom 2.0.0;
 include "circomlib/circuits/sha256/sha256.circom";
 include "circomlib/circuits/bitify.circom";
 
-// SHA-256 hash chain step (big): state_out = SHA256(state_in)
-// Input: 64 bytes (512 bits) — large circuit for benchmarking.
-// Nova-compatible: n_pub_in == n_pub_out == 32 (SHA-256 output is always 32 bytes).
-// The input is 64 bytes but only the first 32 bytes are fed to SHA-256
-// (padded internally).  The state output is the 32-byte digest.
+// SHA-256 hash chain step (big): state_out = SHA256(state_in || padding)
+// Input: 32 bytes (256 bits) of state + 32 bytes (256 bits) of fixed padding.
+// Total SHA-256 input: 512 bits -> ~60K constraints.
+// Nova-compatible: n_pub_in == n_pub_out == 32.
 
 template Sha256StepBig() {
-    signal input state_in[64];    // public: IVC state (64 bytes input)
-    signal output state_out[32];  // public: IVC state (32-byte digest)
+    signal input state_in[32];    // public: IVC state (previous hash, bytes)
+    signal output state_out[32];  // public: IVC state (new hash, bytes)
 
     component n2b[64];
     component sha = Sha256(512);
 
-    for (var i = 0; i < 64; i++) {
+    // First 32 bytes: state_in
+    for (var i = 0; i < 32; i++) {
         n2b[i] = Num2Bits(8);
         n2b[i].in <== state_in[i];
         for (var j = 0; j < 8; j++) {
@@ -24,6 +24,14 @@ template Sha256StepBig() {
         }
     }
 
+    // Second 32 bytes: fixed padding (zeros)
+    for (var i = 32; i < 64; i++) {
+        for (var j = 0; j < 8; j++) {
+            sha.in[i * 8 + j] <== 0;
+        }
+    }
+
+    // Convert output bits to bytes
     component b2n[32];
     for (var i = 0; i < 32; i++) {
         b2n[i] = Bits2Num(8);
