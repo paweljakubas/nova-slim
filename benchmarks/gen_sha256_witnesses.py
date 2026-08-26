@@ -33,7 +33,7 @@ def main():
     state = [secrets.randbelow(256) for _ in range(args.state_size)]
 
     for i in range(args.steps):
-        inp = {f"state_in[{j}]": str(state[j]) for j in range(args.state_size)}
+        inp = {"state_in": [str(state[j]) for j in range(args.state_size)]}
 
         in_file = os.path.join(args.dir, f"input_{i:04}.json")
         wtns = os.path.join(args.dir, f"step_{i:04}.wtns")
