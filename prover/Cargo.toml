@@ -10,6 +10,7 @@ ark-bls12-381 = { version = "0.4", optional = true }
 ark-bn254 = { version = "0.4", optional = true }
 ark-pallas = { version = "0.4", optional = true }
 ark-vesta = { version = "0.4", optional = true }
+ark-ed-on-bls12-381-bandersnatch = { version = "0.4.1", package = "sp-ark-ed-on-bls12-381-bandersnatch", optional = true }
 ark-ec = "0.4"
 ark-ff = "0.4"
 ark-serialize = "0.4"
@@ -30,6 +31,7 @@ bls12-381 = ["dep:ark-bls12-381"]
 bn254 = ["dep:ark-bn254"]
 pallas = ["dep:ark-pallas"]
 vesta = ["dep:ark-vesta"]
+bandersnatch = ["dep:ark-ed-on-bls12-381-bandersnatch"]
 
 [dev-dependencies]
 proptest = "1.4"

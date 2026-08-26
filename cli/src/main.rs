@@ -44,6 +44,8 @@ pub enum Curve {
     Pallas,
     /// Vesta (the other half of the Pallas/Vesta cycle).
     Vesta,
+    /// Bandersnatch — fast curve over the BLS12-381 scalar field.
+    Bandersnatch,
 }
 
 /// CLI commands available

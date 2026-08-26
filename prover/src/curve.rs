@@ -81,3 +81,14 @@ impl NovaCurve for Vesta {
     type ScalarField = ark_vesta::Fr;
     type G1Affine = ark_vesta::Affine;
 }
+
+/// Bandersnatch — a fast prime-order curve over the BLS12-381 scalar field.
+#[cfg(feature = "bandersnatch")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bandersnatch;
+
+#[cfg(feature = "bandersnatch")]
+impl NovaCurve for Bandersnatch {
+    type ScalarField = ark_ed_on_bls12_381_bandersnatch::Fr;
+    type G1Affine = ark_ed_on_bls12_381_bandersnatch::SWAffine;
+}
