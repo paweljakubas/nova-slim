@@ -21,3 +21,4 @@ circom/**/*.sym
 circom/**/*.wtns
 circom/**/witness*.json
 circom/**/input_*.json
+docs/cic/article.pdf\ndocs/eprint/article.pdf
