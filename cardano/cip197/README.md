@@ -1,5 +1,9 @@
 # CIP-197 Proof of Concept: NovaSlim for Post-Quantum HD Wallet Signatures
 
+> 🚀 **Quick start:** See [E2E.md](E2E.md) for a step-by-step walkthrough with
+> mermaid diagrams, copy-paste commands, and file-size expectations at every stage.
+> See [RESULTS.md](RESULTS.md) for the actual benchmark numbers from our run.
+
 This directory contains a proof-of-concept (PoC) demonstrating how **NovaSlim** can be
 used as a practical stepping stone for [CIP-197](https://github.com/cardano-foundation/CIPs/pull/1242):
 *Post-Quantum ZK Signatures for HD Wallets*.
@@ -249,9 +253,18 @@ See [RESULTS.md](RESULTS.md) for the full end-to-end log.
 
 ```
 cardano/cip197/
-├── README.md              # This file
+├── README.md              # This file (concept + benchmarks)
+├── E2E.md                 # 🚀 Step-by-step walkthrough with mermaid diagrams
+├── RESULTS.md             # Actual benchmark numbers from our test run
 ├── BENCHMARKS.md          # Detailed benchmark results (future)
 ├── ARCHITECTURE.md        # Technical architecture notes (future)
+├── vrf_verify_nova.r1cs   # Compiled step circuit (VRF scalar mul)
+├── vrf_verify_nova_js/    # WASM witness generator
+├── poc_witnesses/         # Generated step witnesses (5 steps)
+├── poc_output/
+│   ├── vrf.ivc.cbor       # NIFS folded bundle (8.7 KiB)
+│   ├── vrf_full.cbor      # Full sumcheck proof (9.6 KiB)
+│   └── vrf_slim.cbor      # Slim on-chain proof (388 B)
 └── scripts/
     ├── gen_bip32_witnesses.js   # Generate real BIP32 witnesses (future)
     ├── submit_poc_tx.sh         # Submit PoC transaction to testnet (future)
