@@ -17,7 +17,7 @@ problem blocking CIP-197 Phase 2:
 
 - ✅ Proof size fits in `maxTxSize` (16,384 B)
 - ✅ Verification fits in Plutus V3 budgets
-- ✅ Working Aiken eUTXO verifier already implemented
+- ✅ Working Aiken eUTXO verifier already implemented (`../nova-slim-verifier/`)
 - ✅ Same proof format works for all commitment schemes (Pedersen, SIS, Hash)
 
 The recommended posture: **deploy NovaSlim now** for Phase 2 infrastructure, then
@@ -235,14 +235,14 @@ Measured on AMD Ryzen 9 9950X3D, 16 cores, 64 GB RAM:
 ## Files in This Directory
 
 ```
-cardano/CIP197/
+cardano/cip197/
 ├── README.md              # This file
-├── BENCHMARKS.md          # Detailed benchmark results
-├── ARCHITECTURE.md        # Technical architecture notes
+├── BENCHMARKS.md          # Detailed benchmark results (future)
+├── ARCHITECTURE.md        # Technical architecture notes (future)
 └── scripts/
-    ├── gen_bip32_witnesses.js   # Generate real BIP32 witnesses
-    ├── submit_poc_tx.sh         # Submit PoC transaction to testnet
-    └── verify_on_chain.sh       # Verify proof on testnet
+    ├── gen_bip32_witnesses.js   # Generate real BIP32 witnesses (future)
+    ├── submit_poc_tx.sh         # Submit PoC transaction to testnet (future)
+    └── verify_on_chain.sh       # Verify proof on testnet (future)
 ```
 
 ## See Also
