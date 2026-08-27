@@ -25,7 +25,7 @@ nova-slim verify   → check bundle + proof (slim: ~0.2 ms)
 | **CLI** (`params`, `fold`, `compress`, `verify`, `help`) | ✅ 0.2.0 | Curve- and commitment-agnostic; built-in help with examples |
 | **Compact CBOR serialization** | ✅ 0.2.0 | ~2.6× smaller than JSON; versioned format |
 | **Parallel optimizations** (`--opt parallel`) | ✅ 0.2.0 | Rayon-based; 3–5× speedup on large circuits |
-| **Aiken eUTXO verifier** | ✅ 0.2.0 | On-chain Plutus-compatible verifier (separate repo) |
+| **Aiken eUTXO verifier** | ✅ 0.2.0 | On-chain Plutus-compatible verifier (`cardano/nova-slim-verifier/`) |
 | **Cross-system comparison** (Sonobe, STARK, LatticeFold) | ✅ 0.2.0 | Benchmarked against Nova+CycleFold and theoretical baselines |
 | **Formal security proof** | ✅ 0.2.0 | 4-game knowledge-soundness proof; generic over commitment scheme |
 | In-circuit recursive folding (full IVC security) | 🔜 Future | Each step proves correctness of all previous steps |
