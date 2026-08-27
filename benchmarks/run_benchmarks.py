@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
 """NovaSlim **traditional** benchmark runner — real circom circuits + snarkjs.
 
-This is the "traditional" benchmark: for each circuit family it compiles the
-step circuit with circom, generates chained step witnesses with snarkjs, then
-measures fold → compress → verify via `benchmark_nova --release`.
-
-Curves supported: BLS12-381, BN254.
-Pallas and Vesta are **NOT** available here because snarkjs does not yet
-support pasta-curve witness generation. For Pallas / Vesta, use the synthetic
+Curves supported: BLS12-381, BN254, Grumpkin, Pallas, Vesta.
+Bandersnatch is NOT available here because circom does not support the
+Bandersnatch scalar field prime. For Bandersnatch, use the synthetic
 benchmark instead:
 
-    cargo run --release --manifest-path prover/Cargo.toml --bin benchmark_synthetic -- --curve pallas --state-width 24 --steps 255
+    cargo run --release --manifest-path prover/Cargo.toml --bin benchmark_synthetic -- --curve bandersnatch --state-width 24 --steps 255
 
 For each circuit family this script:
 
@@ -21,13 +17,10 @@ For each circuit family this script:
   5. writes raw logs plus a markdown summary under benchmarks/results/.
 
 Usage:
-    python3 benchmarks/run_benchmarks.py                 # all families, 255 steps
+    python3 benchmarks/run_benchmarks.py                 # all families
     python3 benchmarks/run_benchmarks.py --steps 32      # shorter chains
-    python3 benchmarks/run_benchmarks.py --curve bn254   # specific curve
+    python3 benchmarks/run_benchmarks.py --curve grumpkin
     python3 benchmarks/run_benchmarks.py --family ed25519_verify_nova_bls12_381
-
-Re-run this whenever the folding/compression code changes and paste the
-summary into the Benchmarks section of prover/README.md.
 """
 import argparse
 import datetime
@@ -57,6 +50,7 @@ EDWARDS_IDENTITY = [["0", "0", "0"], ["1", "0", "0"], ["1", "0", "0"], ["0", "0"
 CIRCOM_PRIMES = {
     "bls12-381": "bls12381",
     "bn254": "bn128",
+    "grumpkin": "grumpkin",
     "pallas": "pallas",
     "vesta": "vesta",
     "bandersnatch": "bls12381",
@@ -145,6 +139,25 @@ FAMILIES = {
         "curve": "bn254",
         "default_steps": 1024,
     },
+    # Grumpkin, Pallas, Vesta variants (real circom circuits supported)
+    "ed25519_verify_nova_grumpkin": {
+        **ed25519_step_family("Ed25519Verify"),
+        "circuit_name": "ed25519_verify_nova",
+        "curve": "grumpkin",
+        "default_steps": 255,
+    },
+    "ed25519_verify_nova_pallas": {
+        **ed25519_step_family("Ed25519Verify"),
+        "circuit_name": "ed25519_verify_nova",
+        "curve": "pallas",
+        "default_steps": 255,
+    },
+    "ed25519_verify_nova_vesta": {
+        **ed25519_step_family("Ed25519Verify"),
+        "circuit_name": "ed25519_verify_nova",
+        "curve": "vesta",
+        "default_steps": 255,
+    },
     # VRF — tiny circuit (9 constraints), isolates protocol overhead
     "vrf_verify_nova_bls12_381": {
         "circuit_name": "vrf_verify_nova",
@@ -156,6 +169,27 @@ FAMILIES = {
     "vrf_verify_nova_bn254": {
         "circuit_name": "vrf_verify_nova",
         "curve": "bn254",
+        "default_steps": 254,
+        "dir": "VRF",
+        "witness_script": "gen_vrf_witnesses.py",
+    },
+    "vrf_verify_nova_grumpkin": {
+        "circuit_name": "vrf_verify_nova",
+        "curve": "grumpkin",
+        "default_steps": 254,
+        "dir": "VRF",
+        "witness_script": "gen_vrf_witnesses.py",
+    },
+    "vrf_verify_nova_pallas": {
+        "circuit_name": "vrf_verify_nova",
+        "curve": "pallas",
+        "default_steps": 254,
+        "dir": "VRF",
+        "witness_script": "gen_vrf_witnesses.py",
+    },
+    "vrf_verify_nova_vesta": {
+        "circuit_name": "vrf_verify_nova",
+        "curve": "vesta",
         "default_steps": 254,
         "dir": "VRF",
         "witness_script": "gen_vrf_witnesses.py",
@@ -175,6 +209,27 @@ FAMILIES = {
         "dir": "PoseidonMerkle",
         "witness_script": "gen_poseidon_merkle_witnesses.py",
     },
+    "poseidon_merkle_nova_grumpkin": {
+        "circuit_name": "poseidon_merkle_nova",
+        "curve": "grumpkin",
+        "default_steps": 32,
+        "dir": "PoseidonMerkle",
+        "witness_script": "gen_poseidon_merkle_witnesses.py",
+    },
+    "poseidon_merkle_nova_pallas": {
+        "circuit_name": "poseidon_merkle_nova",
+        "curve": "pallas",
+        "default_steps": 32,
+        "dir": "PoseidonMerkle",
+        "witness_script": "gen_poseidon_merkle_witnesses.py",
+    },
+    "poseidon_merkle_nova_vesta": {
+        "circuit_name": "poseidon_merkle_nova",
+        "curve": "vesta",
+        "default_steps": 32,
+        "dir": "PoseidonMerkle",
+        "witness_script": "gen_poseidon_merkle_witnesses.py",
+    },
     # PoseidonSponge — comparable to Sonobe hash_chain, ~633 constraints
     "poseidon_sponge_nova_bls12_381": {
         "circuit_name": "poseidon_sponge_nova",
@@ -186,6 +241,27 @@ FAMILIES = {
     "poseidon_sponge_nova_bn254": {
         "circuit_name": "poseidon_sponge_nova",
         "curve": "bn254",
+        "default_steps": 255,
+        "dir": "PoseidonSponge",
+        "witness_script": "gen_poseidon_sponge_witnesses.py",
+    },
+    "poseidon_sponge_nova_grumpkin": {
+        "circuit_name": "poseidon_sponge_nova",
+        "curve": "grumpkin",
+        "default_steps": 255,
+        "dir": "PoseidonSponge",
+        "witness_script": "gen_poseidon_sponge_witnesses.py",
+    },
+    "poseidon_sponge_nova_pallas": {
+        "circuit_name": "poseidon_sponge_nova",
+        "curve": "pallas",
+        "default_steps": 255,
+        "dir": "PoseidonSponge",
+        "witness_script": "gen_poseidon_sponge_witnesses.py",
+    },
+    "poseidon_sponge_nova_vesta": {
+        "circuit_name": "poseidon_sponge_nova",
+        "curve": "vesta",
         "default_steps": 255,
         "dir": "PoseidonSponge",
         "witness_script": "gen_poseidon_sponge_witnesses.py",
@@ -209,6 +285,32 @@ FAMILIES = {
         "witness_script_args": ["--state-size", "8"],
         "build_subdir": "build_bn128",
     },
+    "sha256_small_nova_grumpkin": {
+        "circuit_name": "sha256_step_small_nova",
+        "curve": "grumpkin",
+        "default_steps": 32,
+        "dir": "Sha256Step",
+        "witness_script": "gen_sha256_witnesses.py",
+        "witness_script_args": ["--state-size", "8"],
+    },
+    "sha256_small_nova_pallas": {
+        "circuit_name": "sha256_step_small_nova",
+        "curve": "pallas",
+        "default_steps": 32,
+        "dir": "Sha256Step",
+        "witness_script": "gen_sha256_witnesses.py",
+        "witness_script_args": ["--state-size", "8"],
+        "build_subdir": "build_pallas",
+    },
+    "sha256_small_nova_vesta": {
+        "circuit_name": "sha256_step_small_nova",
+        "curve": "vesta",
+        "default_steps": 32,
+        "dir": "Sha256Step",
+        "witness_script": "gen_sha256_witnesses.py",
+        "witness_script_args": ["--state-size", "8"],
+        "build_subdir": "build_vesta",
+    },
     "sha256_medium_nova_bls12_381": {
         "circuit_name": "sha256_step_nova",
         "curve": "bls12-381",
@@ -226,6 +328,32 @@ FAMILIES = {
         "witness_script": "gen_sha256_witnesses.py",
         "witness_script_args": ["--state-size", "32"],
         "build_subdir": "build_bn128",
+    },
+    "sha256_medium_nova_grumpkin": {
+        "circuit_name": "sha256_step_nova",
+        "curve": "grumpkin",
+        "default_steps": 32,
+        "dir": "Sha256Step",
+        "witness_script": "gen_sha256_witnesses.py",
+        "witness_script_args": ["--state-size", "32"],
+    },
+    "sha256_medium_nova_pallas": {
+        "circuit_name": "sha256_step_nova",
+        "curve": "pallas",
+        "default_steps": 32,
+        "dir": "Sha256Step",
+        "witness_script": "gen_sha256_witnesses.py",
+        "witness_script_args": ["--state-size", "32"],
+        "build_subdir": "build_pallas",
+    },
+    "sha256_medium_nova_vesta": {
+        "circuit_name": "sha256_step_nova",
+        "curve": "vesta",
+        "default_steps": 32,
+        "dir": "Sha256Step",
+        "witness_script": "gen_sha256_witnesses.py",
+        "witness_script_args": ["--state-size", "32"],
+        "build_subdir": "build_vesta",
     },
     "sha256_big_nova_bls12_381": {
         "circuit_name": "sha256_step_big_nova",
@@ -245,9 +373,33 @@ FAMILIES = {
         "witness_script_args": ["--state-size", "32"],
         "build_subdir": "build_bn128",
     },
-    # Bandersnatch/Grumpkin: scalar field ≠ BLS12-381/BN254 scalar field.
-    # Real circom circuits compiled for bls12381/bn128 won't load on these
-    # curves.  Use benchmark_synthetic for Bandersnatch/Grumpkin benchmarks.
+    "sha256_big_nova_grumpkin": {
+        "circuit_name": "sha256_step_big_nova",
+        "curve": "grumpkin",
+        "default_steps": 32,
+        "dir": "Sha256Step",
+        "witness_script": "gen_sha256_witnesses.py",
+        "witness_script_args": ["--state-size", "32"],
+    },
+    "sha256_big_nova_pallas": {
+        "circuit_name": "sha256_step_big_nova",
+        "curve": "pallas",
+        "default_steps": 32,
+        "dir": "Sha256Step",
+        "witness_script": "gen_sha256_witnesses.py",
+        "witness_script_args": ["--state-size", "32"],
+        "build_subdir": "build_pallas",
+    },
+    "sha256_big_nova_vesta": {
+        "circuit_name": "sha256_step_big_nova",
+        "curve": "vesta",
+        "default_steps": 32,
+        "dir": "Sha256Step",
+        "witness_script": "gen_sha256_witnesses.py",
+        "witness_script_args": ["--state-size", "32"],
+        "build_subdir": "build_vesta",
+    },
+    # Bandersnatch: scalar field not supported by circom. Use benchmark_synthetic.
 }
 
 
