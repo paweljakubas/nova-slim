@@ -17,6 +17,8 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::error::Error;
 
+#[macro_use]
+mod macros;
 mod cmd;
 
 /// Supported commitment schemes.
@@ -108,6 +110,19 @@ pub enum Command {
     ///   $ nova-slim verify --ivc bundle.ivc.cbor --sumcheck-proof sumcheck.proof.cbor
     ///   $ nova-slim verify --ivc bundle.ivc.cbor --slim-proof slim.proof.cbor
     Verify(cmd::verify::Args),
+
+    /// Show detailed help for commitments, curves, or general usage
+    ///
+    /// Topics:
+    ///   commitment   Detailed help about commitment schemes with examples
+    ///   curve        Detailed help about elliptic curves with examples
+    ///
+    /// Examples:
+    ///
+    ///   $ nova-slim help
+    ///   $ nova-slim help commitment
+    ///   $ nova-slim help curve
+    Help(cmd::help::Args),
 }
 
 #[derive(Parser)]
@@ -137,5 +152,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         Command::Fold(args) => cmd::fold::run(args),
         Command::Compress(args) => cmd::compress::run(args),
         Command::Verify(args) => cmd::verify::run(args),
+        Command::Help(args) => cmd::help::run(args),
     }
 }

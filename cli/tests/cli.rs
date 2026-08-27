@@ -640,6 +640,69 @@ fn help_top_level() {
         .stdout(predicate::str::contains("verify"));
 }
 
+/// `nova-slim help` prints general usage with examples.
+#[test]
+fn help_general() {
+    let mut cmd = Command::cargo_bin("nova-slim").unwrap();
+    cmd.arg("help");
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("NovaSlim — Folding + Slim On-Chain Proofs CLI"))
+        .stdout(predicate::str::contains("COMMANDS:"))
+        .stdout(predicate::str::contains("params"))
+        .stdout(predicate::str::contains("fold"))
+        .stdout(predicate::str::contains("compress"))
+        .stdout(predicate::str::contains("verify"))
+        .stdout(predicate::str::contains("help"))
+        .stdout(predicate::str::contains("EXAMPLE — Full slim flow"));
+}
+
+/// `nova-slim help commitment` prints detailed commitment scheme info.
+#[test]
+fn help_commitment() {
+    let mut cmd = Command::cargo_bin("nova-slim").unwrap();
+    cmd.arg("help").arg("commitment");
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("COMMITMENT SCHEMES"))
+        .stdout(predicate::str::contains("Pedersen"))
+        .stdout(predicate::str::contains("SIS"))
+        .stdout(predicate::str::contains("Hash"))
+        .stdout(predicate::str::contains("EXAMPLES"))
+        .stdout(predicate::str::contains("--commitment sis"))
+        .stdout(predicate::str::contains("--sis-param 128"));
+}
+
+/// `nova-slim help curve` prints detailed curve info.
+#[test]
+fn help_curve() {
+    let mut cmd = Command::cargo_bin("nova-slim").unwrap();
+    cmd.arg("help").arg("curve");
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("ELLIPTIC CURVES"))
+        .stdout(predicate::str::contains("bls12-381"))
+        .stdout(predicate::str::contains("bn254"))
+        .stdout(predicate::str::contains("pallas"))
+        .stdout(predicate::str::contains("vesta"))
+        .stdout(predicate::str::contains("grumpkin"))
+        .stdout(predicate::str::contains("bandersnatch"))
+        .stdout(predicate::str::contains("EXAMPLES"))
+        .stdout(predicate::str::contains("--curve bn254"));
+}
+
+/// `nova-slim help unknown` exits with error.
+#[test]
+fn help_unknown_topic() {
+    let mut cmd = Command::cargo_bin("nova-slim").unwrap();
+    cmd.arg("help").arg("foobar");
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("Unknown help topic"))
+        .stderr(predicate::str::contains("commitment"))
+        .stderr(predicate::str::contains("curve"));
+}
+
 // ------------------------------------------------------------------
 // Error cases
 // ------------------------------------------------------------------
