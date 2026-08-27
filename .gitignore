@@ -21,6 +21,18 @@ circom/**/*.sym
 circom/**/*.wtns
 circom/**/witness*.json
 circom/**/input_*.json
-docs/cic/article.pdf\ndocs/eprint/article.pdf
+
+# LaTeX auxiliary files
+docs/**/*.aux
+docs/**/*.log
+docs/**/*.out
+docs/**/*.toc
+docs/**/*.fls
+docs/**/*.fdb_latexmk
+
+# Generated PDFs (keep committed in docs/cic/ and docs/eprint/)
+# docs/cic/article.pdf
+# docs/eprint/article.pdf
+
 *.pyc
 __pycache__/
