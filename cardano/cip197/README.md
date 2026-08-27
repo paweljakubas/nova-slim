@@ -228,7 +228,7 @@ See [RESULTS.md](RESULTS.md) for the full end-to-end log.
 | RISC Zero STARK | ~219 KB | ❌ No | ✅ Yes | None (too large) |
 | Halo2 + FRI | ~50–100 KB | ❌ No | ✅ Yes | None (too large) |
 | Lova (lattice Nova) | ~5–10 KB | 🔜 Future | ✅ Yes | Planned |
-| **NovaSlim** | **~0.8 KiB** | ✅ **Yes** | ❌ Classical | **Aiken (Plutus V3)** |
+| **NovaSlim** | **~0.8 KiB** | ✅ **Yes** | ⚠️ **Conjectured** (SIS/Hash) | **Aiken (Plutus V3)** |
 
 ## Limitations and Future Work
 
@@ -265,6 +265,12 @@ cardano/cip197/
 │   ├── vrf.ivc.cbor       # NIFS folded bundle (8.7 KiB)
 │   ├── vrf_full.cbor      # Full sumcheck proof (9.6 KiB)
 │   └── vrf_slim.cbor      # Slim on-chain proof (388 B)
+├── cardano_keys/          # Real BIP32 key derivations
+│   ├── DERIVATION.md      # Key derivation log
+│   ├── recovery-phrase.txt
+│   ├── root.xprv
+│   ├── acct.xprv / acct.xpub
+│   └── addr.xprv / addr.xpub
 └── scripts/
     ├── gen_bip32_witnesses.js   # Generate real BIP32 witnesses (future)
     ├── submit_poc_tx.sh         # Submit PoC transaction to testnet (future)

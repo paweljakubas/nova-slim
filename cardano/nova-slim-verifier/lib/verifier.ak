@@ -8,8 +8,8 @@
 //// raw Int operations with explicit modular reduction.
 
 use aiken/builtin
-use aiken/hash.{blake2b_256}
-use aiken/list
+use aiken/crypto.{blake2b_256}
+use aiken/collection/list
 use aiken/primitive/bytearray
 
 /// BLS12-381 scalar field prime.

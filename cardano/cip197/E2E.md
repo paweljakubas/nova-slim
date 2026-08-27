@@ -8,25 +8,65 @@ to on-chain verification.
 - `nova-slim` CLI (build from `cli/` with `cargo build --release`)
 - `circom` compiler
 - `snarkjs` (for witness generation)
-- `aiken` v1.1.21+ (for on-chain verifier)
+- `aiken` v1.1.19+ (for on-chain verifier)
+- `cardano-address` v4.0.0+ (for BIP32 key derivation)
 
 ## The Flow (Big Picture)
 
 ```mermaid
 flowchart LR
-    A[Compile Circuit] --> B[Generate Witnesses]
-    B --> C[Fold Steps]
-    C --> D[Compress to Slim Proof]
-    D --> E[Verify Off-Chain]
-    E --> F[Verify On-Chain]
+    A[BIP32 Derive Keys] --> B[Compile Circuit]
+    B --> C[Generate Witnesses]
+    C --> D[Fold Steps]
+    D --> E[Compress to Slim Proof]
+    E --> F[Verify Off-Chain]
+    F --> G[Verify On-Chain]
 
-    style C fill:#90EE90
+    style A fill:#87CEEB
     style D fill:#90EE90
-    style E fill:#FFD700
-    style F fill:#FF6B6B
+    style E fill:#90EE90
+    style F fill:#FFD700
+    style G fill:#FF6B6B
 ```
 
-**Green** = prover work. **Yellow** = off-chain verifier. **Red** = on-chain verifier.
+**Blue** = key derivation. **Green** = prover work. **Yellow** = off-chain verifier. **Red** = on-chain verifier.
+
+---
+
+## Step 0: Derive BIP32 Keys (cardano-address)
+
+Before compiling the circuit, generate the actual Cardano keys that the proof
+will certify. This uses the standard BIP32-Ed25519 derivation (Khovratovich).
+
+```bash
+cd cardano/cip197
+
+# 1. Generate recovery phrase
+cardano-address recovery-phrase generate --size 15 > recovery-phrase.txt
+
+# 2. Derive root key
+cardano-address key from-recovery-phrase Shelley < recovery-phrase.txt > root.xprv
+
+# 3. Derive account key (m/1852'/1815'/0')
+cardano-address key child 1852H/1815H/0H < root.xprv > acct.xprv
+cardano-address key public --with-chain-code < acct.xprv > acct.xpub
+
+# 4. Derive address key (m/1852'/1815'/0'/0/0)
+cardano-address key child 0/0 < acct.xprv > addr.xprv
+cardano-address key public --with-chain-code < addr.xprv > addr.xpub
+
+# Extract public key hex for circuit public input
+cardano-address key inspect < addr.xpub
+```
+
+**What this does:** Generates a real HD wallet key hierarchy. The account public
+key and address public key are the **public inputs/outputs** that the NovaSlim
+circuit proves were correctly derived.
+
+**For the PoC:** We use the VRF circuit (Step 1–5) as a stand-in because the
+full BIP32-Ed25519 circuit (~10K constraints per step) is still under
+construction. The key derivation above shows the real keys that the final
+circuit will certify.
 
 ---
 
@@ -180,12 +220,42 @@ cd ../nova-slim-verifier
 # 1. Build the validator
 aiken build
 
-# 2. Apply the expected public input parameter
+# Output:
+#   Compiling paweljakubas/nova-slim 0.0.0 (.)
+#   Compiling aiken-lang/stdlib v3.1.0 (./build/packages/aiken-lang-stdlib)
+#  Generating project's blueprint (./plutus.json)
+
+# 2. Run tests
+aiken check
+
+# Output:
+#      Testing ...
+#   {
+#     "summary": {
+#       "total": 2,
+#       "passed": 2,
+#       "failed": 0
+#     },
+#     "modules": [
+#       {
+#         "name": "tests",
+#         "summary": { "total": 2, "passed": 2, "failed": 0 },
+#         "tests": [
+#           { "title": "e2e_4_rounds", "status": "pass",
+#             "execution_units": { "mem": 376920, "cpu": 141185485 } },
+#           { "title": "mismatch_counts_fails", "status": "pass",
+#             "execution_units": { "mem": 25041, "cpu": 6508150 } }
+#         ]
+#       }
+#     ]
+#   }
+
+# 3. Apply the expected public input parameter
 aiken apply plutus.json \
   --parameter-bytes <hex-encoded-public-input> \
   > validator.uplc
 
-# 3. Submit to Cardano (example using cardano-cli)
+# 4. Submit to Cardano (example using cardano-cli)
 cardano-cli transaction build-raw \
   --tx-in <your-input> \
   --tx-out <your-output> \
@@ -200,6 +270,7 @@ cardano-cli transaction build-raw \
 - `verify_slim(datum, redeemer) == True`
 
 The validator runs entirely in Plutus V3 using BLS12-381 scalar arithmetic.
+**Execution units:** ~377K mem / ~141M CPU for a 4-round sumcheck.
 
 ---
 
@@ -209,11 +280,21 @@ The validator runs entirely in Plutus V3 using BLS12-381 scalar arithmetic.
 sequenceDiagram
     autonumber
     actor U as User
+    participant CA as cardano-address
     participant C as circom compiler
     participant S as snarkjs
     participant NS as nova-slim CLI
     participant A as Aiken validator
     participant CH as Cardano Chain
+
+    U->>CA: recovery-phrase generate
+    CA-->>U: recovery-phrase.txt
+    U->>CA: key from-recovery-phrase
+    CA-->>U: root.xprv
+    U->>CA: key child 1852H/1815H/0H
+    CA-->>U: acct.xprv / acct.xpub
+    U->>CA: key child 0/0
+    CA-->>U: addr.xprv / addr.xpub
 
     U->>C: vrf_verify_nova.circom
     C-->>U: vrf_verify_nova.r1cs + .wasm
@@ -274,26 +355,39 @@ sequenceDiagram
 ```bash
 cd cardano/cip197
 
-# Compile
+# 0. Derive BIP32 keys (optional for VRF PoC, required for real BIP32 circuit)
+cardano-address recovery-phrase generate --size 15 > recovery-phrase.txt
+cardano-address key from-recovery-phrase Shelley < recovery-phrase.txt > root.xprv
+cardano-address key child 1852H/1815H/0H < root.xprv > acct.xprv
+cardano-address key public --with-chain-code < acct.xprv > acct.xpub
+cardano-address key child 0/0 < acct.xprv > addr.xprv
+cardano-address key public --with-chain-code < addr.xprv > addr.xpub
+
+# 1. Compile
 circom -l ../../circom/Ed25519Verify/node_modules/circomlib/circuits -l . \
   ../../circom/VRF/vrf_verify_nova.circom --r1cs --wasm --sym
 
-# Witnesses (5 steps)
+# 2. Witnesses (5 steps)
 python3 ../../benchmarks/gen_vrf_witnesses.py \
   --wasm vrf_verify_nova_js/vrf_verify_nova.wasm \
   --steps 5 --dir poc_witnesses
 
-# Fold
+# 3. Fold
 nova-slim fold --curve bn254 --commitment sis --sis-param 128 \
   --circuit vrf_verify_nova.r1cs --steps poc_witnesses --out vrf.ivc.cbor
 
-# Compress (slim)
+# 4. Compress (slim)
 nova-slim compress --slim --curve bn254 --commitment sis --sis-param 128 \
   --circuit vrf_verify_nova.r1cs --steps poc_witnesses --out vrf_slim.cbor
 
-# Verify
+# 5. Verify
 nova-slim verify --curve bn254 --commitment sis --sis-param 128 \
   --ivc vrf.ivc.cbor --slim-proof vrf_slim.cbor
+
+# 6. Build Aiken verifier
+cd ../nova-slim-verifier
+aiken check  # run tests
+aiken build  # generate plutus.json
 ```
 
-**Expected total time:** < 1 second for 5 steps.
+**Expected total time:** < 1 second for steps 1–5 (VRF, 5 steps).

@@ -1,4 +1,4 @@
-use nova_slim/verifier.{
+use verifier.{
   NifsBundle, RoundPoly, SlimProof, derive_challenges, verify_slim,
 }
 
@@ -39,10 +39,10 @@ test e2e_4_rounds() {
 }
 
 // ---------------------------------------------------------------------------
-// Negative test: tampered challenge should fail
+// Negative test: wrong number of rounds vs challenges should fail
 // ---------------------------------------------------------------------------
 
-test tampered_challenge_fails() {
+test mismatch_counts_fails() {
   let bundle =
     NifsBundle {
       com_w_hash: #"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
@@ -54,14 +54,15 @@ test tampered_challenge_fails() {
     RoundPoly { eval_at_0: 0, eval_at_1: 0, eval_at_2: 0 },
   ]
 
-  let wrong_challenges = [
-    52435875175126190479447740508185965837690552500527637822603658699938581184512,
+  let challenges = [
+    0,
+    0,
   ]
 
   let proof =
     SlimProof {
       rounds: rounds,
-      challenges: wrong_challenges,
+      challenges: challenges,
       az_r: 0,
       bz_r: 0,
       cz_r: 0,

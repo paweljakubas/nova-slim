@@ -3,7 +3,7 @@
 An Aiken eUTXO validator for verifying NovaSlim slim proofs on Cardano.
 
 > **Note:** NovaSlim is a Rust-based folding proof system that produces
-> sub-kilobyte transparent proofs with no trusted setup.  The project will be
+> sub-kilobyte transparent proofs with no trusted setup.  The project is
 > publicly available at `https://github.com/paweljakubas/nova-slim`.
 
 ## What this verifier does
@@ -30,16 +30,12 @@ against the commitment hashes stored in the datum.
 
 ## Prerequisites
 
-- [Aiken](https://aiken-lang.org) v1.1.21 or later
+- [Aiken](https://aiken-lang.org) v1.1.19 or later
 - A Cardano node or wallet for deployment (e.g., `cardano-cli`, `demeter.run`)
 
 ## Quick start
 
 ```bash
-# Clone the verifier
-git clone https://github.com/paweljakubas/nova-slim.git
-cd nova-slim
-
 # Type-check and run tests
 aiken check
 
@@ -47,19 +43,50 @@ aiken check
 aiken build
 ```
 
+## Test Results
+
+```
+   Testing ...
+{
+  "summary": {
+    "total": 2,
+    "passed": 2,
+    "failed": 0
+  },
+  "modules": [
+    {
+      "name": "tests",
+      "summary": { "total": 2, "passed": 2, "failed": 0 },
+      "tests": [
+        {
+          "title": "e2e_4_rounds",
+          "status": "pass",
+          "execution_units": { "mem": 376920, "cpu": 141185485 }
+        },
+        {
+          "title": "mismatch_counts_fails",
+          "status": "pass",
+          "execution_units": { "mem": 25041, "cpu": 6508150 }
+        }
+      ]
+    }
+  ]
+}
+```
+
 ## Validator API
 
-The validator is parameterised by the **expected public input** (applied at
-compile time or via `aiken apply`):
+The validator checks a `spend` redemption where:
+- **Datum** = `NifsBundle` (folded instance commitments)
+- **Redeemer** = `SlimProof` (the slim sumcheck proof)
 
 ```aiken
-validator(expected_public_input: ByteArray) {
-  fn nova_slim_verify(
-    datum: NifsBundle,      // folded instance commitments
-    redeemer: SlimProof,     // the slim proof
-    _context: ScriptContext,
-  ) {
-    // succeeds iff sumcheck protocol accepts
+validator nova_slim {
+  spend(datum: Option<NifsBundle>, redeemer: SlimProof, _utxo: Data, _self: Data) {
+    when datum is {
+      Some(bundle) -> verify_slim(bundle, redeemer)
+      None -> False
+    }
   }
 }
 ```
@@ -68,8 +95,8 @@ validator(expected_public_input: ByteArray) {
 
 | Field | Type | Description |
 |---|---|---|
-| `com_w_hash` | `ByteArray` | BLAKE2b-512 hash of witness commitment |
-| `com_e_hash` | `ByteArray` | BLAKE2b-512 hash of error commitment |
+| `com_w_hash` | `ByteArray` | BLAKE2b-256 hash of witness commitment |
+| `com_e_hash` | `ByteArray` | BLAKE2b-256 hash of error commitment |
 | `transcript_hash` | `ByteArray` | Fiat-Shamir transcript hash from folding |
 
 ### Redeemer (`SlimProof`)
@@ -102,36 +129,15 @@ Plutus V3 supports natively.
 ## Supported curves and commitments
 
 This verifier is **field-agnostic at the type level** — it operates on
-`bls12_381/scalar.Scalar` values.  In practice, it is designed for the
-BLS12-381 curve (Cardano's native curve).  The same verifier works for slim
-proofs produced with any of NovaSlim's three commitment schemes:
+raw `Int` values modulo the BLS12-381 prime.  In practice, it is designed for
+BLS12-381 (Cardano's native curve).  The same verifier works for slim proofs
+produced with any of NovaSlim's three commitment schemes:
 
 | Commitment | On-chain verifier | Off-chain audit |
 |---|---|---|
 | Pedersen | ✅ Sumcheck only | Pedersen opening check |
 | SIS | ✅ Sumcheck only | SIS opening check |
 | Hash | ✅ Sumcheck only | Hash opening check |
-
-## End-to-end test
-
-Run the built-in tests:
-
-```bash
-aiken check
-```
-
-Expected output:
-```
-  Compiling paweljakubas/nova-slim
-   Collecting all tests scenarios across all modules
-{
-  "summary": {
-    "total": 3,
-    "passed": 3,
-    "failed": 0
-  }
-}
-```
 
 ## Deployment
 
@@ -140,8 +146,8 @@ Expected output:
 aiken build
 ```
 
-2. The blueprint is written to `plutus.json`.  Apply the parameter
-   (`expected_public_input`) using `aiken apply`:
+2. The blueprint is written to `plutus.json`.  Apply parameters
+   using `aiken apply`:
 ```bash
 aiken apply plutus.json \
   --parameter-bytes "<hex-encoded public input>" \
