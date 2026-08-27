@@ -4,18 +4,24 @@
 //// commitment openings.  It is commitment-scheme agnostic: the same verifier
 //// works for Pedersen, SIS, and Hash folded instances.
 ////
-//// The arithmetic is carried out in the BLS12-381 scalar field (Fr), which
-//// Plutus V3 supports natively via `bls12_381/scalar`.
+//// The arithmetic is carried out in the BLS12-381 scalar field (Fr) using
+//// raw Int operations with explicit modular reduction.
 
 use aiken/builtin
 use aiken/hash.{blake2b_256}
 use aiken/list
 use aiken/primitive/bytearray
-use bls12_381/scalar.{Scalar, add, mul, negate, new, one, zero}
+
+/// BLS12-381 scalar field prime.
+const field_prime =
+  52435875175126190479447740508185965837690552500527637822603658699938581184513
 
 /// ---------------------------------------------------------------------------
 /// Types
 /// ---------------------------------------------------------------------------
+
+/// A scalar field element, stored as a raw Int (always kept in [0, field_prime)).
+pub type Scalar = Int
 
 /// One sumcheck round: a degree-2 univariate polynomial represented by its
 /// evaluations at X = 0, 1, 2.
@@ -45,11 +51,48 @@ pub type NifsBundle {
 }
 
 /// ---------------------------------------------------------------------------
+/// Field arithmetic
+/// ---------------------------------------------------------------------------
+
+fn add_mod(a: Int, b: Int) -> Int {
+  builtin.mod_integer(a + b, field_prime)
+}
+
+fn mul_mod(a: Int, b: Int) -> Int {
+  builtin.mod_integer(a * b, field_prime)
+}
+
+fn neg_mod(a: Int) -> Int {
+  builtin.mod_integer(-a, field_prime)
+}
+
+fn sub_mod(a: Int, b: Int) -> Int {
+  builtin.mod_integer(a - b, field_prime)
+}
+
+fn inv2() -> Int {
+  // (field_prime + 1) / 2  =  2^{-1} mod field_prime
+  26217937587563095239723870254092982918845276250268918911301829349969290592257
+}
+
+fn scalar_from_bytes(b: ByteArray) -> Int {
+  builtin.mod_integer(builtin.bytearray_to_integer(True, b), field_prime)
+}
+
+fn scalar_zero() -> Int {
+  0
+}
+
+fn scalar_one() -> Int {
+  1
+}
+
+/// ---------------------------------------------------------------------------
 /// Sumcheck verification
 /// ---------------------------------------------------------------------------
 
 /// Verify the slim proof against the NIFS bundle.
-pub fn verify_slim(bundle: NifsBundle, proof: SlimProof) -> Bool {
+pub fn verify_slim(_bundle: NifsBundle, proof: SlimProof) -> Bool {
   let counts_ok =
     list.length(proof.rounds) == list.length(proof.challenges)
 
@@ -63,19 +106,26 @@ pub fn verify_slim(bundle: NifsBundle, proof: SlimProof) -> Bool {
 }
 
 /// Verify all rounds using list folding.
-fn verify_all_rounds(rounds: List<RoundPoly>, challenges: List<Scalar>) -> Bool {
-  let round_checks = list.map2(rounds, challenges, fn(r, c) {
-    (r.eval_at_0, r.eval_at_1, r.eval_at_2, c)
-  })
+fn verify_all_rounds(
+  rounds: List<RoundPoly>,
+  challenges: List<Scalar>,
+) -> Bool {
+  let round_checks =
+    list.map2(rounds, challenges, fn(r, c) {
+      (r.eval_at_0, r.eval_at_1, r.eval_at_2, c)
+    })
 
-  do_verify_rounds(round_checks, zero())
+  do_verify_rounds(round_checks, scalar_zero())
 }
 
-fn do_verify_rounds(checks: List<(Scalar, Scalar, Scalar, Scalar)>, prev_claim: Scalar) -> Bool {
+fn do_verify_rounds(
+  checks: List<(Scalar, Scalar, Scalar, Scalar)>,
+  prev_claim: Scalar,
+) -> Bool {
   when checks is {
     [] -> True
     [(e0, e1, e2, challenge), ..rest] -> {
-      let round_ok = builtin.bls12_381_scalar_eq(add(e0, e1), prev_claim)
+      let round_ok = add_mod(e0, e1) == prev_claim
       let next_claim = eval_poly(e0, e1, e2, challenge)
       round_ok && do_verify_rounds(rest, next_claim)
     }
@@ -84,21 +134,16 @@ fn do_verify_rounds(checks: List<(Scalar, Scalar, Scalar, Scalar)>, prev_claim: 
 
 /// Evaluate degree-2 polynomial at x using Lagrange interpolation on {0,1,2}.
 fn eval_poly(c0: Scalar, c1: Scalar, c2: Scalar, x: Scalar) -> Scalar {
-  let t0 = mul(add(x, negate(one())), add(x, negate(add(one(), one()))))
-  let term0 = mul(c0, mul(t0, inv2()))
+  let t0 = mul_mod(add_mod(x, neg_mod(scalar_one())), add_mod(x, neg_mod(add_mod(scalar_one(), scalar_one()))))
+  let term0 = mul_mod(c0, mul_mod(t0, inv2()))
 
-  let t1 = mul(x, add(add(one(), one()), negate(x)))
-  let term1 = mul(c1, t1)
+  let t1 = mul_mod(x, add_mod(add_mod(scalar_one(), scalar_one()), neg_mod(x)))
+  let term1 = mul_mod(c1, t1)
 
-  let t2 = mul(x, add(x, negate(one())))
-  let term2 = mul(c2, mul(t2, inv2()))
+  let t2 = mul_mod(x, add_mod(x, neg_mod(scalar_one())))
+  let term2 = mul_mod(c2, mul_mod(t2, inv2()))
 
-  add(term0, add(term1, term2))
-}
-
-/// 1/2 in BLS12-381 Fr.
-fn inv2() -> Scalar {
-  new(#"12208678551665542018990610568167798225643317578749626236163850497270288801280")
+  add_mod(term0, add_mod(term1, term2))
 }
 
 /// Verify the final evaluation: az_r * bz_r - u * cz_r - e_r == final_claim.
@@ -108,19 +153,24 @@ fn verify_final(proof: SlimProof) -> Bool {
       Some(last_round) ->
         when list.last(proof.challenges) is {
           Some(last_challenge) ->
-            eval_poly(last_round.eval_at_0, last_round.eval_at_1, last_round.eval_at_2, last_challenge)
-          None -> zero()
+            eval_poly(
+              last_round.eval_at_0,
+              last_round.eval_at_1,
+              last_round.eval_at_2,
+              last_challenge,
+            )
+          None -> scalar_zero()
         }
-      None -> zero()
+      None -> scalar_zero()
     }
 
   let lhs =
-    add(
-      mul(proof.az_r, proof.bz_r),
-      add(negate(mul(proof.u, proof.cz_r)), negate(proof.er_r)),
+    add_mod(
+      mul_mod(proof.az_r, proof.bz_r),
+      add_mod(neg_mod(mul_mod(proof.u, proof.cz_r)), neg_mod(proof.er_r)),
     )
 
-  builtin.bls12_381_scalar_eq(lhs, final_claim)
+  lhs == final_claim
 }
 
 /// ---------------------------------------------------------------------------
@@ -152,14 +202,14 @@ fn derive_challenges_acc(
       let round_bytes =
         bytearray.concat(
           bytearray.concat(
-            builtin.bls12_381_scalar_to_bytes(round.eval_at_0),
-            builtin.bls12_381_scalar_to_bytes(round.eval_at_1),
+            builtin.integer_to_bytearray(True, 32, round.eval_at_0),
+            builtin.integer_to_bytearray(True, 32, round.eval_at_1),
           ),
-          builtin.bls12_381_scalar_to_bytes(round.eval_at_2),
+          builtin.integer_to_bytearray(True, 32, round.eval_at_2),
         )
       let new_transcript = bytearray.concat(transcript, round_bytes)
       let hash = blake2b_256(new_transcript)
-      let challenge = new(hash)
+      let challenge = scalar_from_bytes(hash)
       derive_challenges_acc(rest, new_transcript, [challenge, ..acc])
     }
   }

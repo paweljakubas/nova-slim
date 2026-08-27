@@ -1,5 +1,5 @@
 use aiken/transaction.{ScriptContext}
-use nova_slim_verifier/verifier.{NifsBundle, SlimProof, verify_slim}
+use nova_slim/verifier.{NifsBundle, SlimProof, verify_slim}
 
 /// On-chain validator for NovaSlim slim proofs.
 ///

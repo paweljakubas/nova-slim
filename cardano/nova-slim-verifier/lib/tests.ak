@@ -1,17 +1,5 @@
-use nova_slim_verifier/verifier.{
+use nova_slim/verifier.{
   NifsBundle, RoundPoly, SlimProof, derive_challenges, verify_slim,
-}
-use bls12_381/scalar.{add, new, one, zero}
-
-// ---------------------------------------------------------------------------
-// Scalar helper test
-// ---------------------------------------------------------------------------
-
-test scalar_addition() {
-  let a = one()
-  let b = one()
-  let c = add(a, b)
-  c == new(#"0000000000000000000000000000000000000000000000000000000000000002")
 }
 
 // ---------------------------------------------------------------------------
@@ -19,31 +7,33 @@ test scalar_addition() {
 // ---------------------------------------------------------------------------
 
 test e2e_4_rounds() {
-  let bundle = NifsBundle {
-    com_w_hash: #"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-    com_e_hash: #"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-    transcript_hash: #"abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234",
-  }
+  let bundle =
+    NifsBundle {
+      com_w_hash: #"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      com_e_hash: #"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      transcript_hash: #"abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234",
+    }
 
   let rounds = [
-    RoundPoly { eval_at_0: zero(), eval_at_1: zero(), eval_at_2: zero() },
-    RoundPoly { eval_at_0: zero(), eval_at_1: zero(), eval_at_2: zero() },
-    RoundPoly { eval_at_0: zero(), eval_at_1: zero(), eval_at_2: zero() },
-    RoundPoly { eval_at_0: zero(), eval_at_1: zero(), eval_at_2: zero() },
+    RoundPoly { eval_at_0: 0, eval_at_1: 0, eval_at_2: 0 },
+    RoundPoly { eval_at_0: 0, eval_at_1: 0, eval_at_2: 0 },
+    RoundPoly { eval_at_0: 0, eval_at_1: 0, eval_at_2: 0 },
+    RoundPoly { eval_at_0: 0, eval_at_1: 0, eval_at_2: 0 },
   ]
 
   let challenges = derive_challenges(bundle, rounds, #"00")
 
-  let proof = SlimProof {
-    rounds: rounds,
-    challenges: challenges,
-    az_r: zero(),
-    bz_r: zero(),
-    cz_r: zero(),
-    er_r: zero(),
-    public_input: #"00",
-    u: one(),
-  }
+  let proof =
+    SlimProof {
+      rounds: rounds,
+      challenges: challenges,
+      az_r: 0,
+      bz_r: 0,
+      cz_r: 0,
+      er_r: 0,
+      public_input: #"00",
+      u: 1,
+    }
 
   verify_slim(bundle, proof)
 }
@@ -53,30 +43,32 @@ test e2e_4_rounds() {
 // ---------------------------------------------------------------------------
 
 test tampered_challenge_fails() {
-  let bundle = NifsBundle {
-    com_w_hash: #"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-    com_e_hash: #"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-    transcript_hash: #"abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234",
-  }
+  let bundle =
+    NifsBundle {
+      com_w_hash: #"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      com_e_hash: #"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      transcript_hash: #"abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234",
+    }
 
   let rounds = [
-    RoundPoly { eval_at_0: zero(), eval_at_1: zero(), eval_at_2: zero() },
+    RoundPoly { eval_at_0: 0, eval_at_1: 0, eval_at_2: 0 },
   ]
 
   let wrong_challenges = [
-    new(#"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"),
+    52435875175126190479447740508185965837690552500527637822603658699938581184512,
   ]
 
-  let proof = SlimProof {
-    rounds: rounds,
-    challenges: wrong_challenges,
-    az_r: zero(),
-    bz_r: zero(),
-    cz_r: zero(),
-    er_r: zero(),
-    public_input: #"00",
-    u: one(),
-  }
+  let proof =
+    SlimProof {
+      rounds: rounds,
+      challenges: wrong_challenges,
+      az_r: 0,
+      bz_r: 0,
+      cz_r: 0,
+      er_r: 0,
+      public_input: #"00",
+      u: 1,
+    }
 
   !verify_slim(bundle, proof)
 }
