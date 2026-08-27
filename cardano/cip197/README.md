@@ -191,18 +191,31 @@ cardano-cli transaction build-raw \
 
 ## Benchmarks (PoC)
 
-Measured on AMD Ryzen 9 9950X3D, 16 cores, 64 GB RAM:
+**Actual results** from running the VRF step circuit (5 steps, BN254, SIS m=128).
+See [RESULTS.md](RESULTS.md) for the full end-to-end log.
 
 | Metric | Value | Notes |
 |---|---|---|
+| Step circuit | VRF scalar mul (JubJub) | 0 linear constraints, 4 public I/O |
+| Fold time (5 steps) | **78 ms** | SIS m=128, BN254 |
+| Compress time (slim) | **127 ms** | Sumcheck + HashPC |
+| Slim proof size | **388 bytes** | 96% reduction from full (9,770 B) |
+| Verification (slim, off-chain) | **8 ms** | Sumcheck arithmetic only |
+| Verification (full, off-chain) | **57 ms** | Includes commitment checks |
+| Bundle size | 8.7 KiB | NIFS folded instance commitments |
+| **Total on-chain payload** | **~9.1 KiB** | Bundle + slim proof |
+
+**Key finding:** The total on-chain payload is **~9.1 KiB**, well under Cardano's
+`maxTxSize` (16,384 B). This proves Phase 2 is feasible with NovaSlim today.
+
+*Projected BIP32-Ed25519 figures (based on constraint count estimates):*
+
+| Metric | Projected | Basis |
+|---|---|---|
 | Step circuit constraints | ~10,560 | HMAC-SHA512 + key derivation |
-| Fold time (2 steps) | ~0.8 s | SIS m=128, BLS12-381 |
-| Compress time | ~0.03 s | Sumcheck + HashPC |
-| Slim proof size | **~0.8 KiB** | Well under `maxTxSize` |
-| Verification (off-chain) | **~0.2 ms** | Sumcheck arithmetic only |
-| Verification (on-chain) | **~0.5 ms** | Plutus V3, BLS12-381 Fr |
-| Bundle size | ~2.1 KiB | NIFS folded instance commitments |
-| Total on-chain payload | **~2.9 KiB** | Bundle + slim proof |
+| Fold time (2 steps) | ~0.3 s | SIS m=128, BLS12-381 |
+| Slim proof size | ~0.8 KiB | Sumcheck rounds = log₂(10,560) ≈ 14 |
+| Total on-chain payload | ~3–4 KiB | Bundle (~2 KiB) + slim proof |
 
 ## Comparison with CIP-197 Backends
 
