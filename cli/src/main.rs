@@ -129,6 +129,7 @@ pub enum Command {
 #[clap(bin_name = "nova-slim")]
 #[clap(author = "HAL Team <hal@cardanofoundation.org>")]
 #[clap(version = env!("CARGO_PKG_VERSION"))]
+#[clap(disable_help_subcommand = true)]
 #[clap(
     about = "NovaSlim — folding + slim on-chain proofs CLI",
     long_about = "A command-line interface for NovaSlim: off-circuit NIFS folding with transparent\n\

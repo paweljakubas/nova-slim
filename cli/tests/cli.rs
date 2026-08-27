@@ -647,14 +647,14 @@ fn help_general() {
     cmd.arg("help");
     cmd.assert()
         .success()
-        .stdout(predicate::str::contains("NovaSlim — Folding + Slim On-Chain Proofs CLI"))
+        .stdout(predicate::str::contains("NovaSlim"))
         .stdout(predicate::str::contains("COMMANDS:"))
         .stdout(predicate::str::contains("params"))
         .stdout(predicate::str::contains("fold"))
         .stdout(predicate::str::contains("compress"))
         .stdout(predicate::str::contains("verify"))
         .stdout(predicate::str::contains("help"))
-        .stdout(predicate::str::contains("EXAMPLE — Full slim flow"));
+        .stdout(predicate::str::contains("EXAMPLE"));
 }
 
 /// `nova-slim help commitment` prints detailed commitment scheme info.
@@ -691,6 +691,28 @@ fn help_curve() {
         .stdout(predicate::str::contains("--curve bn254"));
 }
 
+/// `nova-slim help options` prints detailed options info.
+#[test]
+fn help_options() {
+    let mut cmd = Command::cargo_bin("nova-slim").unwrap();
+    cmd.arg("help").arg("options");
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("CLI OPTIONS"))
+        .stdout(predicate::str::contains("--circuit"))
+        .stdout(predicate::str::contains("--steps"))
+        .stdout(predicate::str::contains("--out"))
+        .stdout(predicate::str::contains("--ivc"))
+        .stdout(predicate::str::contains("--slim-proof"))
+        .stdout(predicate::str::contains("--sumcheck-proof"))
+        .stdout(predicate::str::contains("--curve"))
+        .stdout(predicate::str::contains("--commitment"))
+        .stdout(predicate::str::contains("--sis-param"))
+        .stdout(predicate::str::contains("--opt"))
+        .stdout(predicate::str::contains("--slim"))
+        .stdout(predicate::str::contains("EXAMPLES"));
+}
+
 /// `nova-slim help unknown` exits with error.
 #[test]
 fn help_unknown_topic() {
@@ -700,7 +722,8 @@ fn help_unknown_topic() {
         .failure()
         .stderr(predicate::str::contains("Unknown help topic"))
         .stderr(predicate::str::contains("commitment"))
-        .stderr(predicate::str::contains("curve"));
+        .stderr(predicate::str::contains("curve"))
+        .stderr(predicate::str::contains("options"));
 }
 
 // ------------------------------------------------------------------

@@ -2326,6 +2326,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "bn254")]
     /// Build a 3-constraint step circuit: in·x = t1, t1·x = t2, t2·1 = out.
     /// This produces 2 sumcheck rounds (log2ceil(next_power_of_two(3)) = 2).
     fn multi_constraint_r1cs_bytes_bn254() -> Vec<u8> {
@@ -2356,6 +2357,7 @@ mod tests {
         )
     }
 
+    #[cfg(feature = "bn254")]
     fn write_bn254_step_wtns(dir: &std::path::Path, idx: usize, st_in: u64, x: u64) -> u64 {
         type Fr = ScalarField<crate::curve::Bn254>;
         let t1 = st_in * x;
@@ -2376,6 +2378,7 @@ mod tests {
         st_out
     }
 
+    #[cfg(feature = "bn254")]
     /// BN254 CBOR roundtrip: fold 3 steps with a 3-constraint circuit (2 sumcheck
     /// rounds), CBOR-encode the sumcheck proof, decode, and verify.
     /// Also CBOR-roundtrips the bundle to mirror the CLI path.
@@ -2432,6 +2435,7 @@ mod tests {
         assert!(v3.is_ok(), "slim CBOR roundtrip verify failed: {:?}", v3.err());
     }
 
+    #[cfg(feature = "bn254")]
     /// BN254 CBOR roundtrip with a single FrCbor element.
     #[test]
     fn bn254_frcbor_roundtrip() {
