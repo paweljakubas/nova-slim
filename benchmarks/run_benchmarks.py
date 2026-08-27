@@ -504,6 +504,10 @@ def main():
     ap.add_argument("--steps", type=int, help="override chain length")
     ap.add_argument("--curve", choices=list(CIRCOM_PRIMES.keys()), action="append",
                     help="filter families by curve (default: all)")
+    ap.add_argument("--commitment", choices=["pedersen", "sis", "hash"], default="pedersen",
+                    help="commitment scheme for folding (default: pedersen)")
+    ap.add_argument("--sis-param", type=int, default=4,
+                    help="SIS parameter m (default: 4)")
     ap.add_argument("--skip-witness-gen", action="store_true")
     args = ap.parse_args()
 
@@ -549,10 +553,14 @@ def main():
                      "--steps", str(n_steps), "--dir", steps_dir])
         prune_witness_intermediates(steps_dir)
 
-        row = {"family": name, "constraints": constraints, "steps": n_steps, "curve": fam["curve"]}
+        row = {"family": name, "constraints": constraints, "steps": n_steps, "curve": fam["curve"],
+               "commitment": args.commitment}
+        commit_args = ["--commitment", args.commitment]
+        if args.commitment == "sis":
+            commit_args += ["--sis-param", str(args.sis_param)]
         for mode, flag in (("base", []), ("parallel", ["--opt-parallel"])):
-            log = os.path.join(out_dir, f"{name}-{mode}.log")
-            run([bench_bin, "--curve", fam["curve"], *flag, "--circuit", r1cs, "--steps", steps_dir], log)
+            log = os.path.join(out_dir, f"{name}-{args.commitment}-{mode}.log")
+            run([bench_bin, "--curve", fam["curve"], *flag, *commit_args, "--circuit", r1cs, "--steps", steps_dir], log)
             row[mode] = parse_bench_log(log)
         rows.append(row)
 
@@ -569,14 +577,15 @@ def render_summary(stamp, rows):
         "Measured with `benchmark_nova --release` (prover crate); slim IVC flow:",
         "NIFS fold → sumcheck compress → verify. Witnesses pre-generated.",
         "",
-        "| Step circuit | Curve | Constraints | Steps | Fold total | Fold/step | Compress | Verify (full) | Verify (slim) | Slim proof | Bundle |",
-        "|---|---|---|---|---|---|---|---|---|---|---|",
+        "| Step circuit | Curve | Commitment | Constraints | Steps | Fold total | Fold/step | Compress | Verify (full) | Verify (slim) | Slim proof | Bundle |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for r in rows:
         b, p = r["base"], r["parallel"]
         constraints_str = f"{r['constraints']:,}" if r['constraints'] else "?"
+        commit = r.get("commitment", "pedersen")
         lines.append(
-            f"| `{r['family']}` | {r['curve']} | {constraints_str} | {r['steps']} "
+            f"| `{r['family']}` | {r['curve']} | {commit} | {constraints_str} | {r['steps']} "
             f"| {b['fold_s']:.1f} s / {p['fold_s']:.1f} s "
             f"| {b['fold_ms_per_step']:.0f} ms / {p['fold_ms_per_step']:.0f} ms "
             f"| {b['compress_s']:.2f} s / {p['compress_s']:.2f} s "
