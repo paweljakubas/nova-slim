@@ -14,6 +14,30 @@ nova-slim compress → sumcheck compression (--slim for the on-chain variant)
 nova-slim verify   → check bundle + proof (slim: ~0.2 ms)
 ```
 
+## Roadmap
+
+| Feature | Status | Notes |
+|---|---|---|
+| **Slim proofs** (~0.4–2.5 KiB, commitment-agnostic) | ✅ 0.2.0 | Strips HashPC openings; formal knowledge-soundness guarantee (Theorem 1) |
+| **3 commitment schemes** (Pedersen, SIS, Hash) | ✅ 0.2.0 | Selectable at runtime via `--commitment`; two are post-quantum |
+| **6 elliptic curves** (BLS12-381, BN254, Pallas, Vesta, Grumpkin, Bandersnatch) | ✅ 0.2.0 | Full CLI support; BLS12-381 & BN254 have real-circuit benchmarks |
+| **Sumcheck compression** (transparent, no trusted setup) | ✅ 0.2.0 | O(log n) proof size; full + slim variants |
+| **CLI** (`params`, `fold`, `compress`, `verify`, `help`) | ✅ 0.2.0 | Curve- and commitment-agnostic; built-in help with examples |
+| **Compact CBOR serialization** | ✅ 0.2.0 | ~2.6× smaller than JSON; versioned format |
+| **Parallel optimizations** (`--opt parallel`) | ✅ 0.2.0 | Rayon-based; 3–5× speedup on large circuits |
+| **Aiken eUTXO verifier** | ✅ 0.2.0 | On-chain Plutus-compatible verifier (separate repo) |
+| **Cross-system comparison** (Sonobe, STARK, LatticeFold) | ✅ 0.2.0 | Benchmarked against Nova+CycleFold and theoretical baselines |
+| **Formal security proof** | ✅ 0.2.0 | 4-game knowledge-soundness proof; generic over commitment scheme |
+| In-circuit recursive folding (full IVC security) | 🔜 Future | Each step proves correctness of all previous steps |
+| Fixed-base MSM optimization (Pedersen only) | 🔜 Future | ~2× speedup by precomputing doubling ladder |
+| SIS norm enforcement / LatticeFold range proofs | 🔜 Future | Required for post-quantum guarantee under adversarial witnesses |
+| zk-SNARK decider (Groth16) for constant-size verification | 🔜 Future | Sub-200 B on-chain proofs with one-time trusted setup |
+| Bandersnatch real-circuit support | 🔜 Future | circom does not yet support Bandersnatch prime |
+| Grumpkin / Pallas / Vesta real-circuit VRF benchmarks | 🔜 Future | snarkjs witness generation for non-standard primes is slow |
+| Additional hash functions (SHA-3, Keccak) for Hash commitment | 🔜 Future | Currently Blake2b only; diversify audit surface |
+| STARK-based compression (FRI instead of sumcheck) | 🔜 Future | Remove reliance on random oracle; transparent + post-quantum |
+| Multi-chain deployment helpers | 🔜 Future | Cardano (Plutus), Ethereum (Solidity), Zcash (Halo2) verifiers |
+
 ## What is a slim proof?
 
 The **full** sumcheck proof includes the entire HashPC opening (the witness
