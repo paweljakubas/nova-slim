@@ -16,7 +16,9 @@ Thumbs.db
 benchmarks/work/
 benchmarks/results/
 
-# Generated circom artifacts (keep committed .r1cs / _js, ignore recompiled junk)
+# Generated circom artifacts (recompilable from .circom source)
+circom/**/*.r1cs
+circom/**/*.wasm
 circom/**/*.sym
 circom/**/*.wtns
 circom/**/witness*.json
@@ -29,10 +31,25 @@ docs/**/*.out
 docs/**/*.toc
 docs/**/*.fls
 docs/**/*.fdb_latexmk
+docs/**/*.bbl
+docs/**/*.blg
 
 # Generated PDFs (keep committed in docs/cic/ and docs/eprint/)
 # docs/cic/article.pdf
 # docs/eprint/article.pdf
 
+# Python
 *.pyc
 __pycache__/
+
+# Aiken build artifacts
+**/plutus.json
+**/build/
+**/*.lock
+
+# Cardano PoC generated artifacts
+cardano/**/poc_output/
+cardano/**/poc_witnesses/
+cardano/**/*.r1cs
+cardano/**/*.sym
+cardano/**/vrf_verify_nova_js/
