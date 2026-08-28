@@ -2,7 +2,6 @@
 
 > 🚀 **Quick start:** See [E2E.md](E2E.md) for a step-by-step walkthrough with
 > mermaid diagrams, copy-paste commands, and file-size expectations at every stage.
-> See [RESULTS.md](RESULTS.md) for the actual benchmark numbers from our run.
 
 This directory contains a proof-of-concept (PoC) demonstrating how **NovaSlim** can be
 used as a practical stepping stone for [CIP-197](https://github.com/cardano-foundation/CIPs/pull/1242):
@@ -196,7 +195,6 @@ cardano-cli transaction build-raw \
 ## Benchmarks (PoC)
 
 **Actual results** from running the VRF step circuit (5 steps, BN254, SIS m=128).
-See [RESULTS.md](RESULTS.md) for the full end-to-end log.
 
 | Metric | Value | Notes |
 |---|---|---|
@@ -255,22 +253,13 @@ See [RESULTS.md](RESULTS.md) for the full end-to-end log.
 cardano/cip197/
 ├── README.md              # This file (concept + benchmarks)
 ├── E2E.md                 # 🚀 Step-by-step walkthrough with mermaid diagrams
-├── RESULTS.md             # Actual benchmark numbers from our test run
 ├── BENCHMARKS.md          # Detailed benchmark results (future)
 ├── ARCHITECTURE.md        # Technical architecture notes (future)
-├── vrf_verify_nova.r1cs   # Compiled step circuit (VRF scalar mul)
-├── vrf_verify_nova_js/    # WASM witness generator
-├── poc_witnesses/         # Generated step witnesses (5 steps)
-├── poc_output/
-│   ├── vrf.ivc.cbor       # NIFS folded bundle (8.7 KiB)
-│   ├── vrf_full.cbor      # Full sumcheck proof (9.6 KiB)
-│   └── vrf_slim.cbor      # Slim on-chain proof (388 B)
-├── cardano_keys/          # Real BIP32 key derivations
+├── cardano_keys/          # Real BIP32 key derivations (public keys only)
 │   ├── DERIVATION.md      # Key derivation log
-│   ├── recovery-phrase.txt
-│   ├── root.xprv
-│   ├── acct.xprv / acct.xpub
-│   └── addr.xprv / addr.xpub
+│   ├── acct.xpub
+│   ├── addr.xpub
+│   └── role.xpub
 └── scripts/
     ├── gen_bip32_witnesses.js   # Generate real BIP32 witnesses (future)
     ├── submit_poc_tx.sh         # Submit PoC transaction to testnet (future)

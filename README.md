@@ -78,7 +78,9 @@ Step circuits are bundled in `circom/`:
 |---|---|
 | `prover/` | Core library: R1CS loading, NIFS folding, sumcheck compression, slim proofs ([README](prover/README.md)) |
 | `cli/` | The `nova-slim` CLI ([README](cli/README.md)) |
+| `circom/` | Step circuits (Ed25519, SHA-256, VRF, Poseidon) |
 | `benchmarks/` | Benchmark harness over real circom circuits |
+| `cardano/` | CIP-197 PoC and Aiken on-chain verifier ([README](cardano/cip197/README.md)) |
 | `docs/article.md` | NovaSlim paper draft |
 
 ## End-to-end run
