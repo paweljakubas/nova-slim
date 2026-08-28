@@ -2,10 +2,6 @@
 
 An Aiken eUTXO validator for verifying NovaSlim slim proofs on Cardano.
 
-> **Note:** NovaSlim is a Rust-based folding proof system that produces
-> sub-kilobyte transparent proofs with no trusted setup.  The project is
-> publicly available at `https://github.com/paweljakubas/nova-slim`.
-
 ## What this verifier does
 
 This validator checks a **slim proof** — the sumcheck protocol only, with no
