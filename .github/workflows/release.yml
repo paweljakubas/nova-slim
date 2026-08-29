@@ -78,6 +78,7 @@ jobs:
           fi
           cat /tmp/release-info.md > /tmp/release-body.md
           cat /tmp/release-const.md >> /tmp/release-body.md
+          cat /tmp/release-body.md
 
       - name: Create draft release
         uses: softprops/action-gh-release@v2
