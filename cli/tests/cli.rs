@@ -627,7 +627,7 @@ fn cardano_ed25519_ownership_nova_verify_rejects_tampered_bundle() {
 
 /// `nova-slim --help` lists all subcommands.
 /// `nova-slim --version` reports the release version and build commit.
-/// The Cargo package version is 0.2.0 (never the placeholder 0.0.0).
+/// The Cargo package version is 0.3.0 
 #[test]
 fn version_reports_release_and_commit() {
     let output = Command::cargo_bin("nova-slim")
@@ -643,12 +643,12 @@ fn version_reports_release_and_commit() {
 
     let version = String::from_utf8_lossy(&output.stdout);
     assert!(
-        version.starts_with("nova-slim 0.2.0"),
+        version.starts_with("nova-slim 0.3.0"),
         "expected release version prefix, got: {version}"
     );
     assert!(
-        !version.contains("0.0.0"),
-        "version must not be the placeholder 0.0.0: {version}"
+        !version.contains("0.2.0"),
+        "version must not be the placeholder 0.2.0: {version}"
     );
     assert!(
         version.contains('(') && version.contains(')'),

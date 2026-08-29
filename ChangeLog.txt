@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.0] - unreleased
 
+## [0.3.0] - 2026-08-29
+
 ### Added
 
 - GitHub Actions workflows: CI (Rust, Aiken, CIP-197 equivalence) and release automation.

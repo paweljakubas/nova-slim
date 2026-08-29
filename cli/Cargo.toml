@@ -1,6 +1,6 @@
 [package]
 name = "nova-slim"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "NovaSlim CLI — curve-agnostic Nova IVC folding with slim proofs"
