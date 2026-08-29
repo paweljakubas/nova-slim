@@ -109,7 +109,7 @@ Step circuits are bundled in `circom/`:
 | `cli/` | The `nova-slim` CLI ([README](cli/README.md)) |
 | `circom/` | Step circuits: Ed25519, SHA-256, VRF, Poseidon (sponge, Merkle, pre-image) |
 | `benchmarks/` | Benchmark harness over real circom circuits |
-| `cardano/` | CIP-197 PoC and Aiken on-chain verifier ([README](cardano/cip197/README.md)) |
+| `cardano/` | CIP-197 PoC and Aiken on-chain verifier ([README](cardano/cip197/README.md)); two-doc equivalence test at `cardano/cip197/scripts/e2e_equivalence.sh` |
 | `docs/article.md` | NovaSlim paper draft |
 
 ## End-to-end run
@@ -168,7 +168,7 @@ $NOVA verify --curve bn254 --ivc ed25519.ivc.cbor --sumcheck-proof ed25519_full.
 # Library tests (97 tests)
 cargo test --release --manifest-path prover/Cargo.toml
 
-# CLI integration tests (24 tests; includes real-circuit end-to-end flows)
+# CLI integration tests (25 tests; includes real-circuit end-to-end flows)
 cargo test --release --manifest-path cli/Cargo.toml
 ```
 
