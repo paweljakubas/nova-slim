@@ -54,16 +54,30 @@ jobs:
 
       - name: Prepare release body
         run: |
+          cat <<'EOF' > /tmp/release-const.md
+## Supported Platforms
+
+- Linux 64-bit (x86_64)
+
+## Signatures
+
+Name                                 | Role                          | Approval
+---                                  | ---                           | ---:
+Pawel Jakubas @paweljakubas          | Senior Cryptographic Engineer |
+
+EOF
           VER="${{ env.TAG }}"; VER="${VER#v}"
           awk -v v="$VER" '
             $0 ~ ("^## \\[" v "\\]") {found=1; next}
             /^## \[/ {if (found) exit}
             found {print}
-          ' ChangeLog.txt > /tmp/release-body.md
-          if [ ! -s /tmp/release-body.md ]; then
+          ' ChangeLog.txt > /tmp/release-info.md
+          if [ ! -s /tmp/release-info.md ]; then
             echo "No section for $VER in ChangeLog.txt" >&2
             exit 1
           fi
+          cat /tmp/release-info.md > /tmp/release-body.md
+          cat /tmp/release-const.md >> /tmp/release-body.md
 
       - name: Create draft release
         uses: softprops/action-gh-release@v2
