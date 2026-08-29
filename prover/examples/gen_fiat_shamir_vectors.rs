@@ -3,8 +3,8 @@
 /// Run with: cargo run --example gen_fiat_shamir_vectors
 use ark_bls12_381::Fr;
 use ark_ff::{BigInteger, Field, PrimeField};
-use blake2::{Blake2b, Digest};
 use blake2::digest::consts::U32;
+use blake2::{Blake2b, Digest};
 
 fn hash_field_elements(elems: &[Fr]) -> Vec<u8> {
     let mut h = Blake2b::<U32>::new();
@@ -40,8 +40,11 @@ fn main() {
 
     // Round 1: hash([42, 100, 200, 30, 40])
     let h1_input = vec![
-        Fr::from(42u64), Fr::from(100u64), Fr::from(200u64),
-        Fr::from(30u64), Fr::from(40u64),
+        Fr::from(42u64),
+        Fr::from(100u64),
+        Fr::from(200u64),
+        Fr::from(30u64),
+        Fr::from(40u64),
     ];
     let h1 = hash_field_elements(&h1_input);
     let ch1 = challenge_from_hash(&h1);
@@ -50,16 +53,32 @@ fn main() {
     println!("round_1_challenge = {}", ch1);
 
     // Print LE bytes of challenges as hex (32 bytes each)
-    println!("challenge_0_le = {}", hex::encode(&ch0.into_bigint().to_bytes_le()));
-    println!("challenge_1_le = {}", hex::encode(&ch1.into_bigint().to_bytes_le()));
+    println!(
+        "challenge_0_le = {}",
+        hex::encode(&ch0.into_bigint().to_bytes_le())
+    );
+    println!(
+        "challenge_1_le = {}",
+        hex::encode(&ch1.into_bigint().to_bytes_le())
+    );
 
     // Print LE bytes of each input element (for Aiken bytearray comparison)
     println!("\n--- element LE bytes ---");
     for (i, e) in h0_input.iter().enumerate() {
-        println!("h0_input[{}] = {} -> le_hex = {}", i, e, hex::encode(&e.into_bigint().to_bytes_le()));
+        println!(
+            "h0_input[{}] = {} -> le_hex = {}",
+            i,
+            e,
+            hex::encode(&e.into_bigint().to_bytes_le())
+        );
     }
     for (i, e) in h1_input.iter().enumerate() {
-        println!("h1_input[{}] = {} -> le_hex = {}", i, e, hex::encode(&e.into_bigint().to_bytes_le()));
+        println!(
+            "h1_input[{}] = {} -> le_hex = {}",
+            i,
+            e,
+            hex::encode(&e.into_bigint().to_bytes_le())
+        );
     }
 
     // === Test 2: CKO all-zeros (verifier logic: claims[..=round] ++ poly) ===
@@ -86,5 +105,8 @@ fn main() {
     println!("hash_input = [777, 500, 277]");
     println!("hash_hex = {}", hex::encode(&h3));
     println!("challenge = {}", ch3);
-    println!("challenge_le = {}", hex::encode(&ch3.into_bigint().to_bytes_le()));
+    println!(
+        "challenge_le = {}",
+        hex::encode(&ch3.into_bigint().to_bytes_le())
+    );
 }

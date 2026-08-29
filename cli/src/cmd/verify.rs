@@ -1,10 +1,14 @@
 //! `verify` subcommand — verify a NIFS bundle against a compression proof.
 
+use crate::Curve;
 use clap::Parser;
-use prover::{run_verify_slim, run_verify_sumcheck_opt, DEFAULT_SIS_PARAM, commitment::{PedersenCommitment, SisCommitment, HashCommitment}, curve::{Bls12_381, Bn254, Pallas, Vesta, Grumpkin, Bandersnatch}};
+use prover::{
+    commitment::{HashCommitment, PedersenCommitment, SisCommitment},
+    curve::{Bandersnatch, Bls12_381, Bn254, Grumpkin, Pallas, Vesta},
+    run_verify_slim, run_verify_sumcheck_opt, DEFAULT_SIS_PARAM,
+};
 use std::error::Error;
 use std::path::PathBuf;
-use crate::Curve;
 
 /// Arguments for the `verify` subcommand
 #[derive(Debug, Parser)]

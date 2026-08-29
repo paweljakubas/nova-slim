@@ -1,12 +1,16 @@
 //! `fold` subcommand — fold step witnesses into a single Relaxed-R1CS
 //! instance (NIFS) and emit the O(1) bundle.
 
+use crate::Curve;
 use clap::Parser;
-use prover::{run_fold_nifs_opt, OptFlags, NifsBundle, DEFAULT_SIS_PARAM, commitment::{PedersenCommitment, SisCommitment, HashCommitment}, curve::{Bls12_381, Bn254, Pallas, Vesta, Grumpkin, Bandersnatch, NovaCurve, ScalarField}};
+use prover::{
+    commitment::{HashCommitment, PedersenCommitment, SisCommitment},
+    curve::{Bandersnatch, Bls12_381, Bn254, Grumpkin, NovaCurve, Pallas, ScalarField, Vesta},
+    run_fold_nifs_opt, NifsBundle, OptFlags, DEFAULT_SIS_PARAM,
+};
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
-use crate::Curve;
 
 /// Arguments for the `fold` subcommand
 #[derive(Debug, Parser)]
@@ -55,13 +59,22 @@ fn parse_opt_flags(s: &str) -> Result<OptFlags, Box<dyn Error>> {
             "parallel" | "p" => flags.parallel = true,
             "lazy" | "l" => flags.lazy_commit = true,
             "all" | "a" => flags = OptFlags::ALL,
-            other => return Err(format!("unknown optimization: '{other}' — valid: parallel, lazy, all, none").into()),
+            other => {
+                return Err(format!(
+                    "unknown optimization: '{other}' — valid: parallel, lazy, all, none"
+                )
+                .into())
+            }
         }
     }
     Ok(flags)
 }
 
-fn write_bundle<C: NovaCurve>(out: &NifsBundle, path: &std::path::Path, opts: OptFlags) -> Result<(), Box<dyn Error>> {
+fn write_bundle<C: NovaCurve>(
+    out: &NifsBundle,
+    path: &std::path::Path,
+    opts: OptFlags,
+) -> Result<(), Box<dyn Error>> {
     let cbor = out
         .to_cbor::<ScalarField<C>>()
         .map_err(|e| format!("failed to serialize NIFS bundle: {e}"))?;

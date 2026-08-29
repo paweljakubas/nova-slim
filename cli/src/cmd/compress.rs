@@ -9,12 +9,16 @@
 //! Artifacts use a compact CBOR encoding (field elements as 32-byte
 //! little-endian values).
 
+use crate::Curve;
 use clap::Parser;
-use prover::{run_compress_sumcheck_opt, NifsSumcheckProof, OptFlags, DEFAULT_SIS_PARAM, commitment::{PedersenCommitment, SisCommitment, HashCommitment}, curve::{Bls12_381, Bn254, Pallas, Vesta, Grumpkin, Bandersnatch, NovaCurve, ScalarField}};
+use prover::{
+    commitment::{HashCommitment, PedersenCommitment, SisCommitment},
+    curve::{Bandersnatch, Bls12_381, Bn254, Grumpkin, NovaCurve, Pallas, ScalarField, Vesta},
+    run_compress_sumcheck_opt, NifsSumcheckProof, OptFlags, DEFAULT_SIS_PARAM,
+};
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
-use crate::Curve;
 
 /// Arguments for the `compress` subcommand
 #[derive(Debug, Parser)]
@@ -70,13 +74,21 @@ fn parse_opt_flags(s: &str) -> Result<OptFlags, Box<dyn Error>> {
             "parallel" | "p" => flags.parallel = true,
             "lazy" | "l" => flags.lazy_commit = true,
             "all" | "a" => flags = OptFlags::ALL,
-            other => return Err(format!("unknown optimization: '{other}' — valid: parallel, lazy, all, none").into()),
+            other => {
+                return Err(format!(
+                    "unknown optimization: '{other}' — valid: parallel, lazy, all, none"
+                )
+                .into())
+            }
         }
     }
     Ok(flags)
 }
 
-fn strip_and_write<C: NovaCurve>(full_bytes: &[u8], out: &std::path::Path) -> Result<(), Box<dyn Error>> {
+fn strip_and_write<C: NovaCurve>(
+    full_bytes: &[u8],
+    out: &std::path::Path,
+) -> Result<(), Box<dyn Error>> {
     let full_proof = NifsSumcheckProof::from_cbor::<ScalarField<C>>(full_bytes)?;
     let slim_proof = full_proof.to_slim();
     let slim_cbor = slim_proof.to_cbor::<ScalarField<C>>()?;
@@ -97,7 +109,13 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
     if args.slim {
         let tmp = args.out.with_extension("full.cbor");
         dispatch!(args.curve, args.commitment, {
-            run_compress_sumcheck_opt::<C, CS>(&args.circuit, &args.steps, &tmp, opts, args.sis_param)
+            run_compress_sumcheck_opt::<C, CS>(
+                &args.circuit,
+                &args.steps,
+                &tmp,
+                opts,
+                args.sis_param,
+            )
         })?;
         let full_bytes = fs::read(&tmp)?;
         match args.curve {
@@ -111,7 +129,13 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
         fs::remove_file(&tmp).ok();
     } else {
         dispatch!(args.curve, args.commitment, {
-            run_compress_sumcheck_opt::<C, CS>(&args.circuit, &args.steps, &args.out, opts, args.sis_param)
+            run_compress_sumcheck_opt::<C, CS>(
+                &args.circuit,
+                &args.steps,
+                &args.out,
+                opts,
+                args.sis_param,
+            )
         })?;
     }
     Ok(())

@@ -19,12 +19,13 @@ use ark_ff::Zero;
 use ark_serialize::CanonicalSerialize;
 use blake2::{Blake2b512, Digest};
 use prover::circuit::SparseCircuit;
-use prover::commitment::{CommitmentScheme, PedersenCommitment, SisCommitment, HashCommitment};
+use prover::commitment::{CommitmentScheme, HashCommitment, PedersenCommitment, SisCommitment};
 use prover::nifs;
 use prover::{
+    curve::{NovaCurve, ScalarField},
     fr_to_string, prove_sumcheck_compression_opt, verify_slim, verify_sumcheck_compression,
-    NifsBundle, NifsFinalInstance, NifsFoldOutput, OptFlags, NIFS_PARAMS_SEED,
-    NIFS_TRANSCRIPT_PREFIX, DEFAULT_SIS_PARAM, curve::{NovaCurve, ScalarField},
+    NifsBundle, NifsFinalInstance, NifsFoldOutput, OptFlags, DEFAULT_SIS_PARAM, NIFS_PARAMS_SEED,
+    NIFS_TRANSCRIPT_PREFIX,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -33,8 +34,14 @@ use std::time::Instant;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let opt_parallel = args.iter().any(|a| a == "--opt-parallel");
-    let curve = args.iter().position(|a| a == "--curve").map(|i| args[i+1].clone());
-    let commitment = args.iter().position(|a| a == "--commitment").map(|i| args[i+1].clone());
+    let curve = args
+        .iter()
+        .position(|a| a == "--curve")
+        .map(|i| args[i + 1].clone());
+    let commitment = args
+        .iter()
+        .position(|a| a == "--commitment")
+        .map(|i| args[i + 1].clone());
     let circuit_path = args
         .windows(2)
         .find(|w| w[0] == "--circuit")
@@ -53,47 +60,144 @@ fn main() {
         w[1].parse::<usize>()
             .expect("--limit must be a positive integer")
     });
-    let sis_param = args.windows(2).find(|w| w[0] == "--sis-param").map(|w| {
-        w[1].parse::<usize>()
-            .expect("--sis-param must be a positive integer")
-    }).unwrap_or(DEFAULT_SIS_PARAM);
+    let sis_param = args
+        .windows(2)
+        .find(|w| w[0] == "--sis-param")
+        .map(|w| {
+            w[1].parse::<usize>()
+                .expect("--sis-param must be a positive integer")
+        })
+        .unwrap_or(DEFAULT_SIS_PARAM);
 
     let curve = curve.as_deref().unwrap_or("bls12-381");
     let commitment = commitment.as_deref().unwrap_or("pedersen");
     match (curve, commitment) {
-        ("bls12-381", "pedersen") => benchmark::<prover::curve::Bls12_381, PedersenCommitment<prover::curve::Bls12_381>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        ("bls12-381", "pedersen") => benchmark::<
+            prover::curve::Bls12_381,
+            PedersenCommitment<prover::curve::Bls12_381>,
+        >(
+            &circuit_path, &steps_dir, limit, opt_parallel, sis_param
+        ),
         #[cfg(feature = "bn254")]
-        ("bn254", "pedersen") => benchmark::<prover::curve::Bn254, PedersenCommitment<prover::curve::Bn254>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        ("bn254", "pedersen") => benchmark::<
+            prover::curve::Bn254,
+            PedersenCommitment<prover::curve::Bn254>,
+        >(
+            &circuit_path, &steps_dir, limit, opt_parallel, sis_param
+        ),
         #[cfg(feature = "pallas")]
-        ("pallas", "pedersen") => benchmark::<prover::curve::Pallas, PedersenCommitment<prover::curve::Pallas>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        ("pallas", "pedersen") => benchmark::<
+            prover::curve::Pallas,
+            PedersenCommitment<prover::curve::Pallas>,
+        >(
+            &circuit_path, &steps_dir, limit, opt_parallel, sis_param
+        ),
         #[cfg(feature = "vesta")]
-        ("vesta", "pedersen") => benchmark::<prover::curve::Vesta, PedersenCommitment<prover::curve::Vesta>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        ("vesta", "pedersen") => benchmark::<
+            prover::curve::Vesta,
+            PedersenCommitment<prover::curve::Vesta>,
+        >(
+            &circuit_path, &steps_dir, limit, opt_parallel, sis_param
+        ),
         #[cfg(feature = "grumpkin")]
-        ("grumpkin", "pedersen") => benchmark::<prover::curve::Grumpkin, PedersenCommitment<prover::curve::Grumpkin>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        ("grumpkin", "pedersen") => benchmark::<
+            prover::curve::Grumpkin,
+            PedersenCommitment<prover::curve::Grumpkin>,
+        >(
+            &circuit_path, &steps_dir, limit, opt_parallel, sis_param
+        ),
         #[cfg(feature = "bandersnatch")]
-        ("bandersnatch", "pedersen") => benchmark::<prover::curve::Bandersnatch, PedersenCommitment<prover::curve::Bandersnatch>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
-        ("bls12-381", "sis") => benchmark::<prover::curve::Bls12_381, SisCommitment<prover::curve::Bls12_381>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        ("bandersnatch", "pedersen") => benchmark::<
+            prover::curve::Bandersnatch,
+            PedersenCommitment<prover::curve::Bandersnatch>,
+        >(
+            &circuit_path, &steps_dir, limit, opt_parallel, sis_param
+        ),
+        ("bls12-381", "sis") => benchmark::<
+            prover::curve::Bls12_381,
+            SisCommitment<prover::curve::Bls12_381>,
+        >(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
         #[cfg(feature = "bn254")]
-        ("bn254", "sis") => benchmark::<prover::curve::Bn254, SisCommitment<prover::curve::Bn254>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        ("bn254", "sis") => benchmark::<prover::curve::Bn254, SisCommitment<prover::curve::Bn254>>(
+            &circuit_path,
+            &steps_dir,
+            limit,
+            opt_parallel,
+            sis_param,
+        ),
         #[cfg(feature = "pallas")]
-        ("pallas", "sis") => benchmark::<prover::curve::Pallas, SisCommitment<prover::curve::Pallas>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        ("pallas", "sis") => {
+            benchmark::<prover::curve::Pallas, SisCommitment<prover::curve::Pallas>>(
+                &circuit_path,
+                &steps_dir,
+                limit,
+                opt_parallel,
+                sis_param,
+            )
+        }
         #[cfg(feature = "vesta")]
-        ("vesta", "sis") => benchmark::<prover::curve::Vesta, SisCommitment<prover::curve::Vesta>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        ("vesta", "sis") => benchmark::<prover::curve::Vesta, SisCommitment<prover::curve::Vesta>>(
+            &circuit_path,
+            &steps_dir,
+            limit,
+            opt_parallel,
+            sis_param,
+        ),
         #[cfg(feature = "grumpkin")]
-        ("grumpkin", "sis") => benchmark::<prover::curve::Grumpkin, SisCommitment<prover::curve::Grumpkin>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        ("grumpkin", "sis") => benchmark::<
+            prover::curve::Grumpkin,
+            SisCommitment<prover::curve::Grumpkin>,
+        >(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
         #[cfg(feature = "bandersnatch")]
-        ("bandersnatch", "sis") => benchmark::<prover::curve::Bandersnatch, SisCommitment<prover::curve::Bandersnatch>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
-        ("bls12-381", "hash") => benchmark::<prover::curve::Bls12_381, HashCommitment<prover::curve::Bls12_381>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        ("bandersnatch", "sis") => benchmark::<
+            prover::curve::Bandersnatch,
+            SisCommitment<prover::curve::Bandersnatch>,
+        >(
+            &circuit_path, &steps_dir, limit, opt_parallel, sis_param
+        ),
+        ("bls12-381", "hash") => benchmark::<
+            prover::curve::Bls12_381,
+            HashCommitment<prover::curve::Bls12_381>,
+        >(
+            &circuit_path, &steps_dir, limit, opt_parallel, sis_param
+        ),
         #[cfg(feature = "bn254")]
-        ("bn254", "hash") => benchmark::<prover::curve::Bn254, HashCommitment<prover::curve::Bn254>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        ("bn254", "hash") => {
+            benchmark::<prover::curve::Bn254, HashCommitment<prover::curve::Bn254>>(
+                &circuit_path,
+                &steps_dir,
+                limit,
+                opt_parallel,
+                sis_param,
+            )
+        }
         #[cfg(feature = "pallas")]
-        ("pallas", "hash") => benchmark::<prover::curve::Pallas, HashCommitment<prover::curve::Pallas>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        ("pallas", "hash") => benchmark::<
+            prover::curve::Pallas,
+            HashCommitment<prover::curve::Pallas>,
+        >(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
         #[cfg(feature = "vesta")]
-        ("vesta", "hash") => benchmark::<prover::curve::Vesta, HashCommitment<prover::curve::Vesta>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        ("vesta", "hash") => {
+            benchmark::<prover::curve::Vesta, HashCommitment<prover::curve::Vesta>>(
+                &circuit_path,
+                &steps_dir,
+                limit,
+                opt_parallel,
+                sis_param,
+            )
+        }
         #[cfg(feature = "grumpkin")]
-        ("grumpkin", "hash") => benchmark::<prover::curve::Grumpkin, HashCommitment<prover::curve::Grumpkin>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        ("grumpkin", "hash") => benchmark::<
+            prover::curve::Grumpkin,
+            HashCommitment<prover::curve::Grumpkin>,
+        >(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
         #[cfg(feature = "bandersnatch")]
-        ("bandersnatch", "hash") => benchmark::<prover::curve::Bandersnatch, HashCommitment<prover::curve::Bandersnatch>>(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        ("bandersnatch", "hash") => benchmark::<
+            prover::curve::Bandersnatch,
+            HashCommitment<prover::curve::Bandersnatch>,
+        >(
+            &circuit_path, &steps_dir, limit, opt_parallel, sis_param
+        ),
         _ => {
             eprintln!("unknown curve/commitment: {curve}/{commitment} — valid curves: bls12-381, bn254, pallas, vesta, grumpkin, bandersnatch; valid commitments: pedersen, sis, hash");
             std::process::exit(2);
@@ -101,7 +205,13 @@ fn main() {
     }
 }
 
-fn benchmark<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(circuit_path: &str, steps_dir: &str, limit: Option<usize>, opt_parallel: bool, sis_param: usize) {
+fn benchmark<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
+    circuit_path: &str,
+    steps_dir: &str,
+    limit: Option<usize>,
+    opt_parallel: bool,
+    sis_param: usize,
+) {
     use std::path::Path;
     let mut circuit = prover::load_circuit::<C>(Path::new(circuit_path))
         .unwrap_or_else(|e| panic!("failed to load circuit {circuit_path}: {e}"));
@@ -124,7 +234,16 @@ fn benchmark<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(circui
     assert!(!wtns.is_empty(), "no .wtns files in steps dir");
 
     let n_steps = wtns.len();
-    let scheme_name = { let tn = std::any::type_name::<CS>(); if tn.contains("Sis") { "sis" } else if tn.contains("Hash") { "hash" } else { "pedersen" } };
+    let scheme_name = {
+        let tn = std::any::type_name::<CS>();
+        if tn.contains("Sis") {
+            "sis"
+        } else if tn.contains("Hash") {
+            "hash"
+        } else {
+            "pedersen"
+        }
+    };
 
     println!(
         "step circuit: {} wires, {} constraints, pub {} out + {} in, private {}",
@@ -141,10 +260,18 @@ fn benchmark<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(circui
 }
 
 /// Slim flow: NIFS fold → sumcheck compression → full/slim verify.
-fn benchmark_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(circuit: &mut SparseCircuit<ScalarField<C>>, wtns: &[PathBuf], parallel: bool, sis_param: usize) {
+fn benchmark_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
+    circuit: &mut SparseCircuit<ScalarField<C>>,
+    wtns: &[PathBuf],
+    parallel: bool,
+    sis_param: usize,
+) {
     let n_steps = wtns.len();
     let opt = if parallel { "parallel" } else { "baseline" };
-    println!("mode: NIFS fold + sumcheck compress ({opt}), curve: {}", std::any::type_name::<C>());
+    println!(
+        "mode: NIFS fold + sumcheck compress ({opt}), curve: {}",
+        std::any::type_name::<C>()
+    );
 
     // 1. NIFS fold.
     let t = Instant::now();
@@ -230,7 +357,12 @@ fn benchmark_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(c
 /// Fold every step witness into one Relaxed-R1CS running instance, exactly as
 /// `nova-slim fold` does (same transparent params, FOLD_PREFIX challenge,
 /// and NIFS_TRANSCRIPT_PREFIX chain), but fully in memory.
-fn nifs_fold<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(circuit: &mut SparseCircuit<ScalarField<C>>, wtns: &[PathBuf], parallel: bool, sis_param: usize) -> NifsFoldOutput<CS> {
+fn nifs_fold<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
+    circuit: &mut SparseCircuit<ScalarField<C>>,
+    wtns: &[PathBuf],
+    parallel: bool,
+    sis_param: usize,
+) -> NifsFoldOutput<CS> {
     let n_pub_out = circuit.n_pub_out as usize;
     let n_pub_in = circuit.n_pub_in as usize;
     let n_wires = circuit.n_wires as usize;
@@ -339,7 +471,10 @@ fn transcript_nifs_init<C: NovaCurve>(initial_state: &[ScalarField<C>]) -> Vec<u
 }
 
 /// `H(NIFS_TRANSCRIPT_PREFIX ‖ acc ‖ instance_bytes)`, matching `nova-slim fold`.
-fn transcript_nifs_step<C: NovaCurve, CS: CommitmentScheme>(acc: &[u8], u: &nifs::RelaxedR1csInstance<CS>) -> Vec<u8> {
+fn transcript_nifs_step<C: NovaCurve, CS: CommitmentScheme>(
+    acc: &[u8],
+    u: &nifs::RelaxedR1csInstance<CS>,
+) -> Vec<u8> {
     let mut h = Blake2b512::new();
     h.update(NIFS_TRANSCRIPT_PREFIX);
     h.update(acc);
@@ -357,6 +492,8 @@ fn frs_bytes<C: NovaCurve>(frs: &[ScalarField<C>]) -> Vec<u8> {
 
 fn commitment_hex<T: CanonicalSerialize>(value: &T) -> String {
     let mut buf = Vec::new();
-    value.serialize_compressed(&mut buf).expect("commitment serialize");
+    value
+        .serialize_compressed(&mut buf)
+        .expect("commitment serialize");
     hex::encode(buf)
 }

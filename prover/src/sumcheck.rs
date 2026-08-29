@@ -34,8 +34,8 @@
 use ark_ff::{BigInteger, PrimeField, Zero};
 
 use crate::curve::{NovaCurve, ScalarField};
-use blake2::{Blake2b512, Digest};
 use blake2::digest::consts::U32;
+use blake2::{Blake2b512, Digest};
 use rayon::prelude::*;
 
 /// Number of sumcheck rounds (log2 of the padded constraint count).
@@ -226,9 +226,7 @@ pub fn prove_with_opts<C: NovaCurve>(
                 .into_par_iter()
                 .fold(
                     || (ScalarField::<C>::zero(), ScalarField::<C>::zero()),
-                    |acc, j| {
-                        (acc.0 + current[2 * j], acc.1 + current[2 * j + 1])
-                    },
+                    |acc, j| (acc.0 + current[2 * j], acc.1 + current[2 * j + 1]),
                 )
                 .reduce(
                     || (ScalarField::<C>::zero(), ScalarField::<C>::zero()),
@@ -285,7 +283,9 @@ pub fn prove_with_opts<C: NovaCurve>(
 ///
 /// where `az_r`, `bz_r`, `cz_r`, `e_r` are the prover's claimed MLE
 /// evaluations at `r`.
-pub fn verify<C: NovaCurve>(proof: &SumcheckProof<C>) -> (bool, Vec<ScalarField<C>>, ScalarField<C>) {
+pub fn verify<C: NovaCurve>(
+    proof: &SumcheckProof<C>,
+) -> (bool, Vec<ScalarField<C>>, ScalarField<C>) {
     let claimed_sum = proof.claims[0];
     let num_rounds = proof.polys.len();
     if num_rounds == 0 {
@@ -807,7 +807,9 @@ mod tests {
         // Verify opening.
         let r = vec![Fr::from(3u64), Fr::from(7u64)];
         let claimed = eval_dense_mle(&v, &r);
-        assert!(verify_opening::<crate::curve::Bls12_381>(&hash, &opening, &claimed, &r));
+        assert!(verify_opening::<crate::curve::Bls12_381>(
+            &hash, &opening, &claimed, &r
+        ));
     }
 
     #[test]
@@ -824,7 +826,10 @@ mod tests {
 
         let (p1, _) = prove::<crate::curve::Bls12_381>(&l, &r, &o, &z, u, &e);
         let (p2, _) = prove::<crate::curve::Bls12_381>(&l, &r, &o, &z, u, &e);
-        assert_eq!(proof_hash::<crate::curve::Bls12_381>(&p1), proof_hash::<crate::curve::Bls12_381>(&p2));
+        assert_eq!(
+            proof_hash::<crate::curve::Bls12_381>(&p1),
+            proof_hash::<crate::curve::Bls12_381>(&p2)
+        );
     }
 
     #[test]
@@ -893,7 +898,9 @@ mod tests {
         let r = vec![Fr::from(7u64), Fr::from(11u64)];
         let claimed = eval_dense_mle(&v, &r);
 
-        assert!(verify_opening::<crate::curve::Bls12_381>(&hash, &proof, &claimed, &r));
+        assert!(verify_opening::<crate::curve::Bls12_381>(
+            &hash, &proof, &claimed, &r
+        ));
     }
 
     #[test]
@@ -913,7 +920,9 @@ mod tests {
         let r = vec![Fr::from(7u64), Fr::from(11u64)];
         let claimed = eval_dense_mle(&v, &r);
 
-        assert!(!verify_opening::<crate::curve::Bls12_381>(&hash, &proof, &claimed, &r));
+        assert!(!verify_opening::<crate::curve::Bls12_381>(
+            &hash, &proof, &claimed, &r
+        ));
     }
 
     #[test]
@@ -931,7 +940,12 @@ mod tests {
         let r = vec![Fr::from(7u64), Fr::from(11u64)];
         let wrong_eval = Fr::from(999u64);
 
-        assert!(!verify_opening::<crate::curve::Bls12_381>(&hash, &proof, &wrong_eval, &r));
+        assert!(!verify_opening::<crate::curve::Bls12_381>(
+            &hash,
+            &proof,
+            &wrong_eval,
+            &r
+        ));
     }
 
     // ── HashPC boundary / edge cases ────────────────────────────────
@@ -941,7 +955,10 @@ mod tests {
         let params = PedersenParams::<crate::curve::Bls12_381>::from_seed(b"empty", 0, 0);
         let v: Vec<Fr> = vec![];
         let (hash, pt) = poly_commit::<crate::curve::Bls12_381>(&v, &params.basis_w);
-        assert_eq!(hash, poly_commit::<crate::curve::Bls12_381>(&v, &params.basis_w).0);
+        assert_eq!(
+            hash,
+            poly_commit::<crate::curve::Bls12_381>(&v, &params.basis_w).0
+        );
         assert_eq!(pt, ark_bls12_381::G1Affine::identity());
     }
 
@@ -952,7 +969,12 @@ mod tests {
         let (hash, _) = poly_commit::<crate::curve::Bls12_381>(&v, &params.basis_w);
         let opening = create_opening::<crate::curve::Bls12_381>(&v);
         let r: Vec<Fr> = vec![];
-        assert!(verify_opening::<crate::curve::Bls12_381>(&hash, &opening, &Fr::from(42u64), &r));
+        assert!(verify_opening::<crate::curve::Bls12_381>(
+            &hash,
+            &opening,
+            &Fr::from(42u64),
+            &r
+        ));
     }
 
     #[test]
@@ -969,7 +991,9 @@ mod tests {
         opening.table[0] += Fr::from(1u64);
         let r = vec![Fr::from(7u64), Fr::from(11u64)];
         let claimed = eval_dense_mle(&v, &r);
-        assert!(!verify_opening::<crate::curve::Bls12_381>(&hash, &opening, &claimed, &r));
+        assert!(!verify_opening::<crate::curve::Bls12_381>(
+            &hash, &opening, &claimed, &r
+        ));
     }
 
     #[test]
@@ -1000,7 +1024,8 @@ mod tests {
             Fr::from(5u64),
             Fr::from(15u64),
         ];
-        let (proof, r_challenges) = prove::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, Fr::from(1u64), &[Fr::zero()]);
+        let (proof, r_challenges) =
+            prove::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, Fr::from(1u64), &[Fr::zero()]);
         assert_eq!(proof.polys.len(), 0);
         assert!(r_challenges.is_empty());
         let (ok, _, final_claim) = verify::<crate::curve::Bls12_381>(&proof);

@@ -10,66 +10,158 @@ use ark_ff::Zero;
 use ark_serialize::CanonicalSerialize;
 use blake2::Digest;
 use prover::circuit::{r1cs_to_bytes_sparse, SparseCircuit};
-use prover::commitment::{CommitmentScheme, PedersenCommitment, SisCommitment, HashCommitment};
-use prover::{
-    prove_sumcheck_compression_opt, verify_slim, verify_sumcheck_compression_opt,
-    NifsBundle, NifsFinalInstance, NifsFoldOutput, OptFlags, NIFS_PARAMS_SEED,
-    NIFS_TRANSCRIPT_PREFIX, DEFAULT_SIS_PARAM, fr_to_string, curve::{NovaCurve, ScalarField},
-};
+use prover::commitment::{CommitmentScheme, HashCommitment, PedersenCommitment, SisCommitment};
 use prover::nifs;
+use prover::{
+    curve::{NovaCurve, ScalarField},
+    fr_to_string, prove_sumcheck_compression_opt, verify_slim, verify_sumcheck_compression_opt,
+    NifsBundle, NifsFinalInstance, NifsFoldOutput, OptFlags, DEFAULT_SIS_PARAM, NIFS_PARAMS_SEED,
+    NIFS_TRANSCRIPT_PREFIX,
+};
 use std::time::Instant;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let opt_parallel = args.iter().any(|a| a == "--opt-parallel");
-    let curve = args.iter().position(|a| a == "--curve").map(|i| args[i+1].clone());
-    let commitment = args.iter().position(|a| a == "--commitment").map(|i| args[i+1].clone());
-    let state_width = args.windows(2).find(|w| w[0] == "--state-width").map(|w| {
-        w[1].parse::<usize>().expect("--state-width must be a positive integer")
-    }).unwrap_or(2);
-    let n_steps = args.windows(2).find(|w| w[0] == "--steps").map(|w| {
-        w[1].parse::<usize>().expect("--steps must be a positive integer")
-    }).unwrap_or(100);
-    let sis_param = args.windows(2).find(|w| w[0] == "--sis-param").map(|w| {
-        w[1].parse::<usize>().expect("--sis-param must be a positive integer")
-    }).unwrap_or(DEFAULT_SIS_PARAM);
+    let curve = args
+        .iter()
+        .position(|a| a == "--curve")
+        .map(|i| args[i + 1].clone());
+    let commitment = args
+        .iter()
+        .position(|a| a == "--commitment")
+        .map(|i| args[i + 1].clone());
+    let state_width = args
+        .windows(2)
+        .find(|w| w[0] == "--state-width")
+        .map(|w| {
+            w[1].parse::<usize>()
+                .expect("--state-width must be a positive integer")
+        })
+        .unwrap_or(2);
+    let n_steps = args
+        .windows(2)
+        .find(|w| w[0] == "--steps")
+        .map(|w| {
+            w[1].parse::<usize>()
+                .expect("--steps must be a positive integer")
+        })
+        .unwrap_or(100);
+    let sis_param = args
+        .windows(2)
+        .find(|w| w[0] == "--sis-param")
+        .map(|w| {
+            w[1].parse::<usize>()
+                .expect("--sis-param must be a positive integer")
+        })
+        .unwrap_or(DEFAULT_SIS_PARAM);
 
     let curve = curve.as_deref().unwrap_or("bls12-381");
     let commitment = commitment.as_deref().unwrap_or("pedersen");
     match (curve, commitment) {
-        ("bls12-381", "pedersen") => benchmark::<prover::curve::Bls12_381, PedersenCommitment<prover::curve::Bls12_381>>(state_width, n_steps, opt_parallel, sis_param),
+        ("bls12-381", "pedersen") => benchmark::<
+            prover::curve::Bls12_381,
+            PedersenCommitment<prover::curve::Bls12_381>,
+        >(state_width, n_steps, opt_parallel, sis_param),
         #[cfg(feature = "bn254")]
-        ("bn254", "pedersen") => benchmark::<prover::curve::Bn254, PedersenCommitment<prover::curve::Bn254>>(state_width, n_steps, opt_parallel, sis_param),
+        ("bn254", "pedersen") => benchmark::<
+            prover::curve::Bn254,
+            PedersenCommitment<prover::curve::Bn254>,
+        >(state_width, n_steps, opt_parallel, sis_param),
         #[cfg(feature = "pallas")]
-        ("pallas", "pedersen") => benchmark::<prover::curve::Pallas, PedersenCommitment<prover::curve::Pallas>>(state_width, n_steps, opt_parallel, sis_param),
+        ("pallas", "pedersen") => benchmark::<
+            prover::curve::Pallas,
+            PedersenCommitment<prover::curve::Pallas>,
+        >(state_width, n_steps, opt_parallel, sis_param),
         #[cfg(feature = "vesta")]
-        ("vesta", "pedersen") => benchmark::<prover::curve::Vesta, PedersenCommitment<prover::curve::Vesta>>(state_width, n_steps, opt_parallel, sis_param),
+        ("vesta", "pedersen") => benchmark::<
+            prover::curve::Vesta,
+            PedersenCommitment<prover::curve::Vesta>,
+        >(state_width, n_steps, opt_parallel, sis_param),
         #[cfg(feature = "grumpkin")]
-        ("grumpkin", "pedersen") => benchmark::<prover::curve::Grumpkin, PedersenCommitment<prover::curve::Grumpkin>>(state_width, n_steps, opt_parallel, sis_param),
+        ("grumpkin", "pedersen") => benchmark::<
+            prover::curve::Grumpkin,
+            PedersenCommitment<prover::curve::Grumpkin>,
+        >(state_width, n_steps, opt_parallel, sis_param),
         #[cfg(feature = "bandersnatch")]
-        ("bandersnatch", "pedersen") => benchmark::<prover::curve::Bandersnatch, PedersenCommitment<prover::curve::Bandersnatch>>(state_width, n_steps, opt_parallel, sis_param),
-        ("bls12-381", "sis") => benchmark::<prover::curve::Bls12_381, SisCommitment<prover::curve::Bls12_381>>(state_width, n_steps, opt_parallel, sis_param),
+        ("bandersnatch", "pedersen") => benchmark::<
+            prover::curve::Bandersnatch,
+            PedersenCommitment<prover::curve::Bandersnatch>,
+        >(state_width, n_steps, opt_parallel, sis_param),
+        ("bls12-381", "sis") => benchmark::<
+            prover::curve::Bls12_381,
+            SisCommitment<prover::curve::Bls12_381>,
+        >(state_width, n_steps, opt_parallel, sis_param),
         #[cfg(feature = "bn254")]
-        ("bn254", "sis") => benchmark::<prover::curve::Bn254, SisCommitment<prover::curve::Bn254>>(state_width, n_steps, opt_parallel, sis_param),
+        ("bn254", "sis") => benchmark::<prover::curve::Bn254, SisCommitment<prover::curve::Bn254>>(
+            state_width,
+            n_steps,
+            opt_parallel,
+            sis_param,
+        ),
         #[cfg(feature = "pallas")]
-        ("pallas", "sis") => benchmark::<prover::curve::Pallas, SisCommitment<prover::curve::Pallas>>(state_width, n_steps, opt_parallel, sis_param),
+        ("pallas", "sis") => {
+            benchmark::<prover::curve::Pallas, SisCommitment<prover::curve::Pallas>>(
+                state_width,
+                n_steps,
+                opt_parallel,
+                sis_param,
+            )
+        }
         #[cfg(feature = "vesta")]
-        ("vesta", "sis") => benchmark::<prover::curve::Vesta, SisCommitment<prover::curve::Vesta>>(state_width, n_steps, opt_parallel, sis_param),
+        ("vesta", "sis") => benchmark::<prover::curve::Vesta, SisCommitment<prover::curve::Vesta>>(
+            state_width,
+            n_steps,
+            opt_parallel,
+            sis_param,
+        ),
         #[cfg(feature = "grumpkin")]
-        ("grumpkin", "sis") => benchmark::<prover::curve::Grumpkin, SisCommitment<prover::curve::Grumpkin>>(state_width, n_steps, opt_parallel, sis_param),
+        ("grumpkin", "sis") => benchmark::<
+            prover::curve::Grumpkin,
+            SisCommitment<prover::curve::Grumpkin>,
+        >(state_width, n_steps, opt_parallel, sis_param),
         #[cfg(feature = "bandersnatch")]
-        ("bandersnatch", "sis") => benchmark::<prover::curve::Bandersnatch, SisCommitment<prover::curve::Bandersnatch>>(state_width, n_steps, opt_parallel, sis_param),
-        ("bls12-381", "hash") => benchmark::<prover::curve::Bls12_381, HashCommitment<prover::curve::Bls12_381>>(state_width, n_steps, opt_parallel, sis_param),
+        ("bandersnatch", "sis") => benchmark::<
+            prover::curve::Bandersnatch,
+            SisCommitment<prover::curve::Bandersnatch>,
+        >(state_width, n_steps, opt_parallel, sis_param),
+        ("bls12-381", "hash") => benchmark::<
+            prover::curve::Bls12_381,
+            HashCommitment<prover::curve::Bls12_381>,
+        >(state_width, n_steps, opt_parallel, sis_param),
         #[cfg(feature = "bn254")]
-        ("bn254", "hash") => benchmark::<prover::curve::Bn254, HashCommitment<prover::curve::Bn254>>(state_width, n_steps, opt_parallel, sis_param),
+        ("bn254", "hash") => {
+            benchmark::<prover::curve::Bn254, HashCommitment<prover::curve::Bn254>>(
+                state_width,
+                n_steps,
+                opt_parallel,
+                sis_param,
+            )
+        }
         #[cfg(feature = "pallas")]
-        ("pallas", "hash") => benchmark::<prover::curve::Pallas, HashCommitment<prover::curve::Pallas>>(state_width, n_steps, opt_parallel, sis_param),
+        ("pallas", "hash") => benchmark::<
+            prover::curve::Pallas,
+            HashCommitment<prover::curve::Pallas>,
+        >(state_width, n_steps, opt_parallel, sis_param),
         #[cfg(feature = "vesta")]
-        ("vesta", "hash") => benchmark::<prover::curve::Vesta, HashCommitment<prover::curve::Vesta>>(state_width, n_steps, opt_parallel, sis_param),
+        ("vesta", "hash") => {
+            benchmark::<prover::curve::Vesta, HashCommitment<prover::curve::Vesta>>(
+                state_width,
+                n_steps,
+                opt_parallel,
+                sis_param,
+            )
+        }
         #[cfg(feature = "grumpkin")]
-        ("grumpkin", "hash") => benchmark::<prover::curve::Grumpkin, HashCommitment<prover::curve::Grumpkin>>(state_width, n_steps, opt_parallel, sis_param),
+        ("grumpkin", "hash") => benchmark::<
+            prover::curve::Grumpkin,
+            HashCommitment<prover::curve::Grumpkin>,
+        >(state_width, n_steps, opt_parallel, sis_param),
         #[cfg(feature = "bandersnatch")]
-        ("bandersnatch", "hash") => benchmark::<prover::curve::Bandersnatch, HashCommitment<prover::curve::Bandersnatch>>(state_width, n_steps, opt_parallel, sis_param),
+        ("bandersnatch", "hash") => benchmark::<
+            prover::curve::Bandersnatch,
+            HashCommitment<prover::curve::Bandersnatch>,
+        >(state_width, n_steps, opt_parallel, sis_param),
         _ => {
             eprintln!("unknown curve/commitment: {curve}/{commitment} — valid curves: bls12-381, bn254, pallas, vesta, grumpkin, bandersnatch; valid commitments: pedersen, sis, hash");
             std::process::exit(2);
@@ -77,9 +169,20 @@ fn main() {
     }
 }
 
-fn benchmark<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(state_width: usize, n_steps: usize, opt_parallel: bool, sis_param: usize) {
+fn benchmark<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
+    state_width: usize,
+    n_steps: usize,
+    opt_parallel: bool,
+    sis_param: usize,
+) {
     let type_name = std::any::type_name::<CS>();
-    let scheme_name = if type_name.contains("Sis") { "sis" } else if type_name.contains("Hash") { "hash" } else { "pedersen" };
+    let scheme_name = if type_name.contains("Sis") {
+        "sis"
+    } else if type_name.contains("Hash") {
+        "hash"
+    } else {
+        "pedersen"
+    };
     println!("synthetic benchmark: state_width={state_width}, steps={n_steps}, curve={}, commitment={scheme_name}", std::any::type_name::<C>());
 
     let n_wires = 1 + 2 * state_width;
@@ -90,14 +193,16 @@ fn benchmark<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(state_
     let mut r = Vec::new();
     let mut o = Vec::new();
     for i in 0..state_width {
-        l.push(vec![((1 + state_width + i) as u32, ScalarField::<C>::from(1u64))]);
+        l.push(vec![(
+            (1 + state_width + i) as u32,
+            ScalarField::<C>::from(1u64),
+        )]);
         r.push(vec![(0u32, ScalarField::<C>::from(1u64))]);
         o.push(vec![((1 + i) as u32, ScalarField::<C>::from(1u64))]);
     }
 
-    let r1cs_bytes = r1cs_to_bytes_sparse(
-        n_wires as u32, n_pub_out, n_pub_in, n_prv_in, &l, &r, &o,
-    );
+    let r1cs_bytes =
+        r1cs_to_bytes_sparse(n_wires as u32, n_pub_out, n_pub_in, n_prv_in, &l, &r, &o);
     let mut circuit = SparseCircuit::<ScalarField<C>>::from_bytes(&r1cs_bytes)
         .expect("failed to parse synthetic r1cs");
 
@@ -114,7 +219,11 @@ fn benchmark<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(state_
         witnesses.push(w);
     }
 
-    let opt = if opt_parallel { OptFlags::PARALLEL } else { OptFlags::NONE };
+    let opt = if opt_parallel {
+        OptFlags::PARALLEL
+    } else {
+        OptFlags::NONE
+    };
     let mode = if opt_parallel { "parallel" } else { "baseline" };
     println!("mode: NIFS fold + sumcheck compress ({mode})");
 
@@ -128,10 +237,8 @@ fn benchmark<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(state_
 
     let mut rng = rand::thread_rng();
     let t = Instant::now();
-    let sc_proof = prove_sumcheck_compression_opt::<C, CS>(
-        &circuit, &folded, &mut rng, opt,
-    )
-    .unwrap_or_else(|e| panic!("failed to build sumcheck compression proof: {e}"));
+    let sc_proof = prove_sumcheck_compression_opt::<C, CS>(&circuit, &folded, &mut rng, opt)
+        .unwrap_or_else(|e| panic!("failed to build sumcheck compression proof: {e}"));
     let compress_s = t.elapsed().as_secs_f64();
     println!("sumcheck compress: {:.3} s", compress_s);
 
@@ -202,7 +309,10 @@ fn nifs_fold_in_memory<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C
         let state_in: Vec<String> = in_fr.iter().map(fr_to_string).collect();
         let state_out: Vec<String> = out_fr.iter().map(fr_to_string).collect();
         if let Some(prev) = &prev_out {
-            assert_eq!(&state_in, prev, "state_in does not chain to previous state_out");
+            assert_eq!(
+                &state_in, prev,
+                "state_in does not chain to previous state_out"
+            );
         } else {
             initial_state = state_in.clone();
             acc_hash = Some(transcript_nifs_init::<C>(in_fr));
@@ -284,7 +394,10 @@ fn transcript_nifs_init<C: NovaCurve>(initial_state: &[ScalarField<C>]) -> Vec<u
     h.finalize().to_vec()
 }
 
-fn transcript_nifs_step<C: NovaCurve, CS: CommitmentScheme>(acc: &[u8], u: &nifs::RelaxedR1csInstance<CS>) -> Vec<u8> {
+fn transcript_nifs_step<C: NovaCurve, CS: CommitmentScheme>(
+    acc: &[u8],
+    u: &nifs::RelaxedR1csInstance<CS>,
+) -> Vec<u8> {
     let mut h = blake2::Blake2b512::new();
     h.update(NIFS_TRANSCRIPT_PREFIX);
     h.update(acc);
@@ -294,6 +407,8 @@ fn transcript_nifs_step<C: NovaCurve, CS: CommitmentScheme>(acc: &[u8], u: &nifs
 
 fn commitment_hex<T: CanonicalSerialize>(value: &T) -> String {
     let mut buf = Vec::new();
-    value.serialize_compressed(&mut buf).expect("commitment serialize");
+    value
+        .serialize_compressed(&mut buf)
+        .expect("commitment serialize");
     hex::encode(buf)
 }

@@ -194,15 +194,9 @@ pub fn fold_with_opts<CS: CommitmentScheme>(
             .map(|(s, c)| s + challenge * c)
             .collect();
 
-    let w_commit3 = CS::add(
-        &u1.w_commit,
-        &CS::scalar_mul(&u2.w_commit, &challenge),
-    );
+    let w_commit3 = CS::add(&u1.w_commit, &CS::scalar_mul(&u2.w_commit, &challenge));
     let e_commit3 = CS::add(
-        &CS::add(
-            &u1.e_commit,
-            &CS::scalar_mul(&u2.e_commit, &challenge),
-        ),
+        &CS::add(&u1.e_commit, &CS::scalar_mul(&u2.e_commit, &challenge)),
         &CS::scalar_mul(&CS::commit_error(params, &e3_cross), &challenge),
     );
 
@@ -249,7 +243,8 @@ mod tests {
 
         assert_eq!(
             pedersen_commit::<Bls12_381>(&params.basis_w, &sum),
-            pedersen_commit::<Bls12_381>(&params.basis_w, &a) + pedersen_commit::<Bls12_381>(&params.basis_w, &b)
+            pedersen_commit::<Bls12_381>(&params.basis_w, &a)
+                + pedersen_commit::<Bls12_381>(&params.basis_w, &b)
         );
     }
 
@@ -284,7 +279,10 @@ mod tests {
     fn make_instance(
         params: &crate::commitment::PedersenParams<Bls12_381>,
         w: &[Fr],
-    ) -> (RelaxedR1csInstance<PedersenCommitment<Bls12_381>>, RelaxedR1csWitness<PedersenCommitment<Bls12_381>>) {
+    ) -> (
+        RelaxedR1csInstance<PedersenCommitment<Bls12_381>>,
+        RelaxedR1csWitness<PedersenCommitment<Bls12_381>>,
+    ) {
         use crate::commitment::pedersen_commit;
         let e = vec![Fr::zero(); 1];
         let u = Fr::from(1u64);
@@ -340,14 +338,22 @@ mod tests {
         );
         let challenge = Fr::from(11u64);
 
-        let (u3, w3) = fold::<PedersenCommitment<Bls12_381>>(&params, &l, &r, &o, &u1, &w1, &u2, &w2, challenge);
+        let (u3, w3) = fold::<PedersenCommitment<Bls12_381>>(
+            &params, &l, &r, &o, &u1, &w1, &u2, &w2, challenge,
+        );
 
         assert_eq!(u3.u, u1.u + challenge * u2.u);
         assert_eq!(u3.x, vec![w3.w[1], w3.w[2]]);
 
         // Commitments are consistent with the folded witness.
-        assert_eq!(u3.w_commit, pedersen_commit::<Bls12_381>(&params.basis_w, &w3.w));
-        assert_eq!(u3.e_commit, pedersen_commit::<Bls12_381>(&params.basis_e, &w3.e));
+        assert_eq!(
+            u3.w_commit,
+            pedersen_commit::<Bls12_381>(&params.basis_w, &w3.w)
+        );
+        assert_eq!(
+            u3.e_commit,
+            pedersen_commit::<Bls12_381>(&params.basis_e, &w3.e)
+        );
 
         // The folded instance satisfies the relaxed equation.
         let az = sparse_eval(&l, &w3.w);
@@ -397,7 +403,10 @@ mod tests {
         params: &crate::commitment::PedersenParams<Bls12_381>,
         w: &[Fr],
         k: usize,
-    ) -> (RelaxedR1csInstance<PedersenCommitment<Bls12_381>>, RelaxedR1csWitness<PedersenCommitment<Bls12_381>>) {
+    ) -> (
+        RelaxedR1csInstance<PedersenCommitment<Bls12_381>>,
+        RelaxedR1csWitness<PedersenCommitment<Bls12_381>>,
+    ) {
         use crate::commitment::pedersen_commit;
         let e = vec![Fr::zero(); k];
         (
@@ -422,8 +431,14 @@ mod tests {
         w: &RelaxedR1csWitness<PedersenCommitment<Bls12_381>>,
     ) {
         use crate::commitment::pedersen_commit;
-        assert_eq!(u.w_commit, pedersen_commit::<Bls12_381>(&params.basis_w, &w.w));
-        assert_eq!(u.e_commit, pedersen_commit::<Bls12_381>(&params.basis_e, &w.e));
+        assert_eq!(
+            u.w_commit,
+            pedersen_commit::<Bls12_381>(&params.basis_w, &w.w)
+        );
+        assert_eq!(
+            u.e_commit,
+            pedersen_commit::<Bls12_381>(&params.basis_e, &w.e)
+        );
         let az = sparse_eval(l, &w.w);
         let bz = sparse_eval(r, &w.w);
         let cz = sparse_eval(o, &w.w);
@@ -437,7 +452,8 @@ mod tests {
         let k = 4;
         let n_wires = 1 + 3 * k;
         let (l, r, o) = chain_r1cs(k);
-        let params = crate::commitment::PedersenParams::<Bls12_381>::from_seed(b"chain-test", n_wires, k);
+        let params =
+            crate::commitment::PedersenParams::<Bls12_381>::from_seed(b"chain-test", n_wires, k);
         let mut rng = rand::thread_rng();
 
         let base_w = random_satisfying_witness(k, &mut rng);
@@ -447,7 +463,8 @@ mod tests {
         for _ in 0..5 {
             let step_w = random_satisfying_witness(k, &mut rng);
             let (step_u, step_w) = make_instance_chain(&params, &step_w, k);
-            let challenge = fold_challenge::<PedersenCommitment<Bls12_381>>(b"chain-acc", &acc_u, &step_u);
+            let challenge =
+                fold_challenge::<PedersenCommitment<Bls12_381>>(b"chain-acc", &acc_u, &step_u);
             let (next_u, next_w) = fold::<PedersenCommitment<Bls12_381>>(
                 &params, &l, &r, &o, &acc_u, &acc_w, &step_u, &step_w, challenge,
             );
@@ -477,14 +494,16 @@ mod tests {
         let k = 4;
         let n_wires = 1 + 3 * k;
         let (l, r, o) = chain_r1cs(k);
-        let params = crate::commitment::PedersenParams::<Bls12_381>::from_seed(b"opt-test", n_wires, k);
+        let params =
+            crate::commitment::PedersenParams::<Bls12_381>::from_seed(b"opt-test", n_wires, k);
         let mut rng = rand::thread_rng();
 
         let base_w = random_satisfying_witness(k, &mut rng);
         let (acc_u, acc_w) = make_instance_chain(&params, &base_w, k);
         let step_w = random_satisfying_witness(k, &mut rng);
         let (step_u, step_w_r) = make_instance_chain(&params, &step_w, k);
-        let challenge = fold_challenge::<PedersenCommitment<Bls12_381>>(b"opt-acc", &acc_u, &step_u);
+        let challenge =
+            fold_challenge::<PedersenCommitment<Bls12_381>>(b"opt-acc", &acc_u, &step_u);
 
         let (u_seq, w_seq) = fold_with_opts::<PedersenCommitment<Bls12_381>>(
             &params, &l, &r, &o, &acc_u, &acc_w, &step_u, &step_w_r, challenge, false,

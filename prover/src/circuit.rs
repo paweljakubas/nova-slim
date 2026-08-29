@@ -51,13 +51,17 @@ impl<F: PrimeField> SparseCircuit<F> {
     }
 
     /// Load a witness from raw `.wtns` bytes.
-    pub fn load_witness_from_bytes(&mut self, data: &[u8], field_size: usize) -> Result<(), String> {
-        let witness = parse_wtns(data, field_size)
-            .map_err(|e| format!("Parse error: {:?}", e))?;
+    pub fn load_witness_from_bytes(
+        &mut self,
+        data: &[u8],
+        field_size: usize,
+    ) -> Result<(), String> {
+        let witness = parse_wtns(data, field_size).map_err(|e| format!("Parse error: {:?}", e))?;
         if witness.len() != self.n_wires as usize {
             return Err(format!(
                 "Witness length {} does not match n_wires {}",
-                witness.len(), self.n_wires
+                witness.len(),
+                self.n_wires
             ));
         }
         self.witness = witness;
@@ -167,19 +171,15 @@ fn parse_r1cs_raw<F: PrimeField>(
         rest = r;
     }
 
-    let header = header.ok_or_else(|| {
-        nom::Err::Error(nom::error::Error::new(data, nom::error::ErrorKind::Tag))
-    })?;
-    let constraints = constraints.ok_or_else(|| {
-        nom::Err::Error(nom::error::Error::new(data, nom::error::ErrorKind::Tag))
-    })?;
+    let header = header
+        .ok_or_else(|| nom::Err::Error(nom::error::Error::new(data, nom::error::ErrorKind::Tag)))?;
+    let constraints = constraints
+        .ok_or_else(|| nom::Err::Error(nom::error::Error::new(data, nom::error::ErrorKind::Tag)))?;
 
     Ok((header, constraints))
 }
 
-fn parse_constraints_section<F: PrimeField>(
-    input: &[u8],
-) -> IResult<&[u8], Vec<Constraint<F>>> {
+fn parse_constraints_section<F: PrimeField>(input: &[u8]) -> IResult<&[u8], Vec<Constraint<F>>> {
     let mut rest = input;
     let mut constraints = Vec::new();
     while !rest.is_empty() {

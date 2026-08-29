@@ -38,7 +38,12 @@ pub trait CommitmentScheme: Clone + Debug + Send + Sync + 'static {
     /// matrix).  Pedersen implementations ignore this parameter; SIS uses it
     /// to size the commitment matrix.  A value of 0 (or for Pedersen, any
     /// value) is acceptable.
-    fn params_from_seed(seed: &[u8], n_wires: usize, n_constraints: usize, m: usize) -> Self::Params;
+    fn params_from_seed(
+        seed: &[u8],
+        n_wires: usize,
+        n_constraints: usize,
+        m: usize,
+    ) -> Self::Params;
 
     /// Commit to a witness vector.
     fn commit_witness(params: &Self::Params, values: &[Self::Scalar]) -> Self::Commitment;
@@ -108,9 +113,7 @@ pub fn pedersen_commit<C: NovaCurve>(
         return C::G1Affine::zero();
     }
     debug_assert_eq!(basis.len(), values.len(), "basis/values length mismatch");
-    C::G1Affine::from(
-        G1Projective::<C>::msm(basis, values).expect("MSM length mismatch"),
-    )
+    C::G1Affine::from(G1Projective::<C>::msm(basis, values).expect("MSM length mismatch"))
 }
 
 impl<C: NovaCurve> CommitmentScheme for PedersenCommitment<C> {
@@ -118,7 +121,12 @@ impl<C: NovaCurve> CommitmentScheme for PedersenCommitment<C> {
     type Commitment = C::G1Affine;
     type Params = PedersenParams<C>;
 
-    fn params_from_seed(seed: &[u8], n_wires: usize, n_constraints: usize, _m: usize) -> Self::Params {
+    fn params_from_seed(
+        seed: &[u8],
+        n_wires: usize,
+        n_constraints: usize,
+        _m: usize,
+    ) -> Self::Params {
         PedersenParams::from_seed(seed, n_wires, n_constraints)
     }
 
@@ -222,7 +230,12 @@ impl<C: NovaCurve> CommitmentScheme for SisCommitment<C> {
     type Commitment = Vec<ScalarField<C>>;
     type Params = SisParams<C>;
 
-    fn params_from_seed(seed: &[u8], n_wires: usize, n_constraints: usize, m: usize) -> Self::Params {
+    fn params_from_seed(
+        seed: &[u8],
+        n_wires: usize,
+        n_constraints: usize,
+        m: usize,
+    ) -> Self::Params {
         SisParams::from_seed(seed, n_wires, n_constraints, m)
     }
 
@@ -284,7 +297,12 @@ impl<C: NovaCurve> HashParams<C> {
 }
 
 /// Derive a single scalar: `Blake2b(seed ‖ domain ‖ row ‖ col) → F`.
-fn derive_scalar<C: NovaCurve>(seed: &[u8], domain: &[u8], row: usize, col: usize) -> ScalarField<C> {
+fn derive_scalar<C: NovaCurve>(
+    seed: &[u8],
+    domain: &[u8],
+    row: usize,
+    col: usize,
+) -> ScalarField<C> {
     let mut h = Blake2b512::new();
     h.update(seed);
     h.update(domain);
@@ -312,7 +330,12 @@ impl<C: NovaCurve> CommitmentScheme for HashCommitment<C> {
     type Commitment = Vec<ScalarField<C>>;
     type Params = HashParams<C>;
 
-    fn params_from_seed(seed: &[u8], n_wires: usize, n_constraints: usize, m: usize) -> Self::Params {
+    fn params_from_seed(
+        seed: &[u8],
+        n_wires: usize,
+        n_constraints: usize,
+        m: usize,
+    ) -> Self::Params {
         HashParams::from_seed(seed, n_wires, n_constraints, m)
     }
 
@@ -383,7 +406,10 @@ mod tests {
             &a.iter().map(|x| *x * scalar).collect::<Vec<_>>(),
         );
 
-        assert_eq!(SisCommitment::<Bls12_381>::scalar_mul(&ca, &scalar), expected);
+        assert_eq!(
+            SisCommitment::<Bls12_381>::scalar_mul(&ca, &scalar),
+            expected
+        );
     }
 
     #[test]
@@ -439,7 +465,10 @@ mod tests {
             &a.iter().map(|x| *x * scalar).collect::<Vec<_>>(),
         );
 
-        assert_eq!(HashCommitment::<Bls12_381>::scalar_mul(&ca, &scalar), expected);
+        assert_eq!(
+            HashCommitment::<Bls12_381>::scalar_mul(&ca, &scalar),
+            expected
+        );
     }
 
     #[test]
@@ -493,7 +522,8 @@ mod tests {
     use proptest::prelude::*;
 
     fn arb_fr_vec(max_len: usize) -> impl Strategy<Value = Vec<Fr>> {
-        proptest::collection::vec(0u64..1000, 1..=max_len).prop_map(|v| v.into_iter().map(Fr::from).collect())
+        proptest::collection::vec(0u64..1000, 1..=max_len)
+            .prop_map(|v| v.into_iter().map(Fr::from).collect())
     }
 
     proptest! {

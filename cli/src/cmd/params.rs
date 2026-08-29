@@ -1,11 +1,14 @@
 //! `params` subcommand — inspect a step circuit and emit a JSON descriptor.
 
+use crate::Curve;
 use clap::Parser;
-use prover::{run_params, curve::{Bls12_381, Bn254, Pallas, Vesta, Grumpkin, Bandersnatch}};
+use prover::{
+    curve::{Bandersnatch, Bls12_381, Bn254, Grumpkin, Pallas, Vesta},
+    run_params,
+};
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
-use crate::Curve;
 
 /// Arguments for the `params` subcommand
 #[derive(Debug, Parser)]

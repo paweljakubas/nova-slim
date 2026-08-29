@@ -242,7 +242,7 @@ fn write_step_wtns(dir: &std::path::Path, idx: usize, st_in: u64, x: u64) -> u64
 // (the IVC state = (dblIn[4][3], addIn[4][3])), which `nova-slim` enforces.
 //
 // The monolithic circuits (`cardano_ed25519_ownership.r1cs`,
-    // `cardano_key_ownership.r1cs`) must be *rejected* by `nova-slim params` because
+// `cardano_key_ownership.r1cs`) must be *rejected* by `nova-slim params` because
 // their public-input width does not equal their public-output width.  The
 // step-circuit tests (compile the .circom with
 // `circom --prime bls12381 --r1cs --wasm`) skip when the compiled artifacts
@@ -830,10 +830,18 @@ fn fold_nifs_end_to_end() {
     cmd.assert().success();
 
     let bundle: prover::NifsBundle =
-        prover::NifsBundle::from_cbor::<ark_bls12_381::Fr>(&fs::read(bundle_file.path()).unwrap()).unwrap();
+        prover::NifsBundle::from_cbor::<ark_bls12_381::Fr>(&fs::read(bundle_file.path()).unwrap())
+            .unwrap();
     assert_eq!(bundle.n_steps, 3);
-    assert_eq!(bundle.initial_state, serde_json::json!(["2"]).as_array().unwrap()
-        .iter().map(|v| v.as_str().unwrap().to_string()).collect::<Vec<_>>());
+    assert_eq!(
+        bundle.initial_state,
+        serde_json::json!(["2"])
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    );
     // The final instance holds the *folded* accumulated state
     // (x_acc = x_0 + Σ r_i·x_i), not the last step's state — so just check
     // the structure and that folding is deterministic.
@@ -856,7 +864,8 @@ fn fold_nifs_end_to_end() {
         .arg(rerun.path());
     cmd.assert().success();
     let bundle2: prover::NifsBundle =
-        prover::NifsBundle::from_cbor::<ark_bls12_381::Fr>(&fs::read(rerun.path()).unwrap()).unwrap();
+        prover::NifsBundle::from_cbor::<ark_bls12_381::Fr>(&fs::read(rerun.path()).unwrap())
+            .unwrap();
     assert_eq!(bundle, bundle2);
 }
 
@@ -989,10 +998,15 @@ fn nifs_compress_verify_end_to_end() {
 
     // 4. tampering the bundle's instance must fail verification
     let mut tampered: prover::NifsBundle =
-        prover::NifsBundle::from_cbor::<ark_bls12_381::Fr>(&fs::read(bundle_file.path()).unwrap()).unwrap();
+        prover::NifsBundle::from_cbor::<ark_bls12_381::Fr>(&fs::read(bundle_file.path()).unwrap())
+            .unwrap();
     tampered.final_instance.x[0] = (state + 1).to_string();
     let tampered_file = tempfile::NamedTempFile::new().unwrap();
-    fs::write(tampered_file.path(), tampered.to_cbor::<ark_bls12_381::Fr>().unwrap()).unwrap();
+    fs::write(
+        tampered_file.path(),
+        tampered.to_cbor::<ark_bls12_381::Fr>().unwrap(),
+    )
+    .unwrap();
     let mut verify2 = Command::cargo_bin("nova-slim").unwrap();
     verify2
         .arg("verify")
@@ -1019,28 +1033,46 @@ fn bn254_compress_verify_end_to_end() {
     let bundle_file = NamedTempFile::new().unwrap();
     let mut fold = Command::cargo_bin("nova-slim").unwrap();
     fold.arg("fold")
-        .arg("--circuit").arg(r1cs.path())
-        .arg("--steps").arg(steps_dir.path())
-        .arg("--out").arg(bundle_file.path())
-        .arg("--curve").arg("bn254");
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(bundle_file.path())
+        .arg("--curve")
+        .arg("bn254");
     fold.assert().success();
 
     let proof_file = NamedTempFile::new().unwrap();
     let mut compress = Command::cargo_bin("nova-slim").unwrap();
-    compress.arg("compress").arg("--slim")
-        .arg("--circuit").arg(r1cs.path())
-        .arg("--steps").arg(steps_dir.path())
-        .arg("--out").arg(proof_file.path())
-        .arg("--curve").arg("bn254");
-    compress.assert().success()
+    compress
+        .arg("compress")
+        .arg("--slim")
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(proof_file.path())
+        .arg("--curve")
+        .arg("bn254");
+    compress
+        .assert()
+        .success()
         .stderr(predicate::str::contains("Slim proof written"));
 
     let mut verify = Command::cargo_bin("nova-slim").unwrap();
-    verify.arg("verify")
-        .arg("--ivc").arg(bundle_file.path())
-        .arg("--slim-proof").arg(proof_file.path())
-        .arg("--curve").arg("bn254");
-    verify.assert().success()
+    verify
+        .arg("verify")
+        .arg("--ivc")
+        .arg(bundle_file.path())
+        .arg("--slim-proof")
+        .arg(proof_file.path())
+        .arg("--curve")
+        .arg("bn254");
+    verify
+        .assert()
+        .success()
         .stderr(predicate::str::contains("slim sumcheck proof OK"));
 }
 
@@ -1059,27 +1091,42 @@ fn bn254_full_compress_verify_end_to_end() {
     let bundle_file = NamedTempFile::new().unwrap();
     let mut fold = Command::cargo_bin("nova-slim").unwrap();
     fold.arg("fold")
-        .arg("--circuit").arg(r1cs.path())
-        .arg("--steps").arg(steps_dir.path())
-        .arg("--out").arg(bundle_file.path())
-        .arg("--curve").arg("bn254");
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(bundle_file.path())
+        .arg("--curve")
+        .arg("bn254");
     fold.assert().success();
 
     let proof_file = NamedTempFile::new().unwrap();
     let mut compress = Command::cargo_bin("nova-slim").unwrap();
-    compress.arg("compress")
-        .arg("--circuit").arg(r1cs.path())
-        .arg("--steps").arg(steps_dir.path())
-        .arg("--out").arg(proof_file.path())
-        .arg("--curve").arg("bn254");
+    compress
+        .arg("compress")
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(proof_file.path())
+        .arg("--curve")
+        .arg("bn254");
     compress.assert().success();
 
     let mut verify = Command::cargo_bin("nova-slim").unwrap();
-    verify.arg("verify")
-        .arg("--ivc").arg(bundle_file.path())
-        .arg("--sumcheck-proof").arg(proof_file.path())
-        .arg("--curve").arg("bn254");
-    verify.assert().success()
+    verify
+        .arg("verify")
+        .arg("--ivc")
+        .arg(bundle_file.path())
+        .arg("--sumcheck-proof")
+        .arg(proof_file.path())
+        .arg("--curve")
+        .arg("bn254");
+    verify
+        .assert()
+        .success()
         .stderr(predicate::str::contains("sumcheck compression proof OK"));
 }
 
@@ -1101,49 +1148,78 @@ fn bn254_multi_constraint_cbor_roundtrip() {
     let bundle_file = NamedTempFile::new().unwrap();
     let mut fold = Command::cargo_bin("nova-slim").unwrap();
     fold.arg("fold")
-        .arg("--circuit").arg(r1cs.path())
-        .arg("--steps").arg(steps_dir.path())
-        .arg("--out").arg(bundle_file.path())
-        .arg("--curve").arg("bn254");
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(bundle_file.path())
+        .arg("--curve")
+        .arg("bn254");
     fold.assert().success();
 
     // 2. compress --slim
     let proof_file = NamedTempFile::new().unwrap();
     let mut compress = Command::cargo_bin("nova-slim").unwrap();
-    compress.arg("compress").arg("--slim")
-        .arg("--circuit").arg(r1cs.path())
-        .arg("--steps").arg(steps_dir.path())
-        .arg("--out").arg(proof_file.path())
-        .arg("--curve").arg("bn254");
-    compress.assert().success()
+    compress
+        .arg("compress")
+        .arg("--slim")
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(proof_file.path())
+        .arg("--curve")
+        .arg("bn254");
+    compress
+        .assert()
+        .success()
         .stderr(predicate::str::contains("Slim proof written"));
 
     // 3. verify slim
     let mut verify = Command::cargo_bin("nova-slim").unwrap();
-    verify.arg("verify")
-        .arg("--ivc").arg(bundle_file.path())
-        .arg("--slim-proof").arg(proof_file.path())
-        .arg("--curve").arg("bn254");
-    verify.assert().success()
+    verify
+        .arg("verify")
+        .arg("--ivc")
+        .arg(bundle_file.path())
+        .arg("--slim-proof")
+        .arg(proof_file.path())
+        .arg("--curve")
+        .arg("bn254");
+    verify
+        .assert()
+        .success()
         .stderr(predicate::str::contains("slim sumcheck proof OK"));
 
     // 4. compress (full)
     let full_proof_file = NamedTempFile::new().unwrap();
     let mut compress2 = Command::cargo_bin("nova-slim").unwrap();
-    compress2.arg("compress")
-        .arg("--circuit").arg(r1cs.path())
-        .arg("--steps").arg(steps_dir.path())
-        .arg("--out").arg(full_proof_file.path())
-        .arg("--curve").arg("bn254");
+    compress2
+        .arg("compress")
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(full_proof_file.path())
+        .arg("--curve")
+        .arg("bn254");
     compress2.assert().success();
 
     // 5. verify full
     let mut verify2 = Command::cargo_bin("nova-slim").unwrap();
-    verify2.arg("verify")
-        .arg("--ivc").arg(bundle_file.path())
-        .arg("--sumcheck-proof").arg(full_proof_file.path())
-        .arg("--curve").arg("bn254");
-    verify2.assert().success()
+    verify2
+        .arg("verify")
+        .arg("--ivc")
+        .arg(bundle_file.path())
+        .arg("--sumcheck-proof")
+        .arg(full_proof_file.path())
+        .arg("--curve")
+        .arg("bn254");
+    verify2
+        .assert()
+        .success()
         .stderr(predicate::str::contains("sumcheck compression proof OK"));
 }
 
@@ -1167,30 +1243,46 @@ fn e2e_slim_flow(
     let bundle_file = NamedTempFile::new().unwrap();
     let mut fold = Command::cargo_bin("nova-slim").unwrap();
     fold.arg("fold")
-        .arg("--curve").arg(curve)
+        .arg("--curve")
+        .arg(curve)
         .args(extra)
-        .arg("--circuit").arg(circuit)
-        .arg("--steps").arg(steps)
-        .arg("--out").arg(bundle_file.path());
+        .arg("--circuit")
+        .arg(circuit)
+        .arg("--steps")
+        .arg(steps)
+        .arg("--out")
+        .arg(bundle_file.path());
     fold.assert().success();
 
     let proof_file = NamedTempFile::new().unwrap();
     let mut compress = Command::cargo_bin("nova-slim").unwrap();
-    compress.arg("compress").arg("--slim")
-        .arg("--curve").arg(curve)
+    compress
+        .arg("compress")
+        .arg("--slim")
+        .arg("--curve")
+        .arg(curve)
         .args(extra)
-        .arg("--circuit").arg(circuit)
-        .arg("--steps").arg(steps)
-        .arg("--out").arg(proof_file.path());
+        .arg("--circuit")
+        .arg(circuit)
+        .arg("--steps")
+        .arg(steps)
+        .arg("--out")
+        .arg(proof_file.path());
     compress.assert().success();
 
     let mut verify = Command::cargo_bin("nova-slim").unwrap();
-    verify.arg("verify")
-        .arg("--curve").arg(curve)
+    verify
+        .arg("verify")
+        .arg("--curve")
+        .arg(curve)
         .args(extra)
-        .arg("--ivc").arg(bundle_file.path())
-        .arg("--slim-proof").arg(proof_file.path());
-    verify.assert().success()
+        .arg("--ivc")
+        .arg(bundle_file.path())
+        .arg("--slim-proof")
+        .arg(proof_file.path());
+    verify
+        .assert()
+        .success()
         .stderr(predicate::str::contains("slim sumcheck proof OK"));
 
     (bundle_file, proof_file)
@@ -1199,10 +1291,14 @@ fn e2e_slim_flow(
 /// Assert that a slim proof does NOT verify a bundle it was not made for.
 fn assert_slim_rejected(curve: &str, bundle: &std::path::Path, proof: &std::path::Path) {
     let mut verify = Command::cargo_bin("nova-slim").unwrap();
-    verify.arg("verify")
-        .arg("--curve").arg(curve)
-        .arg("--ivc").arg(bundle)
-        .arg("--slim-proof").arg(proof);
+    verify
+        .arg("verify")
+        .arg("--curve")
+        .arg(curve)
+        .arg("--ivc")
+        .arg(bundle)
+        .arg("--slim-proof")
+        .arg(proof);
     verify.assert().failure();
 }
 

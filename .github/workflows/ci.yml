@@ -54,6 +54,14 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: cargo fmt --check (prover)
+        working-directory: prover
+        run: cargo fmt --check
+
+      - name: cargo fmt --check (cli)
+        working-directory: cli
+        run: cargo fmt --check
+
       - name: Test prover
         working-directory: prover
         run: cargo test --release

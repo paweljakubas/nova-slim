@@ -11,7 +11,10 @@
 
 use ark_ec::AffineRepr;
 #[cfg(feature = "grumpkin")]
-use ark_ec::{models::CurveConfig, short_weierstrass::{self as sw, SWCurveConfig}};
+use ark_ec::{
+    models::CurveConfig,
+    short_weierstrass::{self as sw, SWCurveConfig},
+};
 use ark_ff::PrimeField;
 #[cfg(feature = "grumpkin")]
 use ark_ff::{Field, MontFp, Zero};
@@ -21,7 +24,9 @@ use ark_ff::{Field, MontFp, Zero};
 /// Implement this trait for any curve you want to support (e.g. BLS12-381,
 /// BN254, Pallas, secp256k1). The folding and compression logic are then
 /// completely generic over the curve.
-pub trait NovaCurve: 'static + Sized + Clone + Copy + PartialEq + Eq + std::fmt::Debug + Send + Sync {
+pub trait NovaCurve:
+    'static + Sized + Clone + Copy + PartialEq + Eq + std::fmt::Debug + Send + Sync
+{
     /// Scalar field — hosts R1CS constraints, witnesses, Fiat-Shamir
     /// challenges, and all sumcheck arithmetic.
     type ScalarField: PrimeField;
@@ -98,7 +103,7 @@ pub struct GrumpkinConfig;
 
 #[cfg(feature = "grumpkin")]
 impl CurveConfig for GrumpkinConfig {
-    type BaseField = ark_bn254::Fr;   // Grumpkin base field = BN254 scalar field
+    type BaseField = ark_bn254::Fr; // Grumpkin base field = BN254 scalar field
     type ScalarField = ark_bn254::Fq; // Grumpkin scalar field = BN254 base field
 
     const COFACTOR: &'static [u64] = &[0x1];

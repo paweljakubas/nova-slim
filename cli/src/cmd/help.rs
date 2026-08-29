@@ -29,7 +29,8 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
 }
 
 fn print_general_help() {
-    println!(r#"NovaSlim v{} — Folding + Slim On-Chain Proofs CLI
+    println!(
+        r#"NovaSlim v{} — Folding + Slim On-Chain Proofs CLI
 
 USAGE:
     nova-slim <COMMAND> [OPTIONS]
@@ -64,11 +65,14 @@ For more examples, see:
     nova-slim help commitment
     nova-slim help curve
     nova-slim help options
-"#, env!("CARGO_PKG_VERSION"));
+"#,
+        env!("CARGO_PKG_VERSION")
+    );
 }
 
 fn print_options_help() {
-    println!(r#"CLI OPTIONS
+    println!(
+        r#"CLI OPTIONS
 
 Every option below is available on the commands that need it.
 Use `nova-slim <COMMAND> --help` for the exact list for that command.
@@ -164,11 +168,13 @@ nova-slim verify \
 nova-slim fold --circuit step.r1cs --steps ./w/ --out bundle.ivc.cbor
 nova-slim compress --slim --circuit step.r1cs --steps ./w/ --out slim.cbor
 nova-slim verify --ivc bundle.ivc.cbor --slim-proof slim.cbor
-"#);
+"#
+    );
 }
 
 fn print_commitment_help() {
-    println!(r#"COMMITMENT SCHEMES
+    println!(
+        r#"COMMITMENT SCHEMES
 
 NovaSlim supports three commitment schemes, selectable at runtime via
 --commitment {{pedersen,sis,hash}}. All schemes are transparent (no trusted setup).
@@ -212,11 +218,13 @@ nova-slim fold --commitment hash --circuit step.r1cs --steps ./w/ --out bundle.i
 nova-slim fold --commitment sis --sis-param 128 --circuit step.r1cs --steps ./w/ --out b.ivc.cbor
 nova-slim compress --slim --commitment sis --sis-param 128 --circuit step.r1cs --steps ./w/ --out slim.cbor
 nova-slim verify --commitment sis --sis-param 128 --ivc b.ivc.cbor --slim-proof slim.cbor
-"#);
+"#
+    );
 }
 
 fn print_curve_help() {
-    println!(r#"ELLIPTIC CURVES
+    println!(
+        r#"ELLIPTIC CURVES
 
 NovaSlim supports six elliptic curves, selectable via --curve <NAME>.
 The curve determines the scalar field used for R1CS constraints.
@@ -274,5 +282,6 @@ NOTES
 * Real-circuit witness generation (via snarkjs) is only available for BLS12-381 and BN254.
 * For Pallas, Vesta, Grumpkin, and Bandersnatch, use synthetic benchmarks or provide
   pre-generated witness files.
-"#);
+"#
+    );
 }
