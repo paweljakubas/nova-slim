@@ -1,0 +1,122 @@
+name: CI
+
+# Runs automatically:
+#   - on PRs authored by paweljakubas (the PR author filter disables foreign
+#     PRs so they do not burn CI minutes automatically)
+#   - whenever a branch is merged into master (push to master)
+# Manually (workflow_dispatch / "Run workflow"):
+#   - to check a PR from a foreign contributor, fetch its head into this repo
+#     and run the workflow on that branch:
+#         git fetch <fork-remote> pull/<N>/head
+#         git push origin FETCH_HEAD:refs/heads/pr-<N>
+#     then open "Actions -> CI -> Run workflow" and select branch pr-<N>.
+#     The jobs gated below also pass on workflow_dispatch, so the same checks
+#     (Rust, Aiken, CIP-197 equivalence) run against that branch.
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# Run the checks only when this is (a) a push to master, (b) a manual
+# dispatch, or (c) a PR opened/edited by paweljakubas.
+defaults:
+  run:
+    shell: bash
+    working-directory: ${{ github.workspace }}
+
+env:
+  CARGO_TERM_COLOR: always
+  AIKEN_VERSION: v1.1.19
+  CIRCOM_VERSION: v2.2.3
+
+jobs:
+  rust-tests:
+    name: Rust tests (prover + cli)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.pull_request.user.login == 'paweljakubas'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Test prover
+        working-directory: prover
+        run: cargo test --release
+
+      - name: Test cli
+        working-directory: cli
+        run: cargo test --release
+
+  aiken:
+    name: Aiken (nova-slim-verifier)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.pull_request.user.login == 'paweljakubas'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install aiken ${{ env.AIKEN_VERSION }}
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSLo /tmp/aiken.tgz "https://github.com/aiken-lang/aiken/releases/download/${{ env.AIKEN_VERSION }}/aiken-x86_64-unknown-linux-musl.tar.gz"
+          tar -xzf /tmp/aiken.tgz -C "$HOME/.local/bin"
+          chmod +x "$HOME/.local/bin/aiken"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          aiken --version
+
+      - name: aiken check
+        working-directory: cardano/nova-slim-verifier
+        run: aiken check
+
+      - name: aiken fmt --check
+        working-directory: cardano/nova-slim-verifier
+        run: aiken fmt --check
+
+      - name: aiken build
+        working-directory: cardano/nova-slim-verifier
+        run: aiken build
+
+  cip197:
+    name: CIP-197 equivalence
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.pull_request.user.login == 'paweljakubas'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install circom ${{ env.CIRCOM_VERSION }}
+        run: |
+          curl -fsSLo /tmp/circom "https://github.com/iden3/circom/releases/download/${{ env.CIRCOM_VERSION }}/circom-linux-amd64"
+          sudo install -m 0755 /tmp/circom /usr/local/bin/circom
+          circom --version
+
+      - name: Install snarkjs
+        run: npm install --global snarkjs
+
+      - name: Build nova-slim (release)
+        working-directory: cli
+        run: cargo build --release
+
+      - name: Run equivalence script
+        run: bash cardano/cip197/scripts/e2e_equivalence.sh 5
