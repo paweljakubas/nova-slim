@@ -41,34 +41,41 @@ aiken build
 
 ## Test Results
 
+`aiken check` runs 7 unit tests and 3 property-based tests (100 random cases
+each, driven by [`aiken-lang/fuzz`](https://github.com/aiken-lang/fuzz)):
+
 ```
-   Testing ...
-{
-  "summary": {
-    "total": 2,
-    "passed": 2,
-    "failed": 0
-  },
-  "modules": [
-    {
-      "name": "tests",
-      "summary": { "total": 2, "passed": 2, "failed": 0 },
-      "tests": [
-        {
-          "title": "e2e_4_rounds",
-          "status": "pass",
-          "execution_units": { "mem": 376920, "cpu": 141185485 }
-        },
-        {
-          "title": "mismatch_counts_fails",
-          "status": "pass",
-          "execution_units": { "mem": 25041, "cpu": 6508150 }
-        }
-      ]
-    }
-  ]
-}
+   Collecting all tests scenarios across all modules
+      Testing ...
+    ┍━ tests ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    │ PASS [mem: 389.34 K, cpu: 144.89 M] e2e_4_rounds
+    │ PASS [mem:  16.51 K, cpu:   4.17 M] empty_proof_rejected
+    │ PASS [mem:  16.12 K, cpu:   3.99 M] challenges_without_rounds_rejected
+    │ PASS [mem:  25.74 K, cpu:   6.69 M] mismatch_counts_fails
+    │ PASS [mem:  51.82 K, cpu:  26.97 M] derive_challenges_is_deterministic
+    │ PASS [mem:  52.42 K, cpu:  27.15 M] derive_challenges_depends_on_rounds
+    │ PASS [mem:  52.42 K, cpu:  27.15 M] derive_challenges_depends_on_public_input
+    │ PASS [after 100 tests] valid_transcript_always_verifies
+    │ PASS [after 100 tests] tampered_round_poly_fails
+    │ PASS [after 100 tests] tampered_final_value_fails
+    ┕━━━━━━━━━━━━━━━━━━━━━ with --seed=<seed> → 10 tests | 10 passed | 0 failed
+      Summary 307 checks, 0 errors, 0 warnings
 ```
+
+What they cover:
+
+- **`e2e_4_rounds`** — an end-to-end happy path: `verify_slim` accepts a
+  well-formed 4-round proof whose challenges come from `derive_challenges`.
+- **`empty_proof_rejected`** / **`challenges_without_rounds_rejected`** /
+  **`mismatch_counts_fails`** — degenerate proofs (no rounds, or rounds vs
+  challenges count mismatch) are rejected.
+- **`derive_challenges_*`** — challenge derivation is deterministic, and
+  depends on both the round polynomials and the public input.
+- **`valid_transcript_always_verifies`** — for *any* randomly generated
+  transcript that is internally consistent, `verify_slim` accepts it.
+- **`tampered_round_poly_fails`** / **`tampered_final_value_fails`** — a
+  single one-line deviation in a round polynomial or in `er_r` is enough for
+  `verify_slim` to reject the proof.
 
 ## Validator API
 
@@ -78,7 +85,7 @@ The validator checks a `spend` redemption where:
 
 ```aiken
 validator nova_slim {
-  spend(datum: Option<NifsBundle>, redeemer: SlimProof, _utxo: Data, _self: Data) {
+  spend(datum: Option<NifsBundle>, redeemer: SlimProof, _utxo: OutputReference, _self: Transaction) {
     when datum is {
       Some(bundle) -> verify_slim(bundle, redeemer)
       None -> False
@@ -111,10 +118,14 @@ validator nova_slim {
 ## How it works
 
 1. **Round verification**: For each round *i*, check that
-   `hᵢ(0) + hᵢ(1) == hᵢ₋₁(rᵢ₋₁)`.
+   `hᵢ(0) + hᵢ(1) == hᵢ₋₁(rᵢ₋₁)`. At least one round is required — degenerate
+   proofs with zero rounds are rejected.
 
-2. **Fiat-Shamir**: Re-derive challenges from the NIFS bundle and round
-   polynomials using BLAKE2b-256, and verify they match the proof.
+2. **Fiat-Shamir**: Challenges are taken from the proof itself. The
+   `derive_challenges` function (exposing the prover's BLAKE2b-256 Fiat-Shamir
+   derivation) is provided for **off-chain checkers/auditors**. Re-deriving
+   and enforcing the challenges inside the on-chain validator is planned but
+   **not yet implemented** — today the validator trusts the proof's challenges.
 
 3. **Final evaluation**: Check that
    `azᵣ · bzᵣ - u · czᵣ - eᵣ == hₖ(rₖ)`.
@@ -142,16 +153,11 @@ produced with any of NovaSlim's three commitment schemes:
 aiken build
 ```
 
-2. The blueprint is written to `plutus.json`.  Apply parameters
-   using `aiken apply`:
-```bash
-aiken apply plutus.json \
-  --parameter-bytes "<hex-encoded public input>" \
-  > validator.uplc
-```
+2. The blueprint is written to `plutus.json` (the validator has no parameters,
+   so no `aiken apply` step is needed).
 
-3. Submit the UPLC to the Cardano chain via `cardano-cli` or your preferred
-   wallet integration.
+3. Submit the compiled validator (UPLC) to the Cardano chain via `cardano-cli`
+   or your preferred wallet integration.
 
 ## Integration with NovaSlim
 
@@ -164,17 +170,17 @@ let slim_proof_bytes = nova_slim_prover.generate_slim_proof(...);
 // Serialize to Aiken's expected format (CBOR map)
 ```
 
-A helper script for this conversion will be provided in the NovaSlim CLI
-(`nova-slim export --format aiken`).
+A `nova-slim export --format aiken` conversion command is **planned** for the
+NovaSlim CLI but not yet implemented.
 
 ## Project structure
 
 ```
 .
-├── aiken.toml              # Project manifest
+├── aiken.toml              # Project manifest (aiken-lang/stdlib, aiken-lang/fuzz)
 ├── lib/
 │   ├── verifier.ak         # Core sumcheck verification library
-│   └── tests.ak            # Unit and e2e tests
+│   └── tests.ak            # Unit and property-based tests
 ├── validators/
 │   └── nova_slim.ak        # On-chain validator script
 └── README.md               # This file

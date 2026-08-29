@@ -1,11 +1,20 @@
-use cardano/transaction.{Transaction, OutputReference}
+use cardano/transaction.{OutputReference, Transaction}
 use verifier.{NifsBundle, SlimProof, verify_slim}
 
 validator nova_slim {
-  spend(datum: Option<NifsBundle>, redeemer: SlimProof, _utxo: OutputReference, _self: Transaction) {
+  spend(
+    datum: Option<NifsBundle>,
+    redeemer: SlimProof,
+    _utxo: OutputReference,
+    _self: Transaction,
+  ) {
     when datum is {
       Some(bundle) -> verify_slim(bundle, redeemer)
       None -> False
     }
+  }
+
+  else(_) {
+    fail
   }
 }

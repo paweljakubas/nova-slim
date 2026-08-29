@@ -14,6 +14,27 @@ should be used **at your own risk**. While the author strives to make it
 correct to the best of his knowledge and skill, no warranty of correctness
 or security is provided.
 
+## Overview
+
+A long computation is decomposed into `N` **identical step circuits** forming a
+chain, where each step proves `state_{i+1} = f(step_i, state_i)`. The pipeline
+has four phases:
+
+1. **`params`** — inspect a step circuit and validate the IVC invariant
+   (`n_pub_in == n_pub_out`);
+2. **`fold`** — NIFS-fold all step witnesses into one Relaxed-R1CS accumulator,
+   producing an **O(1) bundle** independent of `N`;
+3. **`compress`** — sumcheck-compress the accumulator into a single
+   constant-size proof (`--slim` strips the commitment openings for the
+   on-chain variant, leaving ~0.4–2.5 KiB);
+4. **`verify`** — verify the bundle against the proof using native field
+   operations only (~0.2 ms for slim proofs).
+
+Everything is **transparent**: no trusted setup, no pairings, and no proving or
+verifying key — only the step circuit and its witnesses are needed. The fold is
+off-circuit (the prover runs it), so no curve cycle and no in-circuit
+verification are required.
+
 ```
 nova-slim params   → inspect a step circuit (n_pub_in must equal n_pub_out)
 nova-slim fold     → NIFS-fold N step witnesses into one O(1) bundle

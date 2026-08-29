@@ -1,4 +1,4 @@
-# nova-slim-cli
+# cli
 
 Command-line interface for NovaSlim — curve-agnostic IVC folding with slim
 on-chain proofs. Supports BLS12-381 (Cardano), BN254 (Ethereum), Pallas (Zcash), Vesta, Grumpkin, and Bandersnatch.
@@ -32,13 +32,13 @@ nova-slim params --curve bls12-381 --circuit step_circuit.r1cs
 nova-slim fold --curve bls12-381 --circuit step_circuit.r1cs \
   --steps ./step_witnesses/ --out bundle.ivc.cbor
 
-# 3. Compress into a slim on-chain proof (~2.5 KiB)
+# 3. Compress into a slim on-chain proof (~0.4–2.5 KiB)
 nova-slim compress --slim --curve bls12-381 --circuit step_circuit.r1cs \
   --steps ./step_witnesses/ --out slim.proof.cbor
 
 # 4. Verify (no verifying key needed)
 nova-slim verify --curve bls12-381 --ivc bundle.ivc.cbor --slim-proof slim.proof.cbor
-# → Verified N steps: slim sumcheck proof OK
+# → Verified N steps: slim sumcheck proof OK, state chain OK
 ```
 
 The `--slim` flag strips HashPC opening proofs from the sumcheck bundle. The
@@ -83,7 +83,15 @@ was built from, e.g. `nova-slim 0.2.0 (5d6761b)`.
 Top-level help:
 
 ```
-NovaSlim — folding + slim on-chain proofs CLI
+A command-line interface for NovaSlim: off-circuit NIFS folding with transparent
+sumcheck compression and slim on-chain proofs.
+
+A long computation is decomposed into N identical step circuits. The steps are folded into
+one Relaxed-R1CS instance (`fold`), compressed into a constant-size sumcheck proof
+(`compress --slim`), and verified with native field operations only — no pairings, no
+trusted setup (`verify --slim-proof`).
+
+The core IVC logic lives in the `prover` crate.
 
 Usage: nova-slim <COMMAND>
 
@@ -92,8 +100,18 @@ Commands:
   fold      Fold step witnesses into a single Relaxed-R1CS instance
   compress  Compress a NIFS bundle into a single constant-size proof
   verify    Verify a folded NIFS bundle against its compression proof
-  help      Print this message or the help of the given subcommand(s)
+  help      Show detailed help for commitments, curves, or general usage
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
 ```
+
+Run `nova-slim help commitment` and `nova-slim help curve` for detailed
+examples of the commitment schemes and supported curves.
 
 ### `params` — inspect a step circuit
 

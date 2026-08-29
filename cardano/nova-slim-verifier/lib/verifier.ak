@@ -8,8 +8,8 @@
 //// raw Int operations with explicit modular reduction.
 
 use aiken/builtin
-use aiken/crypto.{blake2b_256}
 use aiken/collection/list
+use aiken/crypto.{blake2b_256}
 use aiken/primitive/bytearray
 
 /// BLS12-381 scalar field prime.
@@ -19,9 +19,9 @@ const field_prime =
 /// ---------------------------------------------------------------------------
 /// Types
 /// ---------------------------------------------------------------------------
-
 /// A scalar field element, stored as a raw Int (always kept in [0, field_prime)).
-pub type Scalar = Int
+pub type Scalar =
+  Int
 
 /// One sumcheck round: a degree-2 univariate polynomial represented by its
 /// evaluations at X = 0, 1, 2.
@@ -53,7 +53,6 @@ pub type NifsBundle {
 /// ---------------------------------------------------------------------------
 /// Field arithmetic
 /// ---------------------------------------------------------------------------
-
 fn add_mod(a: Int, b: Int) -> Int {
   builtin.mod_integer(a + b, field_prime)
 }
@@ -64,10 +63,6 @@ fn mul_mod(a: Int, b: Int) -> Int {
 
 fn neg_mod(a: Int) -> Int {
   builtin.mod_integer(-a, field_prime)
-}
-
-fn sub_mod(a: Int, b: Int) -> Int {
-  builtin.mod_integer(a - b, field_prime)
 }
 
 fn inv2() -> Int {
@@ -90,11 +85,15 @@ fn scalar_one() -> Int {
 /// ---------------------------------------------------------------------------
 /// Sumcheck verification
 /// ---------------------------------------------------------------------------
-
 /// Verify the slim proof against the NIFS bundle.
 pub fn verify_slim(_bundle: NifsBundle, proof: SlimProof) -> Bool {
+  // Reject degenerate proofs: a valid sumcheck needs at least one round and
+  // as many challenges as rounds.  Without the non-empty guard, a proof with
+  // empty rounds and zeroed scalars would trivially pass.
   let counts_ok =
-    list.length(proof.rounds) == list.length(proof.challenges)
+    list.length(proof.rounds) == list.length(proof.challenges) && list.length(
+      proof.rounds,
+    ) >= 1
 
   // Verify each round: h_i(0) + h_i(1) == previous_claim.
   let rounds_ok = verify_all_rounds(proof.rounds, proof.challenges)
@@ -106,14 +105,13 @@ pub fn verify_slim(_bundle: NifsBundle, proof: SlimProof) -> Bool {
 }
 
 /// Verify all rounds using list folding.
-fn verify_all_rounds(
-  rounds: List<RoundPoly>,
-  challenges: List<Scalar>,
-) -> Bool {
+fn verify_all_rounds(rounds: List<RoundPoly>, challenges: List<Scalar>) -> Bool {
   let round_checks =
-    list.map2(rounds, challenges, fn(r, c) {
-      (r.eval_at_0, r.eval_at_1, r.eval_at_2, c)
-    })
+    list.map2(
+      rounds,
+      challenges,
+      fn(r, c) { (r.eval_at_0, r.eval_at_1, r.eval_at_2, c) },
+    )
 
   do_verify_rounds(round_checks, scalar_zero())
 }
@@ -134,7 +132,11 @@ fn do_verify_rounds(
 
 /// Evaluate degree-2 polynomial at x using Lagrange interpolation on {0,1,2}.
 fn eval_poly(c0: Scalar, c1: Scalar, c2: Scalar, x: Scalar) -> Scalar {
-  let t0 = mul_mod(add_mod(x, neg_mod(scalar_one())), add_mod(x, neg_mod(add_mod(scalar_one(), scalar_one()))))
+  let t0 =
+    mul_mod(
+      add_mod(x, neg_mod(scalar_one())),
+      add_mod(x, neg_mod(add_mod(scalar_one(), scalar_one()))),
+    )
   let term0 = mul_mod(c0, mul_mod(t0, inv2()))
 
   let t1 = mul_mod(x, add_mod(add_mod(scalar_one(), scalar_one()), neg_mod(x)))
@@ -176,7 +178,6 @@ fn verify_final(proof: SlimProof) -> Bool {
 /// ---------------------------------------------------------------------------
 /// Fiat-Shamir challenge derivation
 /// ---------------------------------------------------------------------------
-
 /// Derive challenges from the NIFS bundle and round polynomials.
 pub fn derive_challenges(
   bundle: NifsBundle,
