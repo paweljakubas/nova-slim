@@ -7,6 +7,13 @@ no trusted setup, and sub-millisecond verification**.
 
 Supports **BLS12-381** (Cardano), **BN254** (Ethereum), **Pallas** (Zcash), and **Vesta**. Three commitment schemes — **Pedersen** (fast, classical), **SIS** (faster folding, quantum-ready), and **Hash** (zero-param, on-the-fly derivation, post-quantum) — are selectable at runtime via `--commitment {pedersen,sis,hash}`.
 
+## Disclaimer
+
+This project is in an **experimental stage**. It has **not been audited** and
+should be used **at your own risk**. While the author strives to make it
+correct to the best of his knowledge and skill, no warranty of correctness
+or security is provided.
+
 ```
 nova-slim params   → inspect a step circuit (n_pub_in must equal n_pub_out)
 nova-slim fold     → NIFS-fold N step witnesses into one O(1) bundle
