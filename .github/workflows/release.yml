@@ -81,14 +81,13 @@ jobs:
           cat /tmp/release-body.md
 
       - name: Delete stale releases for this tag
-        run: >
-          releases=$(gh api --paginate
-            -H "Accept: application/vnd.github+json"
-            "repos/${{ github.repository }}/releases"
-            --jq '.[] | select(.tag_name == "${{ env.TAG }}") | .id');
-          for id in $releases; do
-            gh api -X DELETE "repos/${{ github.repository }}/releases/$id";
-          done
+        run: |
+          releases=$(gh api --paginate -H "Accept: application/vnd.github+json" "repos/${{ github.repository }}/releases" --jq '.[] | select(.tag_name == "${{ env.TAG }}") | .id')
+          if [ -n "$releases" ]; then
+            for id in $releases; do
+              gh api -X DELETE "repos/${{ github.repository }}/releases/$id"
+            done
+          fi
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
 
