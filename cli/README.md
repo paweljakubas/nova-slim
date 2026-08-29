@@ -1,7 +1,7 @@
 # nova-slim-cli
 
 Command-line interface for NovaSlim — curve-agnostic IVC folding with slim
-on-chain proofs. Supports BLS12-381 (Cardano), BN254 (Ethereum), Pallas (Zcash), and Vesta.
+on-chain proofs. Supports BLS12-381 (Cardano), BN254 (Ethereum), Pallas (Zcash), Vesta, Grumpkin, and Bandersnatch.
 
 A long computation is split into `N` identical step circuits, each proving
 `state_{i+1} = f(step_i, state_i)`. The CLI covers one flow:

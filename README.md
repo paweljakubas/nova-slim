@@ -5,7 +5,7 @@ NIFS-fold a chain of identical step circuits into one accumulator, compress
 with a sumcheck argument, and verify a **~0.4–2.5 KiB** proof with **no pairing,
 no trusted setup, and sub-millisecond verification**.
 
-Supports **BLS12-381** (Cardano), **BN254** (Ethereum), **Pallas** (Zcash), and **Vesta**. Three commitment schemes — **Pedersen** (fast, classical), **SIS** (faster folding, quantum-ready), and **Hash** (zero-param, on-the-fly derivation, post-quantum) — are selectable at runtime via `--commitment {pedersen,sis,hash}`.
+Supports **BLS12-381** (Cardano), **BN254** (Ethereum), **Pallas** (Zcash), **Vesta**, **Grumpkin**, and **Bandersnatch**. Three commitment schemes — **Pedersen** (fast, classical), **SIS** (faster folding, quantum-ready), and **Hash** (zero-param, on-the-fly derivation, post-quantum) — are selectable at runtime via `--commitment {pedersen,sis,hash}`.
 
 ## Disclaimer
 
@@ -78,6 +78,7 @@ Step circuits are bundled in `circom/`:
 - `Sha256Step/` — SHA-256 hash chain (~29K–59K constraints, small/medium/big)
 - `VRF/` — VRF ladder step (~9 constraints)
 - `PoseidonMerkle/` — Merkle path verification (~639 constraints)
+- `PoseidonPreimage/` — Poseidon hash pre-image (secret → public commitment)
 
 ## Layout
 
@@ -85,7 +86,7 @@ Step circuits are bundled in `circom/`:
 |---|---|
 | `prover/` | Core library: R1CS loading, NIFS folding, sumcheck compression, slim proofs ([README](prover/README.md)) |
 | `cli/` | The `nova-slim` CLI ([README](cli/README.md)) |
-| `circom/` | Step circuits (Ed25519, SHA-256, VRF, Poseidon) |
+| `circom/` | Step circuits: Ed25519, SHA-256, VRF, Poseidon (sponge, Merkle, pre-image) |
 | `benchmarks/` | Benchmark harness over real circom circuits |
 | `cardano/` | CIP-197 PoC and Aiken on-chain verifier ([README](cardano/cip197/README.md)) |
 | `docs/article.md` | NovaSlim paper draft |
@@ -100,30 +101,40 @@ Prerequisites: Rust, [circom](https://github.com/iden3/circom) (only if the
 cargo build --release --manifest-path cli/Cargo.toml
 NOVA=cli/target/release/nova-slim
 
-# 2. Compile the step circuit (once; pre-compiled .r1cs is shipped in circom/)
-#    Choose the curve: bls12381, bn128, pallas, or vesta
+# 2. Compile the step circuit (.r1cs is git-ignored, so it must be compiled
+#    from source; the .wasm witness calculator is needed for step 3)
+#    circom prime ↔ CLI curve:
+#      bls12381 ↔ bls12-381   bn128 ↔ bn254   pallas ↔ pallas   vesta ↔ vesta
 cd circom/Ed25519Verify
 circom --prime bn128 -l node_modules/circomlib/circuits \
     ed25519_verify_nova.circom --r1cs --wasm --sym
 cd -
 
-# 3. Generate chained step witnesses (see benchmarks/gen_step_witnesses.py)
+# 3. Generate 255 chained step witnesses (snarkjs-driven, resumable):
+#    python3 benchmarks/gen_step_witnesses.py --wasm \
+#      circom/Ed25519Verify/ed25519_verify_nova_js/ed25519_verify_nova.wasm \
+#      --initial <input.json> --outputs <in_sig=out_sig,...> \
+#      --steps 255 --dir <witness-dir>
 
 # 4. Inspect the step circuit — must report n_pub_in == n_pub_out == 24
 $NOVA params --curve bn254 --circuit circom/Ed25519Verify/ed25519_verify_nova.r1cs
 
-# 5. Fold 255 steps into one transparent bundle (~2 min)
+# 5. Fold 255 steps into one transparent bundle (~1–2 min)
 #    Use --commitment pedersen (default), --commitment sis (lattice-based,
 #    faster folding), or --commitment hash (zero-param, on-the-fly derivation)
 $NOVA fold --curve bn254 --circuit circom/Ed25519Verify/ed25519_verify_nova.r1cs \
     --steps <witness-dir> --out ed25519.ivc.cbor
 
 # 6a. On-chain path: slim proof (~1.5 KiB CBOR for Ed25519, no openings)
-$NOVA compress --slim --curve bn254 --circuit ... --steps <witness-dir> --out ed25519_slim.proof.cbor
+$NOVA compress --slim --curve bn254 \
+    --circuit circom/Ed25519Verify/ed25519_verify_nova.r1cs \
+    --steps <witness-dir> --out ed25519_slim.proof.cbor
 $NOVA verify --curve bn254 --ivc ed25519.ivc.cbor --slim-proof ed25519_slim.proof.cbor
 
 # 6b. Audit path: full sumcheck proof (~240 KiB, includes HashPC openings)
-$NOVA compress --curve bn254 --circuit ... --steps <witness-dir> --out ed25519_full.proof.cbor
+$NOVA compress --curve bn254 \
+    --circuit circom/Ed25519Verify/ed25519_verify_nova.r1cs \
+    --steps <witness-dir> --out ed25519_full.proof.cbor
 $NOVA verify --curve bn254 --ivc ed25519.ivc.cbor --sumcheck-proof ed25519_full.proof.cbor
 ```
 
@@ -133,10 +144,10 @@ $NOVA verify --curve bn254 --ivc ed25519.ivc.cbor --sumcheck-proof ed25519_full.
 <summary><b>How to run the test suites</b></summary>
 
 ```bash
-# Library tests (70 tests)
+# Library tests (97 tests)
 cargo test --release --manifest-path prover/Cargo.toml
 
-# CLI integration tests (15 tests; includes real-circuit end-to-end flows)
+# CLI integration tests (24 tests; includes real-circuit end-to-end flows)
 cargo test --release --manifest-path cli/Cargo.toml
 ```
 
@@ -154,134 +165,119 @@ Notes:
 <details>
 <summary><b>Measured numbers and how to reproduce them</b></summary>
 
-We provide two kinds of benchmarks:
+All numbers below come from a single machine (16-core CPU, 64 GiB RAM) with
+release builds, and are documented in detail in
+[the paper](docs/article.md) (§6.3). Two harnesses are provided:
 
-| Kind | What it measures | Curves available |
-|---|---|---|
-| **Traditional** (real circom circuits) | Full end-to-end flow: compile → generate witnesses with snarkjs → fold → compress → verify | **BLS12-381, BN254** |
-| **Synthetic** (in-memory random witnesses) | Fold → compress → verify only (no snarkjs) | **BLS12-381, BN254, Pallas, Vesta** |
+1. **`benchmark_nova`** — real circom step circuits (`.r1cs` compiled from
+   `circom/`, chained witnesses via snarkjs). Supports BLS12-381, BN254,
+   Grumpkin, Pallas, Vesta.
+2. **`benchmark_synthetic`** — random in-memory witnesses, no circom/snarkjs.
+   Supports all six curves; Bandersnatch is available here only (circom has no
+   Bandersnatch scalar-field prime).
 
-### Traditional benchmarks (real circuits)
+### How to run
 
-These use the bundled `circom/` step circuits and snarkjs for witness
-generation. Pallas and Vesta are **not available** here because snarkjs does
-not yet support pasta-curve witness generation.
+1. **All circuit families in one shot** (compiles circuits if needed, generates
+   or resumes witnesses, runs baseline + `--opt-parallel` passes, writes raw
+   logs and a markdown summary under `benchmarks/results/`):
 
-Latest run (2026-08-24, 4-core desktop, release build, 255 chained steps):
+   ```bash
+   python3 benchmarks/run_benchmarks.py                     # all families, default steps
+   python3 benchmarks/run_benchmarks.py --curve grumpkin    # filter by curve
+   python3 benchmarks/run_benchmarks.py --family ed25519_verify_nova_bls12_381
+   python3 benchmarks/run_benchmarks.py --steps 32 --commitment sis --sis-param 4
+   ```
 
-| Step circuit | Curve | Commitment | Constraints | Steps | Fold total | Fold/step | Compress | Verify (full) | Verify (slim) | Slim proof | Bundle |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| `ed25519_verify_nova` | bls12-381 | Pedersen | 7,724 | 255 | 138.5 / 145.7 s | 543 / 571 ms | 25.44 / 24.30 s | 28.59 / 25.49 s | **0.7 ms** | **~1.5 KiB** | 2.2 KiB |
-| `ed25519_verify_nova` | bn254 | Pedersen | 7,724 | 255 | 74.2 / 66.7 s | 347 / 312 ms | 12.23 / 11.14 s | 12.22 / 11.53 s | **0.6 ms** | **~1.5 KiB** | 2.2 KiB |
-| `ed25519_verify_nova` | bn254 | **SIS** | 7,724 | 214 | 8.5 s | **39.9 ms** | 14.2 s | **1.1 s** | **0.6 ms** | **~1.5 KiB** | 2.4 KiB |
-| `poseidon_sponge_nova` | bn254 | Pedersen | 633 | 255 | 24.8 s | 97 ms | 1.13 s | 1.09 s | **0.3 ms** | **~0.6 KiB** | 0.3 KiB |
-| `sha256_step_nova` | bls12-381 | Pedersen | 31,584 | 32 | 204.9 s | 6,403 ms | 90.73 s | 90.62 s | **0.6 ms** | **~0.8 KiB** | 2.5 KiB |
-| `sha256_step_big_nova` | bls12-381 | Pedersen | 58,973 | 32 | — | — | — | — | **~1.0 ms** | **~2.5 KiB** | 2.5 KiB |
-| `vrf_verify_nova` | bn254 | Pedersen | 9 | 254 | 2.1 s | 8.4 ms | 0.02 s | 0.03 s | **0.1 ms** | **~0.4 KiB** | 0.7 KiB |
-| `vrf_verify_nova` | bn254 | **SIS** | 9 | 254 | **0.04 s** | **0.17 ms** | 0.03 s | 0.002 s | **0.2 ms** | **~0.4 KiB** | 0.9 KiB |
+2. **One real circuit directly** (`benchmark_nova`; needs the compiled `.r1cs`
+   and a directory of step witnesses):
 
-*Each cell shows baseline / `--opt-parallel` where two values are shown.
-The slim proof is constant in step count and step width. Artifacts use a
-compact CBOR encoding (field elements as 32-byte little-endian values,
-sizes shown for CBOR; the legacy decimal/hex JSON encoding is ~2.6× larger).*
+   ```bash
+   cargo run --release --manifest-path prover/Cargo.toml --bin benchmark_nova -- \
+     --curve bls12-381 --commitment pedersen \
+     --circuit circom/Ed25519Verify/ed25519_verify_nova.r1cs --steps /tmp/steps/
+   ```
 
-**SIS (Ajtai-style lattice commitment)** folds **~8× faster** than Pedersen
-because it replaces elliptic-curve MSM with simple matrix-vector multiplication
-over the scalar field. The bundle grows slightly (~200 B) because each SIS
-commitment is a short vector (`m = 4` field elements) rather than a single
-curve point. The slim proof is **independent of the commitment scheme** — the
-same ~0.4 KiB payload works for Pedersen, SIS, and Hash.
+3. **Synthetic circuit on any curve** (`benchmark_synthetic`; no snarkjs):
 
-**Hash (on-the-fly Blake2b derivation)** stores only a seed in params (no
-matrix, no basis points) and re-derives commitment coefficients via Blake2b
-per commitment. This trades O(m·n) storage for O(m·n) computation, making
-it the simplest scheme to audit: the entire security argument reduces to
-Blake2b collision resistance. The bundle and slim proof are the same size as
-SIS. Hash folds ~10× slower than SIS and ~1.7× slower than Pedersen because
-it recomputes coefficients on every commitment.
+   ```bash
+   cargo run --release --manifest-path prover/Cargo.toml --bin benchmark_synthetic -- \
+     --curve bandersnatch --state-width 24 --steps 255
+   ```
 
-**SIS security scaling (`--sis-param`).** The SIS output dimension `m` is
-configurable via `--sis-param <M>`. Scaling `m` from 4 to 128 provides 128-bit
-post-quantum security at the cost of ~8× slower folding and ~5× larger bundles.
-The slim proof remains constant because it contains only the sumcheck data:
+### Measured results
 
-| SIS m | Fold/step | Verify (full) | Slim proof | Bundle | PQ security |
+**1. Proof sizes.** The slim proof depends only on `k = log2 n_constraints` —
+not on step count nor step width:
+
+| Circuit | Constr. | NIFS bundle | Full sumcheck | Slim proof | Slim ver. |
 |---|---|---|---|---|---|
-| 4 (POC) | 0.83 ms | 0.007 s | **0.4 KiB** | 2.1 KiB | ~4-bit |
-| **128 (target)** | 5.40 ms | 0.20 s | **0.4 KiB** | 9.8 KiB | **128-bit** |
+| `vrf_verify_nova` | 9 | 0.7 KiB | ~1.6 KiB | **~0.4 KiB** | **0.2 ms** |
+| `poseidon_sponge_nova` | 633 | 0.4 KiB | ~31 KiB | **~0.6 KiB** | **0.4 ms** |
+| `poseidon_merkle_nova` | 639 | 0.4 KiB | ~31 KiB | **~0.6 KiB** | **0.5 ms** |
+| `ed25519_verify_nova` | 7,724 | 2.2 KiB | ~240 KiB | **~1.0 KiB** | **0.7 ms** |
+| `sha256_step_small_nova` | 31,584 | 2.5 KiB | ~1.2 MiB | **~0.8 KiB** | **0.6 ms** |
+| `sha256_step_big_nova` | 58,973 | 2.5 KiB | ~2.3 MiB | **~1.0 KiB** | **~1.0 ms** |
 
-*BN254, state-width 24, 200 steps, baseline.*
+- 160–600× smaller than the full sumcheck proof; no opening proofs on-chain.
+- The bundle is O(1) in step count and circuit size (≤ 2.5 KiB everywhere).
 
-Even at `m = 128`, the slim proof remains well within Cardano's 16 KiB
-transaction limit at **0.4 KiB**, and slim verification stays sub-millisecond.
-The key result is architectural: NovaSlim is the first Nova-family system that
-simultaneously delivers **sub-kilobyte proofs**, **no trusted setup**, and a
-**post-quantum commitment path** — a combination no prior system achieves.*
+**2. End-to-end timing.** Header circuits, across curves:
 
-Run them with:
+| Circuit | Curve | Constr. | Steps | Fold total | Fold/step | Compress | Ver. full | Ver. slim |
+|---|---|---|---|---|---|---|---|---|
+| `vrf_verify_nova` | BLS12-381 | 9 | 254 | 3.5 s | 14 ms | 0.04 s | 0.05 s | **0.2 ms** |
+| `vrf_verify_nova` | BN254 | 9 | 254 | 2.2 s | 9 ms | 0.03 s | 0.02 s | **0.1 ms** |
+| `poseidon_sponge_nova` | BLS12-381 | 633 | 255 | 46.2 s | 181 ms | 1.86 s | 1.85 s | **0.4 ms** |
+| `poseidon_merkle_nova` | BLS12-381 | 639 | 32 | 10.0 s | 314 ms | 3.13 s | 2.69 s | **0.5 ms** |
+| `ed25519_verify_nova` | BLS12-381 | 7,724 | 255 | 138.5 s | 543 ms | 25.44 s | 28.59 s | **0.7 ms** |
 
-```bash
-python3 benchmarks/run_benchmarks.py                    # all families, 255 steps
-python3 benchmarks/run_benchmarks.py --family ed25519_verify_nova_bls12_381
-python3 benchmarks/run_benchmarks.py --curve bn254      # specific curve
-python3 benchmarks/run_benchmarks.py --steps 32         # shorter chains
-```
+- Verification scales logarithmically with `n_constraints` and is independent
+  of step count: 0.1–0.2 ms (VRF), 0.4–0.5 ms (Poseidon), 0.7 ms (Ed25519).
+- Pasta curves (Pallas/Vesta) are the fastest fold (2.3–2.8 ms/step); the
+  ultra-light `vrf_verify_nova` (9 constraints) isolates protocol overhead.
+- The slim proof size is identical across curves for the same circuit —
+  the sumcheck protocol is field-agnostic.
 
-The underlying `benchmark_nova` binary also accepts `--commitment sis` to
-measure SIS lattice commitments directly (bypassing the Python harness):
+**3. Commitment-scheme modularity** (VRF, BLS12-381, 254 steps). The
+commitment scheme is swappable at runtime without changing the proof format:
 
-```bash
-cargo run --release --manifest-path prover/Cargo.toml --bin benchmark_nova -- \
-  --curve bn254 --circuit <r1cs> --steps <dir> --commitment sis
-```
+- **Pedersen** — 14 ms/step fold, 0.2 ms slim verification.
+- **SIS (m=4)** — **1 ms/step fold (14× faster)**: MSM is replaced by
+  matrix–vector products over the scalar field.
+- **Hash** — 2 ms/step fold (7× faster; Blake2b coefficients derived on the
+  fly), simplest to audit.
+- Slim proof is **~0.4 KiB for all three** — independent of the scheme.
+- At cryptographic parameters (SIS m=128) fold rises to 5.4 ms/step but the
+  slim proof stays ~0.4 KiB.
 
-The harness compiles circuits from `circom/` if needed, generates resumable
-step witnesses via snarkjs, then measures baseline and parallel passes of
-`benchmark_nova --release`. Raw logs land in `benchmarks/results/<timestamp>/`.
+**4. SHA-256 scaling (small/medium/big)** — state_out = SHA256(state_in),
+BLS12-381, Pedersen). Per-step costs from shorter runs after setup overhead
+stabilises:
 
-### Synthetic benchmarks (all curves)
+- small (~29K cstr): ~3,100 ms/step fold, **0.6 ms** slim ver., **~0.8 KiB**.
+- medium (~31K cstr): ~3,200 ms/step fold, **0.7 ms** slim ver., **~0.8 KiB**.
+- big (~59K cstr): ~5,600 ms/step fold, **1.0 ms** slim ver., **~1.0 KiB**.
+- A full 32-step fold of SHA-256 big takes ~30 min (~3 min with 16-core
+  parallel compression — the biggest parallel gain here, ~3–5×).
 
-These skip circom/snarkjs entirely and generate random in-memory witnesses.
-Useful for comparing curve performance when real-circuit witnesses are not
-available (e.g. Pallas / Vesta). Use `--commitment {pedersen,sis,hash}` to
-select the commitment scheme.
+**5. Parallel speedup.** Visible mainly in the compress step (sumcheck
+processes `n_constraints` rows in parallel). At small sizes (≤7K constraints)
+thread overhead dominates and parallel mode is neutral to slightly slower.
 
-```bash
-# BLS12-381
-cargo run --release --manifest-path prover/Cargo.toml --bin benchmark_synthetic -- --curve bls12-381 --state-width 24 --steps 255
+**6. Memory.** Prover memory is **O(1) in step count** — only the current
+witness is kept in memory; R1CS matrices are loaded once (well under 100 MiB
+even for 59K-constraint circuits). This is the key advantage over monolithic
+SNARKs, which materialise the full N×C system.
 
-# BN254 with SIS commitment
-cargo run --release --manifest-path prover/Cargo.toml --bin benchmark_synthetic -- --curve bn254 --state-width 24 --steps 255 --commitment sis
+**7. Versus Sonobe** (Nova + CycleFold + Groth16 decider) on PoseidonSponge,
+633 constraints, 32 steps:
 
-# Pallas
-cargo run --release --manifest-path prover/Cargo.toml --bin benchmark_synthetic -- --curve pallas --state-width 24 --steps 255
-
-# Vesta
-cargo run --release --manifest-path prover/Cargo.toml --bin benchmark_synthetic -- --curve vesta --state-width 24 --steps 255
-```
-
-**Synthetic comparison (state-width = 24, steps = 200, BN254):**
-
-| Commitment | Fold/step | Compress | Verify (full) | Verify (slim) | Slim proof | Bundle |
-|---|---|---|---|---|---|---|
-| Pedersen | 3.76 ms | 0.088 s | 0.092 s | 0.3 ms | **0.4 KiB** | 1.9 KiB |
-| **SIS (m=4)** | **0.83 ms** (4.5×) | 0.221 s | **0.007 s** (13×) | 0.2 ms | **0.4 KiB** | 2.1 KiB |
-| **SIS (m=128)** | **5.40 ms** (0.7×) | 0.082 s | 0.20 s | 0.3 ms | **0.4 KiB** | 9.8 KiB |
-| **Hash** | 7.15 ms (0.5×) | 0.091 s | 0.008 s (12×) | 0.4 ms | **0.4 KiB** | 2.1 KiB |
-
-**Memory scaling (synthetic, BN254, state_width=24, Pedersen):**
-
-| Steps | Peak RSS | Δ per 100 steps |
-|---|---|---|
-| 16 | 2.9 MiB | — |
-| 255 | 3.5 MiB | 0.2 MiB |
-| 1,000 | 4.9 MiB | 0.2 MiB |
-
-Memory is effectively **O(1) in step count** — only the current witness is
-kept in memory. Real circuits show higher baseline (R1CS matrices loaded
-once) but still well under 100 MiB for 255 steps.
-
-All four curves complete fold → compress → verify end-to-end in the synthetic
-harness.
+- Fold: **7.6 s vs 111.5 s — 14.7× faster** (off-circuit NIFS vs in-circuit
+  Spartan verification).
+- Verify: **0.7 ms (slim) vs 5.4 s (Groth16) — ~7,700× faster**.
+- Proof: 1.6 KiB transparent (slim) vs 192 B (Groth16, needs 2 ceremonies +
+  a curve cycle + EVM precompiles).
+- NovaSlim has **no preprocessing and no keygen** (0 s vs 7.7 s / 7.6 s).
 
 </details>
