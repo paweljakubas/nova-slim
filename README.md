@@ -44,6 +44,9 @@ nova-slim verify   → check bundle + proof (slim: ~0.2 ms)
 
 ## Roadmap
 
+<details>
+<summary><b>Feature status and research directions</b></summary>
+
 | Feature | Status | Notes |
 |---|---|---|
 | **Slim proofs** (~0.4–2.5 KiB, commitment-agnostic) | ✅ 0.2.0 | Strips HashPC openings; formal knowledge-soundness guarantee (Theorem 1) |
@@ -121,7 +124,12 @@ the two things NovaSlim deliberately removes for eUTXO chains.
 
 </details>
 
+</details>
+
 ## What is a slim proof?
+
+<details>
+<summary><b>Slim vs full proof: size, security, and audit trail</b></summary>
 
 The **full** sumcheck proof includes the entire HashPC opening (the witness
  truth table) and is ~240 KiB. The **slim** proof strips this opening, keeping
@@ -156,7 +164,12 @@ Step circuits are bundled in `circom/`:
 - `PoseidonMerkle/` — Merkle path verification (~639 constraints)
 - `PoseidonPreimage/` — Poseidon hash pre-image (secret → public commitment)
 
+</details>
+
 ## Layout
+
+<details>
+<summary><b>Where things live in the repo</b></summary>
 
 | Path | What |
 |---|---|
@@ -167,7 +180,12 @@ Step circuits are bundled in `circom/`:
 | `cardano/` | CIP-197 PoC and Aiken on-chain verifier ([README](cardano/cip197/README.md)); two-doc equivalence test at `cardano/cip197/scripts/e2e_equivalence.sh` |
 | `docs/article.md` | NovaSlim paper draft |
 
+</details>
+
 ## End-to-end run
+
+<details>
+<summary><b>Full pipeline: from circuit to on-chain proof</b></summary>
 
 Prerequisites: Rust, [circom](https://github.com/iden3/circom) (only if the
 `.r1cs` is not compiled yet), [snarkjs](https://github.com/iden3/snarkjs) (witness generation), Node.js.
@@ -213,6 +231,8 @@ $NOVA compress --curve bn254 \
     --steps <witness-dir> --out ed25519_full.proof.cbor
 $NOVA verify --curve bn254 --ivc ed25519.ivc.cbor --sumcheck-proof ed25519_full.proof.cbor
 ```
+
+</details>
 
 ## Testing
 
