@@ -66,6 +66,61 @@ nova-slim verify   → check bundle + proof (slim: ~0.2 ms)
 | STARK-based compression (FRI instead of sumcheck) | 🔜 Future | Remove reliance on random oracle; transparent + post-quantum |
 | Multi-chain deployment helpers | 🔜 Future | Cardano (Plutus), Ethereum (Solidity), Zcash (Halo2) verifiers |
 
+### Research work
+
+<details>
+<summary><b>Paper take-aways: PikkuFold (eprint 2026/1809) and FLIP-and-prove R1CS (eprint 2024/1364)</b></summary>
+
+**PikkuFold** (Osadnik) — lattice-based folding. Per-step communication is
+**~5.5 KB** (vs ≥31.8 KB Cyclo, 62.25 KB SALSAA, ~83–250 KB LatticeFold+ / Neo /
+ProtogaLattice) and it is the **first lattice folding to send no in-protocol
+commitments beyond those of the fresh inputs**. Take-aways:
+
+- **Layered random projections** ship a short final image instead of
+  decomposition/extension commitments (Cyclo's extension commitment alone is
+  ~10 KB of its 31.8 KB).
+- **One batched ring sumcheck** verifies the factorised matrix–vector product
+  of the projection → verifier 3.7–8.9 ms.
+- **JL-style norm certificates** replace range proofs entirely.
+- **Fixed-weight ternary challenges + operator-norm rejection sampling** (~60
+  trials) cut the growth bound from 21 to ~8.4 at degree 128, target 2⁻¹⁰⁰.
+- **Periodic norm reset** (exact norm check + base-*b* decomposition) makes the
+  number of folds unbounded; an **AIR reduction** lets the scheme fold AIR/
+  zkVM traces, with batched sumchecks.
+- Caveat: prover is far heavier than Nova-style NIFS (ms to ~80 s per fold vs
+  ~5.4 ms/step for our SIS fold).
+
+**FLIP-and-prove R1CS** (Nitulescu, Paslis, Ràfols) — folding **k independent**
+R1CS instances. FLIP (Fold-Inner-Product) folds all *k* instance-witness pairs
+in **log k rounds** with **O(log k)** group elements (homomorphic two-tier
+commitments); r-Groth is a commit-and-prove Groth16 for relaxed R1CS keeping
+3-element proofs + 2 pairing checks with a slightly modified,
+instance-independent setup. Together they replace the k−1 extra Groth16 proofs
+of aggregation-style schemes (apps: rollups, Proof-of-Space,
+proving-as-a-service) — but both rely on **pairings and a trusted setup**,
+the two things NovaSlim deliberately removes for eUTXO chains.
+
+**Ideas for the NovaSlim roadmap:**
+
+1. **Batch / multi-instance folding** — FLIP's log-*k* shape for folding *k*
+   independent instances (e.g. several wallet transactions) into one slim proof,
+   instantiated with our DLOG/SIS/Hash commitments instead of pairings.
+2. **Drop derived-witness commitments** — PikkuFold's "commit only fresh
+   inputs" principle to shrink the SIS payload (currently the ~10–12 KiB mode).
+3. **Sumcheck-based on-chain verification** — PikkuFold's single batched ring
+   sumcheck as a template for cheap Plutus-like verification (hash/sumcheck ops
+   instead of group MSMs).
+4. **Short-challenge engineering** — fixed-weight + operator-norm rejection
+   sampling for tighter SIS norm growth → smaller proofs, more folds per budget.
+5. **Norm-reset checkpoints** — unbounded SIS folding (currently capped by
+   additive norm growth).
+6. **AIR / zkVM trace folding** — extend beyond R1CS toward Cairo/RISC Zero
+   workloads.
+7. **Keep transparency as a hard boundary** — both papers frame the
+   pairing/trusted-setup trade space; we stay on the lattice/hash path.
+
+</details>
+
 ## What is a slim proof?
 
 The **full** sumcheck proof includes the entire HashPC opening (the witness
