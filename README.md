@@ -181,6 +181,47 @@ Notes:
 
 </details>
 
+## Release
+
+<details>
+<summary><b>How to cut a new release</b></summary>
+
+### Prerequisite
+
+Make sure the `RELEASE_TOKEN` secret exists in GitHub (Settings → Secrets and
+variables → Actions). It must be a fine-grained PAT with *Workflows* (read+write)
+and *Contents* (read+write) permissions on this repo — GitHub's hardened
+Releases API rejects the default `GITHUB_TOKEN` for releases whose target
+commit touches `.github/workflows/`.
+
+### Step 1 — Bump the version
+
+Update these files from the old version to the new one:
+
+- `cli/Cargo.toml` → `version`
+- `prover/Cargo.toml` → `version`
+- `cardano/nova-slim-verifier/aiken.toml` → `version`
+- `cli/tests/cli.rs` → the `--version` test assertion (lines ~630 & ~646)
+
+Also add a matching `## [X.Y.Z]` section in `ChangeLog.txt` and set
+`RELEASE: X.Y.Z` in `.github/workflows/release.yml`. Merge to `master`.
+
+### Step 2 — Create and push the tag
+
+```bash
+git tag v0.3.0 && git push origin v0.3.0
+```
+
+Pushing the tag triggers the release workflow, which builds `nova-slim` and
+creates a **draft** release with the binary (`tar.gz` + `sha256sums`) attached
+and the `ChangeLog.txt` section as release notes.
+
+### Step 3 — Publish
+
+Open the **draft** release in GitHub → inspect it → click **Publish release**.
+
+</details>
+
 ## Benchmarks
 
 <details>
