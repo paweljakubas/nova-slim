@@ -627,7 +627,7 @@ fn cardano_ed25519_ownership_nova_verify_rejects_tampered_bundle() {
 
 /// `nova-slim --help` lists all subcommands.
 /// `nova-slim --version` reports the release version and build commit.
-/// The Cargo package version is 0.3.0 
+/// The Cargo package version is 0.3.0
 #[test]
 fn version_reports_release_and_commit() {
     let output = Command::cargo_bin("nova-slim")
