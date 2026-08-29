@@ -128,7 +128,7 @@ pub enum Command {
 #[derive(Parser)]
 #[clap(bin_name = "nova-slim")]
 #[clap(author = "HAL Team <hal@cardanofoundation.org>")]
-#[clap(version = env!("CARGO_PKG_VERSION"))]
+#[clap(version = env!("NOVA_SLIM_VERSION"))]
 #[clap(disable_help_subcommand = true)]
 #[clap(
     about = "NovaSlim — folding + slim on-chain proofs CLI",

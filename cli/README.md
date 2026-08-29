@@ -70,11 +70,15 @@ Run any command with `--help` for full flag details:
 
 ```bash
 nova-slim --help
+nova-slim --version
 nova-slim params --help
 nova-slim fold --help
 nova-slim compress --help
 nova-slim verify --help
 ```
+
+`nova-slim --version` prints the release version and the git commit the binary
+was built from, e.g. `nova-slim 0.2.0 (5d6761b)`.
 
 Top-level help:
 
