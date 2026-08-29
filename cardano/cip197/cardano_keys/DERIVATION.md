@@ -36,9 +36,19 @@ Account extended public key (hex):
 
 ### Step 2: Address Key (m/1852'/1815'/0'/0/0)
 
+There are two equivalent ways to derive the address key from the same recovery
+phrase; both produce identical key material (`addr_direct.xprv` and
+`addr_from_acct.xprv` byte-for-byte match):
+
 ```bash
-cardano-address key child 0/0 < acct.xprv > addr.xprv
-cardano-address key public --with-chain-code < addr.xprv > addr.xpub
+# Way A — direct from the root key
+cardano-address key child 1852H/1815H/0H/0/0 < root.xprv > addr_direct.xprv
+
+# Way B — via the account key (role+index in one step)
+cardano-address key child 0/0 < acct.xprv > addr_from_acct.xprv
+
+# Either way, publish the same address public key
+cardano-address key public --with-chain-code < addr_from_acct.xprv > addr.xpub
 ```
 
 Address extended public key (hex):
@@ -59,14 +69,23 @@ The circuit would verify:
 2. Child key = parent_key + I_L (scalar addition on Ed25519)
 3. Child chain_code = I_R
 
+> Note: `cardano-address` derives the role and index in a single `key child 0/0`
+> command, so there is no standalone "role" key file here. The two-step
+> `role → index` structure in the table is how the future NovaSlim circuit models
+> the same derivation internally.
+
 ## Files
 
 - `recovery-phrase.txt` — 15-word recovery phrase
 - `root.xprv` — root extended private key
 - `acct.xprv` — account extended private key (m/1852'/1815'/0')
 - `acct.xpub` — account extended public key
-- `addr.xprv` — address extended private key (m/1852'/1815'/0'/0/0)
-- `addr.xpub` — address extended public key
+- `addr_direct.xprv` — address xprv derived directly from root (1852H/1815H/0H/0/0)
+- `addr_from_acct.xprv` — address xprv derived via account (`key child 0/0`), byte-identical to `addr_direct.xprv`
+- `addr.xpub` — address extended public key (m/1852'/1815'/0'/0/0)
+
+Private key files (`*.xprv`) and the recovery phrase are git-ignored; only the
+public keys and `DERIVATION.md` are committed.
 
 ## Notes
 

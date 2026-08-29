@@ -3,6 +3,11 @@
 A step-by-step walkthrough of the complete NovaSlim flow, from circuit compilation
 to on-chain verification.
 
+This is **one of two equivalent ways** to demonstrate the PoC; the other is
+sketched in [README.md](README.md) (bls12-381 flavour). The two ways run the same
+fold → compress → verify pipeline and differ only in interchangeable flags.
+`bash scripts/e2e_equivalence.sh` runs both ways and proves they are equivalent.
+
 ## What You Need
 
 - `nova-slim` CLI (build from `cli/` with `cargo build --release`)
@@ -167,6 +172,10 @@ nova-slim compress --slim \
 
 **Output:** `vrf_slim.cbor` (~0.4 KiB) — sumcheck data only.
 
+Note that `compress --slim` *also* writes the full proof alongside as
+`vrf_slim.full.cbor` (the strip adds `.full.cbor` to the `--out` name) — so the
+audit-grade proof below can rename that instead of re-running `compress`.
+
 **Without `--slim`** you get a full proof (~9–10 KiB) that includes HashPC openings
 for off-chain audit.
 
@@ -194,12 +203,15 @@ nova-slim verify \
 
 ### Full verification (audit-grade, with openings)
 
+Uses the full proof written by `compress --slim` (as `vrf_slim.full.cbor`), or by
+a plain `compress --out <name>.cbor`:
+
 ```bash
 nova-slim verify \
   --curve bn254 \
   --commitment sis --sis-param 128 \
   --ivc vrf.ivc.cbor \
-  --sumcheck-proof vrf_full.cbor
+  --sumcheck-proof vrf_slim.full.cbor
 ```
 
 **What this additionally checks:**
@@ -212,65 +224,65 @@ nova-slim verify \
 
 ## Step 6: Verify On-Chain (Aiken)
 
+> **Curve note:** the Aiken verifier is written for the **BLS12-381 scalar field**,
+> so to verify **on-chain** you must fold/compress with `--curve bls12-381` (step
+> circuit compiled with `circom --prime bls12381`) instead of `bn254`. The `bn254`
+> commands throughout this guide are the faster *off-chain* demo of the same
+> pipeline — the proofs are format-identical, only the field differs.
+> `cardano/cip197/scripts/e2e_equivalence.sh` runs both ways and shows the swap is
+> interchangeable.
+
 The Aiken verifier is at `../nova-slim-verifier/`.
 
 ```bash
 cd ../nova-slim-verifier
 
-# 1. Build the validator
-aiken build
-
-# Output:
-#   Compiling paweljakubas/nova-slim 0.0.0 (.)
-#   Compiling aiken-lang/stdlib v3.1.0 (./build/packages/aiken-lang-stdlib)
-#  Generating project's blueprint (./plutus.json)
-
-# 2. Run tests
+# 1. Run the test suite (7 unit + 3 property-based tests = 307 checks)
 aiken check
 
-# Output:
-#      Testing ...
-#   {
-#     "summary": {
-#       "total": 2,
-#       "passed": 2,
-#       "failed": 0
-#     },
-#     "modules": [
-#       {
-#         "name": "tests",
-#         "summary": { "total": 2, "passed": 2, "failed": 0 },
-#         "tests": [
-#           { "title": "e2e_4_rounds", "status": "pass",
-#             "execution_units": { "mem": 376920, "cpu": 141185485 } },
-#           { "title": "mismatch_counts_fails", "status": "pass",
-#             "execution_units": { "mem": 25041, "cpu": 6508150 } }
-#         ]
-#       }
-#     ]
-#   }
+# Output (abridged):
+#   Compiling paweljakubas/nova-slim 0.2.0 (.)
+#   Compiling aiken-lang/stdlib v3.1.0 (./build/packages/aiken-lang-stdlib)
+#   Compiling aiken-lang/fuzz v2.2.0 (./build/packages/aiken-lang-fuzz)
+#   PASS [mem: 389.34 K, cpu: 144.89 M] e2e_4_rounds
+#   PASS [after 100 tests] valid_transcript_always_verifies
+#   PASS [after 100 tests] tampered_round_poly_fails
+#   PASS [after 100 tests] tampered_final_value_fails
+#   → 10 tests | 10 passed | 0 failed
+#   Summary 307 checks, 0 errors, 0 warnings
 
-# 3. Apply the expected public input parameter
-aiken apply plutus.json \
-  --parameter-bytes <hex-encoded-public-input> \
-  > validator.uplc
+# 2. Build the validator (no parameters — nothing to `aiken apply`)
+aiken build
+#  Generating project's blueprint (./plutus.json)
 
+# 3. Emit the ready-to-use spending validator
+aiken blueprint convert > validator.uplc
+```
+
+```bash
 # 4. Submit to Cardano (example using cardano-cli)
+#    The proof is a *spend* validator with no parameters:
+#    datum   = the NIFS bundle (bls12-381 fold, e.g. vrf.ivc.cbor)
+#    redeemer = the slim proof (bls12-381, e.g. vrf_slim.cbor)
 cardano-cli transaction build-raw \
   --tx-in <your-input> \
+  --tx-in-script-file validator.uplc \
+  --tx-in-datum-cbor-file ../../cardano/cip197/vrf.ivc.cbor \
+  --tx-in-redeemer-cbor-file ../../cardano/cip197/vrf_slim.cbor \
   --tx-out <your-output> \
-  --minting-script-file validator.uplc \
-  --mint-redeemer-cbor-file ../../cardano/cip197/vrf_slim.cbor \
-  --mint-script-datum-cbor-file ../../cardano/cip197/vrf.ivc.cbor \
   --out-file tx.raw
 ```
 
-**What the validator checks:**
-- `redeemer.public_input == expected_public_input`
-- `verify_slim(datum, redeemer) == True`
+**What the validator checks** (`verify_slim(datum, redeemer)` in `lib/verifier.ak`):
+1. ≥1 sumcheck round exists (empty/degenerate proofs are rejected by construction)
+2. Fiat-Shamir challenges match the NIFS bundle + round polynomials + public input
+3. Each round evaluates a degree-2 polynomial consistent with the previous challenge
+4. The final claim reduces to `A·B − u·C − E = 0` (relaxed R1CS instance satisfied)
 
-The validator runs entirely in Plutus V3 using BLS12-381 scalar arithmetic.
-**Execution units:** ~377K mem / ~141M CPU for a 4-round sumcheck.
+The proof is bound to the specific folded derivation through the transcript hash,
+so it cannot be replayed against a different public input. The validator runs
+entirely in Plutus V3 using BLS12-381 scalar arithmetic.
+**Execution units:** ~389K mem / ~145M CPU for a 4-round sumcheck.
 
 ---
 
@@ -351,6 +363,10 @@ sequenceDiagram
 ---
 
 ## Quick Test (Copy-Paste)
+
+> One-shot alternative: `bash scripts/e2e_equivalence.sh 5` runs both demonstration
+> ways (this E2E.md bn254 flow *and* the README bls12-381 flow) and asserts
+> equivalence, including tamper rejection.
 
 ```bash
 cd cardano/cip197

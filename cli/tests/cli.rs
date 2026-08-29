@@ -1146,3 +1146,92 @@ fn bn254_multi_constraint_cbor_roundtrip() {
     verify2.assert().success()
         .stderr(predicate::str::contains("sumcheck compression proof OK"));
 }
+
+// ------------------------------------------------------------------
+// CIP-197 e2e equivalence — the two documented demonstration ways
+// (cardano/cip197/README.md bls12-381 flavour vs E2E.md bn254 flavour)
+// are the SAME fold → compress --slim → verify pipeline.  The witness
+// chain is curve- and commitment-agnostic, so the docs' choices are
+// interchangeable: every (curve × commitment) combination verifies, and
+// no proof verifies any bundle it was not created for.
+// ------------------------------------------------------------------
+
+/// Run the slim e2e flow (fold → compress --slim → verify) for a given
+/// curve plus extra flags; return the bundle and the slim proof.
+fn e2e_slim_flow(
+    curve: &str,
+    extra: &[&str],
+    circuit: &std::path::Path,
+    steps: &std::path::Path,
+) -> (NamedTempFile, NamedTempFile) {
+    let bundle_file = NamedTempFile::new().unwrap();
+    let mut fold = Command::cargo_bin("nova-slim").unwrap();
+    fold.arg("fold")
+        .arg("--curve").arg(curve)
+        .args(extra)
+        .arg("--circuit").arg(circuit)
+        .arg("--steps").arg(steps)
+        .arg("--out").arg(bundle_file.path());
+    fold.assert().success();
+
+    let proof_file = NamedTempFile::new().unwrap();
+    let mut compress = Command::cargo_bin("nova-slim").unwrap();
+    compress.arg("compress").arg("--slim")
+        .arg("--curve").arg(curve)
+        .args(extra)
+        .arg("--circuit").arg(circuit)
+        .arg("--steps").arg(steps)
+        .arg("--out").arg(proof_file.path());
+    compress.assert().success();
+
+    let mut verify = Command::cargo_bin("nova-slim").unwrap();
+    verify.arg("verify")
+        .arg("--curve").arg(curve)
+        .args(extra)
+        .arg("--ivc").arg(bundle_file.path())
+        .arg("--slim-proof").arg(proof_file.path());
+    verify.assert().success()
+        .stderr(predicate::str::contains("slim sumcheck proof OK"));
+
+    (bundle_file, proof_file)
+}
+
+/// Assert that a slim proof does NOT verify a bundle it was not made for.
+fn assert_slim_rejected(curve: &str, bundle: &std::path::Path, proof: &std::path::Path) {
+    let mut verify = Command::cargo_bin("nova-slim").unwrap();
+    verify.arg("verify")
+        .arg("--curve").arg(curve)
+        .arg("--ivc").arg(bundle)
+        .arg("--slim-proof").arg(proof);
+    verify.assert().failure();
+}
+
+#[test]
+fn cip197_e2e_ways_are_equivalent_and_interchangeable() {
+    let r1cs = NamedTempFile::new().unwrap();
+    fs::write(r1cs.path(), build_synthetic_step_r1cs()).unwrap();
+    let steps_dir = tempfile::tempdir().unwrap();
+    let mut state = 2u64;
+    for (i, x) in [3u64, 5, 7].iter().enumerate() {
+        state = write_step_wtns(steps_dir.path(), i, state, *x);
+    }
+
+    let sis = ["--commitment", "sis", "--sis-param", "128"];
+    let ped = ["--commitment", "pedersen"];
+
+    // Way I (README.md flavour): bls12-381 + SIS m=128 (on-chain compatible).
+    let (bundle_bls, proof_bls) = e2e_slim_flow("bls12-381", &sis, r1cs.path(), steps_dir.path());
+    // Way II (E2E.md flavour):    bn254       + SIS m=128 (off-chain demo).
+    let (bundle_bn, proof_bn) = e2e_slim_flow("bn254", &sis, r1cs.path(), steps_dir.path());
+
+    // Interchangeable knobs: swap the commitment scheme on both curves.
+    e2e_slim_flow("bls12-381", &ped, r1cs.path(), steps_dir.path());
+    let (bundle_bn_ped, proof_bn_ped) = e2e_slim_flow("bn254", &ped, r1cs.path(), steps_dir.path());
+
+    // Binding: a proof is rejected against every bundle except its own —
+    // across curves, across commitment schemes, and across both.
+    assert_slim_rejected("bls12-381", bundle_bls.path(), proof_bn.path());
+    assert_slim_rejected("bn254", bundle_bn.path(), proof_bls.path());
+    assert_slim_rejected("bn254", bundle_bn.path(), proof_bn_ped.path());
+    assert_slim_rejected("bn254", bundle_bn_ped.path(), proof_bn.path());
+}

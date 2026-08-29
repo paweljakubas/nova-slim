@@ -2,6 +2,8 @@
 
 > 🚀 **Quick start:** See [E2E.md](E2E.md) for a step-by-step walkthrough with
 > mermaid diagrams, copy-paste commands, and file-size expectations at every stage.
+> To prove the two demonstration ways (E2E.md vs this README) are equivalent,
+> run `bash scripts/e2e_equivalence.sh`.
 
 This directory contains a proof-of-concept (PoC) demonstrating how **NovaSlim** can be
 used as a practical stepping stone for [CIP-197](https://github.com/cardano-foundation/CIPs/pull/1242):
@@ -47,20 +49,26 @@ The CIP-197 relation proves: *"this public key was derived from a seed I know al
 the standard BIP32-Ed25519 path"*. This requires proving a chain of HMAC-SHA512
 computations.
 
-**Simplified scope for PoC:** We prove a 2-step derivation (`role` → `index`) from a
-fixed `account'` anchor, rather than the full seed-to-leaf path. This is sufficient
-to demonstrate:
+**Runnable today — the VRF stand-in.** The full BIP32-Ed25519 step circuit is not
+built yet (see below). The runnable PoC instead steps a small circuit — one bit of
+JubJub scalar multiplication, `circom/VRF/vrf_verify_nova.circom` — which exercises
+the exact infrastructure CIP-197 needs:
 
-1. BIP32 derivation as a NovaSlim step circuit
-2. Folding multiple derivation steps
-3. Slim proof generation (~0.8 KiB)
-4. On-chain verification via Aiken
+1. Real BIP32 key derivation on an HD wallet via `cardano-address` (the account
+   and address public keys are the values a final BIP32 circuit would certify)
+2. Folding multiple derivation steps with NovaSlim
+3. Slim proof generation (~0.4 KiB)
+4. Off-chain and on-chain (Aiken, Plutus V3) verification
 
-## Step Circuit: BIP32 HMAC Derivation
+**Future — the BIP32 derivation circuit.** Proving `role → index` BIP32-Ed25519
+derivation (HMAC-SHA512 in R1CS) directly. Until it exists, the VRF circuit is the
+stand-in that exercises the same NovaSlim pipeline. See "Step Circuit" below.
+
+## Step Circuit (Future): BIP32 HMAC Derivation
 
 Each BIP32 step is: `HMAC-SHA512(parent_key ∥ index) → (IL, IR) → child_key`.
 
-For the PoC, we encode this as a circom circuit with these constraints:
+For the PoC, we intend to encode this as a circom circuit with these constraints:
 
 | Component | Constraints | Notes |
 |---|---|---|
@@ -70,127 +78,88 @@ For the PoC, we encode this as a circom circuit with these constraints:
 | Child key derivation | ~256 | Scalar addition / clamping |
 | **Total per step** | **~10,560** | Fits comfortably in NovaSlim |
 
-The circuit has:
+The circuit would have:
 - `n_pub_in = n_pub_out = 32` (the 32-byte parent public key / child public key)
 - One private input: the `index` (4 bytes, padded to 32)
 
-## Running the PoC
+> **Not yet implemented.** `circom/Bip32Step/` does not exist yet. The runnable
+> stand-in circuit is `circom/VRF/vrf_verify_nova.circom` (4 public I/O, ~0
+> constraints, one JubJub ladder bit per step) — see E2E.md and the two ways
+> below.
+
+## Running the PoC — Two Equivalent Ways
+
+There are two documented ways to demonstrate the PoC. They compile the **same
+step circuit**, feed the **same NovaSlim pipeline**, and differ only in a few
+interchangeable flags:
+
+| | **Way II — E2E.md** | **Way I — this README** |
+|---|---|---|
+| Step circuit | `circom/VRF/vrf_verify_nova.circom` | same |
+| Key provenance | real `cardano-address` BIP32 keys | synthetic step witnesses |
+| circom prime | default (`bn128`) | `--prime bls12381` |
+| `--curve` | `bn254` | `bls12-381` |
+| Commitment | SIS m=128 | SIS m=128 (or Pedersen) |
+| Proof size | ~0.4 KiB slim | ~0.4 KiB slim |
+| On-chain (Aiken) | not supported¹ | ✅ `../nova-slim-verifier` |
+
+¹ The Aiken verifier (`../nova-slim-verifier/`) is written for the **BLS12-381
+scalar field**. Way I is therefore the on-chain flavour; Way II exists for the
+off-chain demo (same pipeline, faster constants).
+
+### Equivalence test
+
+```bash
+bash cardano/cip197/scripts/e2e_equivalence.sh 5
+```
+
+This script runs **both** ways end-to-end (`circom` compile → witness generation →
+`fold` → `compress --slim` → `verify`) — 5 steps each — and asserts that:
+
+- every stage succeeds for **both** ways, producing identical-size artifacts,
+- tampered inputs (corrupted step witness, flipped proof byte) are rejected in
+  **both** ways,
+- the knobs the two docs pick are **interchangeable**: Pedersen instead of SIS,
+  full sumcheck proof instead of slim, and a proof never verifies a bundle it was
+  not created for.
+
+It prints e.g. `Way I (bls12-381): bundle 8845 B, slim 388 B | Way II (bn254):
+bundle 8845 B, slim 388 B` and a `RESULT: N passed, 0 failed` verdict.
+
+The same equivalence is enforced by the repo's test suite:
+`cargo test --manifest-path cli/Cargo.toml --test cli -- cip197_e2e_ways_are_equivalent_and_interchangeable`
+(synthetic circuit, no circom needed).
+
+### At a glance (both ways use these steps)
+
+```bash
+cd cardano/cip197
+
+# 1. Compile the step circuit (Way II: default prime; Way I: add --prime bls12381)
+circom -l ../../circom/Ed25519Verify/node_modules/circomlib/circuits \
+  ../../circom/VRF/vrf_verify_nova.circom --r1cs --wasm --sym
+
+# 2. Generate the step-witness chain
+python3 ../../benchmarks/gen_vrf_witnesses.py \
+  --wasm vrf_verify_nova_js/vrf_verify_nova.wasm --steps 5 --dir poc_witnesses
+
+# 3. Fold → compress --slim → verify (Way I uses --curve bls12-381)
+nova-slim fold     --curve bn254 --commitment sis --sis-param 128 \
+  --circuit vrf_verify_nova.r1cs --steps poc_witnesses --out vrf.ivc.cbor
+nova-slim compress --slim --curve bn254 --commitment sis --sis-param 128 \
+  --circuit vrf_verify_nova.r1cs --steps poc_witnesses --out vrf_slim.cbor
+nova-slim verify   --curve bn254 --commitment sis --sis-param 128 \
+  --ivc vrf.ivc.cbor --slim-proof vrf_slim.cbor
+# → "Verified 5 steps: slim sumcheck proof OK, state chain OK"
+```
 
 ### Prerequisites
 
-- Rust (for NovaSlim CLI)
-- circom (for step circuit compilation)
-- Aiken v1.1.21+ (for on-chain verifier)
-- snarkjs (for witness generation, optional — synthetic witnesses work too)
-
-### 1. Compile the step circuit
-
-```bash
-cd circom/Bip32Step
-circom --prime bls12-381 -l node_modules/circomlib/circuits \
-    bip32_step_nova.circom --r1cs --wasm --sym
-cd -
-```
-
-### 2. Generate step witnesses
-
-For a 2-step derivation (`role=0`, `index=0` and `index=1`):
-
-```bash
-# Using synthetic witnesses (no snarkjs needed)
-cargo run --release --manifest-path prover/Cargo.toml --bin gen_synthetic_witnesses -- \
-  --circuit circom/Bip32Step/bip32_step_nova.r1cs \
-  --steps 2 \
-  --out ./poc_witnesses/
-```
-
-Or with real HMAC-SHA512 computation:
-```bash
-node scripts/gen_bip32_witnesses.js \
-  --parent-key $(cat account_key.hex) \
-  --role 0 \
-  --indices 0,1 \
-  --out ./poc_witnesses/
-```
-
-### 3. Fold the derivation steps
-
-```bash
-cargo build --release --manifest-path cli/Cargo.toml
-NOVA=cli/target/release/nova-slim
-
-$NOVA fold --curve bls12-381 \
-  --commitment sis --sis-param 128 \
-  --circuit circom/Bip32Step/bip32_step_nova.r1cs \
-  --steps ./poc_witnesses/ \
-  --out derivation.ivc.cbor
-```
-
-Output: `derivation.ivc.cbor` (~2 KiB NIFS bundle).
-
-### 4. Compress to slim proof
-
-```bash
-$NOVA compress --slim --curve bls12-381 \
-  --commitment sis --sis-param 128 \
-  --circuit circom/Bip32Step/bip32_step_nova.r1cs \
-  --steps ./poc_witnesses/ \
-  --out derivation_slim.cbor
-```
-
-Output: `derivation_slim.cbor` (~0.8 KiB slim proof).
-
-### 5. Verify off-chain
-
-```bash
-$NOVA verify --curve bls12-381 \
-  --commitment sis --sis-param 128 \
-  --ivc derivation.ivc.cbor \
-  --slim-proof derivation_slim.cbor
-```
-
-Expected output:
-```
-Verified 2 steps: slim sumcheck proof OK, state chain OK
-Final transcript: <hex>
-```
-
-### 6. Verify on-chain (Aiken)
-
-The Aiken verifier lives in `../nova-slim-verifier/`.
-
-```bash
-cd ../nova-slim-verifier
-
-# Build the validator
-aiken build
-
-# Apply the expected public input (the account public key)
-aiken apply plutus.json \
-  --parameter-bytes $(cat ../../cardano/cip197/account_key.hex) \
-  > validator.uplc
-
-# The validator checks:
-# 1. redeemer.public_input == expected_public_input
-# 2. verify_slim(datum, redeemer) == True
-```
-
-To submit a transaction with the proof:
-
-```bash
-# Datum: the NIFS bundle (derivation.ivc.cbor)
-# Redeemer: the slim proof (derivation_slim.cbor)
-# Both are passed as CBOR-encoded ByteArray in the transaction witness
-
-# Example using cardano-cli (simplified)
-cardano-cli transaction build-raw \
-  --tx-in <input> \
-  --tx-out <output> \
-  --minting-script-file validator.uplc \
-  --mint-redeemer-cbor-file derivation_slim.cbor \
-  --mint-script-datum-cbor-file derivation.ivc.cbor \
-  --out-file tx.raw
-```
+- Rust (for NovaSlim CLI, built from `cli/` with `cargo build --release`)
+- circom
+- snarkjs (witness generation via `benchmarks/gen_vrf_witnesses.py`)
+- Aiken v1.1.19+ (on-chain verifier, `../nova-slim-verifier/`)
+- `cardano-address` v4.0.0+ (optional — real key derivation, Way II only)
 
 ## Benchmarks (PoC)
 
@@ -230,20 +199,24 @@ cardano-cli transaction build-raw \
 
 ## Limitations and Future Work
 
-1. **Not post-quantum yet.** The NIFS folding scheme has a classical security proof.
+1. **BIP32 step circuit not implemented yet.** The runnable PoC uses the VRF
+   stand-in circuit (`circom/VRF/vrf_verify_nova.circom`) to exercise the
+   pipeline; the actual derivation circuit is the next build step.
+
+2. **Not post-quantum yet.** The NIFS folding scheme has a classical security proof.
    The upgrade path is to replace the sumcheck protocol with a lattice-hardened
    variant (à la Lova) while keeping the same proof format and Aiken verifier.
 
-2. **BIP32-Ed25519 is expensive in R1CS.** Scalar multiplication on the Edwards curve
+3. **BIP32-Ed25519 is expensive in R1CS.** Scalar multiplication on the Edwards curve
    (~7,724 constraints for a full Ed25519 verify) dominates the circuit. For the
    derivation proof alone (no signing), we only need HMAC-SHA512, which is cheaper.
 
-3. **SIS norm enforcement.** The SIS commitment scheme in NovaSlim currently lacks
+4. **SIS norm enforcement.** The SIS commitment scheme in NovaSlim currently lacks
    witness norm checks, meaning the post-quantum guarantee requires a trusted prover.
    This is acceptable for batch proving (Phase 1) but needs LatticeFold-style range
    proofs for adversarial settings.
 
-4. **Full signing proof.** This PoC covers derivation only. The signing proof
+5. **Full signing proof.** This PoC covers derivation only. The signing proof
    (Ed25519 signature verification in R1CS) is the larger circuit and is left for
    future work.
 
@@ -251,20 +224,19 @@ cardano-cli transaction build-raw \
 
 ```
 cardano/cip197/
-├── README.md              # This file (concept + benchmarks)
+├── README.md              # This file (concept + benchmarks + two ways)
 ├── E2E.md                 # 🚀 Step-by-step walkthrough with mermaid diagrams
-├── BENCHMARKS.md          # Detailed benchmark results (future)
-├── ARCHITECTURE.md        # Technical architecture notes (future)
-├── cardano_keys/          # Real BIP32 key derivations (public keys only)
-│   ├── DERIVATION.md      # Key derivation log
-│   ├── acct.xpub
-│   ├── addr.xpub
-│   └── role.xpub
-└── scripts/
-    ├── gen_bip32_witnesses.js   # Generate real BIP32 witnesses (future)
-    ├── submit_poc_tx.sh         # Submit PoC transaction to testnet (future)
-    └── verify_on_chain.sh       # Verify proof on testnet (future)
+├── scripts/
+│   └── e2e_equivalence.sh # Equivalence test for the two demonstration ways
+├── cardano_keys/          # Real BIP32 key derivations via cardano-address
+│   ├── DERIVATION.md      # Key derivation log (paths + public key hex)
+│   ├── acct.xpub          # Account extended public key (m/1852'/1815'/0')
+│   ├── addr.xpub          # Address extended public key (m/1852'/1815'/0'/0/0)
+│   └── (root/acct/addr xprv + recovery phrase — git-ignored, not committed)
 ```
+
+*Planned but not yet present: `BENCHMARKS.md`, `ARCHITECTURE.md`, and the true
+BIP32 step circuit (`circom/Bip32Step/`).*
 
 ## See Also
 
