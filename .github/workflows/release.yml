@@ -1,0 +1,77 @@
+name: Release
+
+# Release flow (mirrors IntersectMBO/cardano-addresses):
+#
+#   Pushing a tag (e.g. v0.3.0) triggers this workflow. It:
+#     1. builds the optimized cli binary (nova-slim),
+#     2. packages it (tar.gz + sha256sums),
+#     3. creates a DRAFT release whose body is the matching `## [X.Y.Z]`
+#        section from ChangeLog.txt, with the binaries attached.
+#   A human then publishes the draft in the GitHub UI (like cardano-addresses).
+#
+# NOTE: Since every commit in this repo touches .github/workflows/, GitHub's
+# hardened Releases API refuses GITHUB_TOKEN for releases whose target commit
+# modifies workflow files. The draft creation below therefore uses the
+# fine-grained PAT stored in the RELEASE_TOKEN secret (Workflows + Contents on
+# this repo). Create that secret in Settings -> Secrets before the first tag.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Release ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set tag name
+        run: |
+          echo "TAG=${GITHUB_REF#refs/tags/}" >> "$GITHUB_ENV"
+
+      - name: Set up Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build nova-slim (release, linux)
+        working-directory: cli
+        run: cargo build --release
+
+      - name: Package artifact
+        run: |
+          mkdir -p /tmp/dist
+          tar -czf "/tmp/dist/nova-slim-${{ env.TAG }}-linux-x86_64.tar.gz" \
+            -C cli/target/release nova-slim
+          (cd /tmp/dist && sha256sum *.tar.gz > "nova-slim-${{ env.TAG }}-sha256sums.txt")
+          ls -l /tmp/dist
+
+      - name: Prepare release body
+        run: |
+          VER="${{ env.TAG }}"; VER="${VER#v}"
+          awk -v v="$VER" '
+            $0 ~ ("^## \\[" v "\\]") {found=1; next}
+            /^## \[/ {if (found) exit}
+            found {print}
+          ' ChangeLog.txt > /tmp/release-body.md
+          if [ ! -s /tmp/release-body.md ]; then
+            echo "No section for $VER in ChangeLog.txt" >&2
+            exit 1
+          fi
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.RELEASE_TOKEN }}
+          tag_name: ${{ env.TAG }}
+          body_path: /tmp/release-body.md
+          draft: true
+          files: |
+            /tmp/dist/nova-slim-${{ env.TAG }}-linux-x86_64.tar.gz
+            /tmp/dist/nova-slim-${{ env.TAG }}-sha256sums.txt

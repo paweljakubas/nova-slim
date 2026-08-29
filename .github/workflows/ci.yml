@@ -28,11 +28,8 @@ permissions:
   contents: read
 
 # Run the checks only when this is (a) a push to master, (b) a manual
-# dispatch, or (c) a PR opened/edited by paweljakubas.
-defaults:
-  run:
-    shell: bash
-    working-directory: ${{ github.workspace }}
+# dispatch, or (c) a PR opened/edited by paweljakubas. Steps that need a
+# specific directory use their own `working-directory` (default: workspace root).
 
 env:
   CARGO_TERM_COLOR: always

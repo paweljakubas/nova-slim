@@ -1,0 +1,32 @@
+# Changelog
+
+All notable changes to this project are documented in this file.
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.3.0] - unreleased
+
+### Added
+
+- GitHub Actions workflows: CI (Rust, Aiken, CIP-197 equivalence) and release automation.
+- Refined Rust, Aiken and e2e testing; `cargo fmt`/`aiken fmt` checks part of CI.
+- Investigation of two research papers.
+
+## [0.2.0] - 2026-08-28
+
+### Added
+
+- Slim sumcheck proofs (~0.4-2.5 KiB) for on-chain verification, with an
+  explicit audit trail via the full sumcheck proof.
+- NIFS IVC folding of `N` identical step circuits into a single O(1)
+  accumulator - transparent, no trusted setup, no pairings.
+- Three runtime-selectable commitment schemes: Pedersen, SIS, Hash.
+- Six elliptic curves: BLS12-381, BN254, Pallas, Vesta, Grumpkin, Bandersnatch.
+- `nova-slim` CLI (`params`, `fold`, `compress`, `verify`) with compact,
+  versioned CBOR serialization.
+- Aiken on-chain (Plutus V3) verifier under `cardano/nova-slim-verifier`.
+- CIP-197 proof-of-concept with e2e equivalence testing of the two documented
+  ways (`cardano/cip197/scripts/e2e_equivalence.sh`) plus a Rust CLI e2e test.
+- Parallel optimizations (`--opt parallel`).
+- Documentation: repo README, prover and verifier READMEs, CIP-197
+  README/E2E walkthroughs, and a formal security proof in `docs/article.md`.
