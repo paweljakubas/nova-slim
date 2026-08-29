@@ -278,8 +278,9 @@ Update these files from the old version to the new one:
 - `cardano/nova-slim-verifier/aiken.toml` → `version`
 - `cli/tests/cli.rs` → the `--version` test assertion (lines ~630 & ~646)
 
-Also add a matching `## [X.Y.Z]` section in `ChangeLog.txt` and set
-`RELEASE: X.Y.Z` in `.github/workflows/release.yml`. Merge to `master`.
+Also add a matching `## [X.Y.Z]` section in `ChangeLog.txt`. Merge to
+`master`. (The release workflow has no separate version setting — the
+release body and tag come from the tag you push in Step 2.)
 
 ### Step 2 — Create and push the tag
 
