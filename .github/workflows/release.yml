@@ -55,17 +55,17 @@ jobs:
       - name: Prepare release body
         run: |
           cat <<'EOF' > /tmp/release-const.md
-## Supported Platforms
+          ## Supported Platforms
 
-- Linux 64-bit (x86_64)
+          - Linux 64-bit (x86_64)
 
-## Signatures
+          ## Signatures
 
-Name                                 | Role                          | Approval
----                                  | ---                           | ---:
-Pawel Jakubas @paweljakubas          | Senior Cryptographic Engineer |
+          Name                                 | Role                          | Approval
+          ---                                  | ---                           | ---:
+          Pawel Jakubas @paweljakubas          | Senior Cryptographic Engineer |
 
-EOF
+          EOF
           VER="${{ env.TAG }}"; VER="${VER#v}"
           awk -v v="$VER" '
             $0 ~ ("^## \\[" v "\\]") {found=1; next}
