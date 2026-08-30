@@ -178,7 +178,6 @@ Step circuits are bundled in `circom/`:
 | `circom/` | Step circuits: Ed25519, SHA-256, VRF, Poseidon (sponge, Merkle, pre-image) |
 | `benchmarks/` | Benchmark harness over real circom circuits |
 | `cardano/` | CIP-197 PoC and Aiken on-chain verifier ([README](cardano/cip197/README.md)); two-doc equivalence test at `cardano/cip197/scripts/e2e_equivalence.sh` |
-| `docs/article.md` | NovaSlim paper draft |
 
 </details>
 
@@ -304,8 +303,7 @@ Open the **draft** release in GitHub → inspect it → click **Publish release*
 <summary><b>Measured numbers and how to reproduce them</b></summary>
 
 All numbers below come from a single machine (16-core CPU, 64 GiB RAM) with
-release builds, and are documented in detail in
-[the paper](docs/article.md) (§6.3). Two harnesses are provided:
+release builds. Two harnesses are provided:
 
 1. **`benchmark_nova`** — real circom step circuits (`.r1cs` compiled from
    `circom/`, chained witnesses via snarkjs). Supports BLS12-381, BN254,

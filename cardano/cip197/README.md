@@ -241,7 +241,6 @@ BIP32 step circuit (`circom/Bip32Step/`).*
 ## See Also
 
 - [CIP-197 PR](https://github.com/cardano-foundation/CIPs/pull/1242)
-- [NovaSlim Paper](https://github.com/paweljakubas/nova-slim/blob/main/docs/article.md)
 - [NovaSlim CLI](https://github.com/paweljakubas/nova-slim/tree/main/cli)
 - [Aiken Verifier](../nova-slim-verifier/) — On-chain Plutus V3 verifier
 - [Lova (Lattice Nova)](https://eprint.iacr.org/2024/1964)

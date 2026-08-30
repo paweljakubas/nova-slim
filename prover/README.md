@@ -113,7 +113,7 @@ for on-chain soundness.
 ---
 
 For the full write-up of the scheme and its evaluation on Cardano-relevant
-circuits, see [`../docs/article.md`](../docs/article.md).
+circuits, see the paper (maintained in a separate repository).
 
 ---
 

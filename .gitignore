@@ -53,3 +53,4 @@ cardano/**/poc_witnesses/
 cardano/**/*.r1cs
 cardano/**/*.sym
 cardano/**/vrf_verify_nova_js/
+docs/

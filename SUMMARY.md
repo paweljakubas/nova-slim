@@ -88,12 +88,6 @@ nova-slim/
 │   ├── PoseidonSponge/    ← Poseidon hash circuits
 │   └── PoseidonMerkle/    ← Poseidon Merkle tree circuits
 │
-├── docs/                  ← Paper source
-│   ├── article.md         ← Markdown version of the paper
-│   ├── common/body.tex    ← LaTeX source
-│   ├── cic/article.pdf    ← PDF (IACR CiC format)
-│   └── eprint/article.pdf ← PDF (ePrint format)
-│
 ├── benchmarks/            ← Benchmark scripts
 │   ├── run_benchmarks.py  ← Main benchmark runner
 │   ├── gen_vrf_witnesses.py
@@ -134,7 +128,6 @@ nova-slim/
 | Goal | Go to |
 |---|---|
 | Run the CLI | `cli/README.md` |
-| Understand the protocol | `docs/article.md` or `docs/cic/article.pdf` |
 | See end-to-end walkthrough | `cardano/cip197/E2E.md` |
 | Build the Aiken verifier | `cardano/nova-slim-verifier/README.md` |
 | Reproduce benchmarks | `benchmarks/run_benchmarks.py` |
@@ -143,8 +136,8 @@ nova-slim/
 ## Paper
 
 - **Title:** NovaSlim: Practical Folding Proofs with Slim On-Chain Proofs and Post-Quantum Commitment Modularity
-- **Venue:** Submitted to IACR CiC (Volume 3, Issue 4, Oct 26 2026)
-- **Preprint:** Available on IACR ePrint
+- **Venue:** Targeting IACR CiC (Volume 3, Issue 4, Oct 26 2026)
+- **Status:** Paper source is maintained in a separate private repository
 - **Length:** ~25–30 pages (long paper, up to 40 pages allowed)
 
 ## Security

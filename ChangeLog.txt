@@ -29,4 +29,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ways (`cardano/cip197/scripts/e2e_equivalence.sh`) plus a Rust CLI e2e test.
 - Parallel optimizations (`--opt parallel`).
 - Documentation: repo README, prover and verifier READMEs, CIP-197
-  README/E2E walkthroughs, and a formal security proof in `docs/article.md`.
+  README/E2E walkthroughs.
