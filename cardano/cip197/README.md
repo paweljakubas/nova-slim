@@ -54,6 +54,15 @@ built yet (see below). The runnable PoC instead steps a small circuit — one bi
 JubJub scalar multiplication, `circom/VRF/vrf_verify_nova.circom` — which exercises
 the exact infrastructure CIP-197 needs:
 
+> **What is the VRF circuit?** VRF stands for *Verifiable Random Function* — a
+cryptographic primitive that produces a random-looking output you can prove was
+correctly derived from a secret seed. In this PoC we use a tiny piece of it
+(one JubJub scalar-multiplication "ladder step") as a **placeholder circuit**.
+It has almost zero constraints, so it compiles and runs instantly, yet it flows
+through the *same* NovaSlim pipeline (fold → compress → slim proof → verify)
+that the real BIP32 circuit will use later. Think of it as a "hello world" for
+the CIP-197 proving pipeline.
+
 1. Real BIP32 key derivation on an HD wallet via `cardano-address` (the account
    and address public keys are the values a final BIP32 circuit would certify)
 2. Folding multiple derivation steps with NovaSlim
