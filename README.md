@@ -5,6 +5,9 @@ NIFS-fold a chain of identical step circuits into one accumulator, compress
 with a sumcheck argument, and verify a **~0.4–2.5 KiB** proof with **no pairing,
 no trusted setup, and sub-millisecond verification**.
 
+📄 **[Technical specification / whitepaper](whitepaper.pdf)** — formal
+description of the protocol, security proofs, and benchmark analysis.
+
 Supports **BLS12-381** (Cardano), **BN254** (Ethereum), **Pallas** (Zcash), **Vesta**, **Grumpkin**, and **Bandersnatch**. Three commitment schemes — **Pedersen** (fast, classical), **SIS** (faster folding, quantum-ready), and **Hash** (zero-param, on-the-fly derivation, post-quantum) — are selectable at runtime via `--commitment {pedersen,sis,hash}`.
 
 ## Disclaimer
@@ -178,6 +181,7 @@ Step circuits are bundled in `circom/`:
 | `circom/` | Step circuits: Ed25519, SHA-256, VRF, Poseidon (sponge, Merkle, pre-image) |
 | `benchmarks/` | Benchmark harness over real circom circuits |
 | `cardano/` | CIP-197 PoC and Aiken on-chain verifier ([README](cardano/cip197/README.md)); two-doc equivalence test at `cardano/cip197/scripts/e2e_equivalence.sh` |
+| `whitepaper.pdf` | Technical specification: protocol design, security proofs, and benchmarks |
 
 </details>
 
