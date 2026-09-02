@@ -461,14 +461,21 @@ def parse_bench_log(path):
             out["fold_s"], out["fold_ms_per_step"] = float(parts[2]), float(parts[5])
         elif line.startswith("sumcheck compress:"):
             out["compress_s"] = float(line.split()[2])
+        elif line.startswith("level1 compress:"):
+            out["level1_compress_s"] = float(line.split()[2])
         elif line.startswith("verify (full):"):
             out["verify_full_s"] = float(line.split()[2])
         elif line.startswith("verify (slim):"):
             out["verify_slim_s"] = float(line.split()[2])
+        elif line.startswith("verify (level-1):"):
+            # "verify (level-1): 0.0123 s ..."  -> 0.0123
+            out["verify_level1_s"] = float(line.split()[2])
         elif line.startswith("nifs bundle:"):
             out["bundle_bytes"] = int(line.split()[2])
         elif line.startswith("slim proof:"):
             out["slim_proof_bytes"] = int(line.split()[2])
+        elif line.startswith("level1 proof:"):
+            out["level1_proof_bytes"] = int(line.split()[2])
         elif line.startswith("sumcheck proof (full):"):
             out["full_proof_bytes"] = int(line.split()[3])
     return out
@@ -577,13 +584,20 @@ def render_summary(stamp, rows):
         "Measured with `benchmark_nova --release` (prover crate); slim IVC flow:",
         "NIFS fold → sumcheck compress → verify. Witnesses pre-generated.",
         "",
-        "| Step circuit | Curve | Commitment | Constraints | Steps | Fold total | Fold/step | Compress | Verify (full) | Verify (slim) | Slim proof | Bundle |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| Step circuit | Curve | Commitment | Constraints | Steps | Fold total | Fold/step | Compress | Verify (full) | Verify (slim) | Level-1 compress | Verify (level-1) | Slim proof | Level-1 proof | Bundle |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for r in rows:
         b, p = r["base"], r["parallel"]
         constraints_str = f"{r['constraints']:,}" if r['constraints'] else "?"
         commit = r.get("commitment", "pedersen")
+        l1c = b.get("level1_compress_s", "—")
+        l1v = b.get("verify_level1_s", "—")
+        l1s = b.get("level1_proof_bytes", "—")
+        if l1c != "—":
+            l1c = f"{b['level1_compress_s']:.2f} s / {p['level1_compress_s']:.2f} s"
+            l1v = f"{b['verify_level1_s']*1000:.1f} ms"
+            l1s = f"{b['level1_proof_bytes']/1024:.1f} KiB"
         lines.append(
             f"| `{r['family']}` | {r['curve']} | {commit} | {constraints_str} | {r['steps']} "
             f"| {b['fold_s']:.1f} s / {p['fold_s']:.1f} s "
@@ -591,7 +605,9 @@ def render_summary(stamp, rows):
             f"| {b['compress_s']:.2f} s / {p['compress_s']:.2f} s "
             f"| {b['verify_full_s']:.2f} s / {p['verify_full_s']:.2f} s "
             f"| {b['verify_slim_s']*1000:.1f} ms "
+            f"| {l1c} | {l1v} "
             f"| {b['slim_proof_bytes']/1024:.1f} KiB "
+            f"| {l1s} "
             f"| {b['bundle_bytes']/1024:.1f} KiB |"
         )
     lines += ["", "*Each cell shows baseline / --opt-parallel where two values are shown.*", ""]

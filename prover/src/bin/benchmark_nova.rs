@@ -23,7 +23,8 @@ use prover::commitment::{CommitmentScheme, HashCommitment, PedersenCommitment, S
 use prover::nifs;
 use prover::{
     curve::{NovaCurve, ScalarField},
-    fr_to_string, prove_sumcheck_compression_opt, verify_slim, verify_sumcheck_compression,
+    fr_to_string, prove_level1, prove_sumcheck_compression_opt, verify_slim, verify_slim_level1,
+    verify_sumcheck_compression,
     NifsBundle, NifsFinalInstance, NifsFoldOutput, OptFlags, DEFAULT_SIS_PARAM, NIFS_PARAMS_SEED,
     NIFS_TRANSCRIPT_PREFIX,
 };
@@ -317,6 +318,34 @@ fn benchmark_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
         .unwrap_or_else(|e| panic!("slim verification failed: {e}"));
     let verify_slim_s = t.elapsed().as_secs_f64();
 
+    // 4. Level-1 path — degree-2 sumcheck + W/E opening proofs +
+    //    final-claim-zero check.  Closes the "free E" / all-zeros gap;
+    //    carries the commitment openings so it is auditable.
+    let t = Instant::now();
+    let l1 = prove_level1::<C, CS>(
+        circuit,
+        &folded,
+        if parallel {
+            OptFlags::PARALLEL
+        } else {
+            OptFlags::NONE
+        },
+    )
+    .unwrap_or_else(|e| panic!("failed to build Level-1 proof: {e}"));
+    let level1_compress_s = t.elapsed().as_secs_f64();
+    println!(
+        "level1 compress: {:.3} s (degree-2 sumcheck + W/E openings + final-claim-zero)",
+        level1_compress_s
+    );
+
+    let t = Instant::now();
+    verify_slim_level1::<C, CS>(&folded.bundle, &l1, sis_param)
+        .unwrap_or_else(|e| panic!("Level-1 verification failed: {e}"));
+    let verify_level1_s = t.elapsed().as_secs_f64();
+    println!(
+        "verify (level-1): {verify_level1_s:.4} s (degree-2 sumcheck + openings + final-claim-zero)"
+    );
+
     // Sizes: the bundle is O(1) in N; the slim proof is what lands on-chain.
     let bundle_json =
         serde_json::to_string_pretty(&folded.bundle).expect("bundle serialization should not fail");
@@ -332,6 +361,11 @@ fn benchmark_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
         .bundle
         .to_cbor::<ScalarField<C>>()
         .expect("bundle serialization should not fail");
+    let level1_cbor = l1
+        .to_cbor::<ScalarField<C>>()
+        .expect("level-1 proof serialization should not fail");
+    let level1_json = serde_json::to_string_pretty(&l1)
+        .expect("level-1 proof serialization should not fail");
     println!(
         "nifs bundle: {} B ({:.1} KiB cbor / {:.1} KiB json), O(1) in the step count",
         bundle_cbor.len(),
@@ -350,7 +384,17 @@ fn benchmark_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
         slim_cbor.len() as f64 / 1024.0,
         json_slim_len as f64 / 1024.0
     );
+    println!(
+        "level1 proof: {} B ({:.1} KiB cbor / {:.1} KiB json) — sound slim variant (openings + final-claim-zero)",
+        level1_cbor.len(),
+        level1_cbor.len() as f64 / 1024.0,
+        level1_json.len() as f64 / 1024.0
+    );
     println!("verify (slim): {verify_slim_s:.4} s");
+    println!(
+        "verify (level-1): {:.4} s",
+        verify_level1_s
+    );
     println!("all verifications OK");
 }
 
