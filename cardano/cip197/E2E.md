@@ -3,10 +3,12 @@
 A step-by-step walkthrough of the complete NovaSlim flow, from circuit compilation
 to on-chain verification.
 
-This is **one of two equivalent ways** to demonstrate the PoC; the other is
-sketched in [README.md](README.md) (bls12-381 flavour). The two ways run the same
-fold → compress → verify pipeline and differ only in interchangeable flags.
-`bash scripts/e2e_equivalence.sh` runs both ways and proves they are equivalent.
+The flow runs on the **BLS12-381 scalar field** — the same prime used on-chain by
+Cardano (Plutus V3) — so the proofs produced here are directly verifiable by the
+Aiken validator in [`../nova-slim-verifier/`](../nova-slim-verifier/). The step
+circuit is therefore compiled with `circom --prime bls12381` and folded/compressed
+with `--curve bls12-381`. `bash scripts/e2e_equivalence.sh` checks the pipeline
+end-to-end, including tamper rejection.
 
 ## What You Need
 
@@ -78,13 +80,15 @@ circuit will certify.
 ## Step 1: Compile the Circuit
 
 A step circuit defines one iteration of your computation. For this guide we use the
-VRF scalar-multiplication step (JubJub curve, 4 public I/O signals).
+VRF scalar-multiplication step (JubJub curve, 4 public I/O signals). It is compiled
+with `--prime bls12381` so the circuit works in the same field as Cardano's
+BLS12-381 on-chain arithmetic.
 
 ```bash
 cd cardano/cip197
 
-# Compile the circom circuit
-circom -l ../../circom/Ed25519Verify/node_modules/circomlib/circuits -l . \
+# Compile the circom circuit (--prime bls12381 to match Cardano's on-chain field)
+circom --prime bls12381 -l ../../circom/Ed25519Verify/node_modules/circomlib/circuits -l . \
   ../../circom/VRF/vrf_verify_nova.circom \
   --r1cs --wasm --sym
 
@@ -131,7 +135,7 @@ Folding combines all step witnesses into one constant-size bundle.
 
 ```bash
 nova-slim fold \
-  --curve bn254 \
+  --curve bls12-381 \
   --commitment sis --sis-param 128 \
   --circuit vrf_verify_nova.r1cs \
   --steps poc_witnesses/ \
@@ -157,7 +161,7 @@ With `--slim`, the HashPC opening proofs are stripped for on-chain use.
 ```bash
 # Slim proof (on-chain variant)
 nova-slim compress --slim \
-  --curve bn254 \
+  --curve bls12-381 \
   --commitment sis --sis-param 128 \
   --circuit vrf_verify_nova.r1cs \
   --steps poc_witnesses/ \
@@ -187,7 +191,7 @@ for off-chain audit.
 
 ```bash
 nova-slim verify \
-  --curve bn254 \
+  --curve bls12-381 \
   --commitment sis --sis-param 128 \
   --ivc vrf.ivc.cbor \
   --slim-proof vrf_slim.cbor
@@ -208,7 +212,7 @@ a plain `compress --out <name>.cbor`:
 
 ```bash
 nova-slim verify \
-  --curve bn254 \
+  --curve bls12-381 \
   --commitment sis --sis-param 128 \
   --ivc vrf.ivc.cbor \
   --sumcheck-proof vrf_slim.full.cbor
@@ -225,12 +229,10 @@ nova-slim verify \
 ## Step 6: Verify On-Chain (Aiken)
 
 > **Curve note:** the Aiken verifier is written for the **BLS12-381 scalar field**,
-> so to verify **on-chain** you must fold/compress with `--curve bls12-381` (step
-> circuit compiled with `circom --prime bls12381`) instead of `bn254`. The `bn254`
-> commands throughout this guide are the faster *off-chain* demo of the same
-> pipeline — the proofs are format-identical, only the field differs.
-> `cardano/cip197/scripts/e2e_equivalence.sh` runs both ways and shows the swap is
-> interchangeable.
+> which is exactly the field used throughout this guide (step circuit compiled with
+> `circom --prime bls12381`, folded/compressed with `--curve bls12-381`). The proofs
+> are therefore directly verifiable on-chain — no re-folding or field change is
+> needed.
 
 The Aiken verifier is at `../nova-slim-verifier/`.
 
@@ -364,9 +366,9 @@ sequenceDiagram
 
 ## Quick Test (Copy-Paste)
 
-> One-shot alternative: `bash scripts/e2e_equivalence.sh 5` runs both demonstration
-> ways (this E2E.md bn254 flow *and* the README bls12-381 flow) and asserts
-> equivalence, including tamper rejection.
+> One-shot alternative: `bash scripts/e2e_equivalence.sh 5` runs the same bls12-381
+> fold → compress → verify pipeline end-to-end and asserts it holds, including
+> tamper rejection.
 
 ```bash
 cd cardano/cip197
@@ -379,8 +381,8 @@ cardano-address key public --with-chain-code < acct.xprv > acct.xpub
 cardano-address key child 0/0 < acct.xprv > addr.xprv
 cardano-address key public --with-chain-code < addr.xprv > addr.xpub
 
-# 1. Compile
-circom -l ../../circom/Ed25519Verify/node_modules/circomlib/circuits -l . \
+# 1. Compile (--prime bls12381 to match Cardano's on-chain field)
+circom --prime bls12381 -l ../../circom/Ed25519Verify/node_modules/circomlib/circuits -l . \
   ../../circom/VRF/vrf_verify_nova.circom --r1cs --wasm --sym
 
 # 2. Witnesses (5 steps)
@@ -389,15 +391,15 @@ python3 ../../benchmarks/gen_vrf_witnesses.py \
   --steps 5 --dir poc_witnesses
 
 # 3. Fold
-nova-slim fold --curve bn254 --commitment sis --sis-param 128 \
+nova-slim fold --curve bls12-381 --commitment sis --sis-param 128 \
   --circuit vrf_verify_nova.r1cs --steps poc_witnesses --out vrf.ivc.cbor
 
 # 4. Compress (slim)
-nova-slim compress --slim --curve bn254 --commitment sis --sis-param 128 \
+nova-slim compress --slim --curve bls12-381 --commitment sis --sis-param 128 \
   --circuit vrf_verify_nova.r1cs --steps poc_witnesses --out vrf_slim.cbor
 
 # 5. Verify
-nova-slim verify --curve bn254 --commitment sis --sis-param 128 \
+nova-slim verify --curve bls12-381 --commitment sis --sis-param 128 \
   --ivc vrf.ivc.cbor --slim-proof vrf_slim.cbor
 
 # 6. Build Aiken verifier
