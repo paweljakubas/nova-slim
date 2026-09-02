@@ -1,23 +1,22 @@
 #!/usr/bin/env bash
 # =============================================================================
-# e2e_equivalence.sh — prove the two CIP-197 e2e demonstration ways are
-# equivalent and interchangeable.
+# e2e_equivalence.sh — end-to-end check of the CIP-197 NovaSlim pipeline.
 #
-#   Way I  (README.md style): VRF step circuit, circom --prime bls12381,
-#                             nova-slim --curve bls12-381 (on-chain ready)
-#   Way II (E2E.md style):    VRF step circuit, circom default prime (bn128),
-#                             nova-slim --curve bn254 (off-chain demo)
+#   Both documented walkthroughs (README.md and E2E.md) use the SAME step
+#   circuit (circom/VRF/vrf_verify_nova.circom), the SAME witness generator
+#   (benchmarks/gen_vrf_witnesses.py) and the SAME NovaSlim pipeline
+#   (fold -> compress --slim -> verify) on the SAME BLS12-381 scalar field —
+#   the curve Cardano uses on-chain (Plutus V3), so the proofs are directly
+#   verifiable by the Aiken validator in ../nova-slim-verifier/.
 #
-# Both use the SAME step-circuit source (circom/VRF/vrf_verify_nova.circom),
-# the SAME witness generator (benchmarks/gen_vrf_witnesses.py) and the SAME
-# NovaSlim pipeline (fold -> compress --slim -> verify). The two docs only
-# differ in the compile-time prime and the --curve/--commitment flags, i.e.
-# the interchangeable knobs of one pipeline.
-#
-# The script asserts, for EVERY stage of BOTH ways, that the outcome is the
-# same: fold OK, slim compress OK, slim verify OK, tampered input rejected.
-# It also exercises the interchangeable knobs (commitment scheme, proof form)
-# and, if cardano-address is installed, shows the real BIP32 key derivation
+# This script runs that pipeline end-to-end and asserts that:
+#   - every stage succeeds (circom compile, witness gen, fold, slim compress,
+#     slim verify; also the full sumcheck proof variant),
+#   - tampered inputs (corrupted step witness, flipped proof byte) are rejected,
+#   - the interchangeable knobs hold: Pedersen instead of SIS, full sumcheck
+#     proof instead of slim, and a proof never verifies a bundle it was not
+#     created for.
+# It also, if cardano-address is installed, shows the real BIP32 key derivation
 # that E2E.md uses as the circuit context.  Exits non-zero on any failure.
 #
 # Requirements: nova-slim (built), circom, snarkjs, python3.
@@ -35,6 +34,8 @@ CIRCUIT="$ROOT/circom/VRF/vrf_verify_nova.circom"
 CIRCOMLIB="$ROOT/circom/Ed25519Verify/node_modules/circomlib/circuits"
 GEN_WIT="$ROOT/benchmarks/gen_vrf_witnesses.py"
 CREDS="--commitment sis --sis-param 128"
+CURVE="bls12-381"
+PRIME_FLAG="--prime bls12381"
 
 WORK="$(mktemp -d /tmp/e2e_equivalence.XXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
@@ -54,17 +55,17 @@ run_check() {
     if [ "$got" -eq "$want" ]; then ok "$label"; else fail "$label (exit=$got, want=$want)"; fi
 }
 
-# run_way <dir> <way-label> <compile-prime-flag> <curve-flag> [full-proof name]
+# run_way <dir> <label>: full pipeline on the shared bls12-381 field
 run_way() {
-    local dir="$1" label="$2" prime_flag="$3" curve="$4" back="$(pwd)"
+    local dir="$1" label="$2" back="$(pwd)"
     mkdir -p "$WORK/$dir"
     cd "$WORK/$dir" || exit 1
 
-    note "$label: compile step circuit ($prime_flag, --curve $curve)"
-    if circom $prime_flag -l "$CIRCOMLIB" -l . "$CIRCUIT" --r1cs --wasm >/dev/null 2>&1; then
-        ok "circom $prime_flag"
+    note "$label: compile step circuit ($PRIME_FLAG, --curve $CURVE)"
+    if circom $PRIME_FLAG -l "$CIRCOMLIB" -l . "$CIRCUIT" --r1cs --wasm >/dev/null 2>&1; then
+        ok "circom $PRIME_FLAG"
     else
-        fail "circom $prime_flag"
+        fail "circom $PRIME_FLAG"
     fi
 
     note "$label: generate $STEPS step witnesses"
@@ -76,11 +77,11 @@ run_way() {
     fi
 
     note "$label: fold -> bundle, compress --slim, verify --slim-proof"
-    run_check "fold"    0 fold     --curve "$curve" $CREDS --circuit vrf_verify_nova.r1cs --steps poc_witnesses --out way.ivc.cbor
-    run_check "compress" 0 compress --slim --curve "$curve" $CREDS --circuit vrf_verify_nova.r1cs --steps poc_witnesses --out way_slim.cbor
-    run_check "verify"  0 verify   --curve "$curve" $CREDS --ivc way.ivc.cbor --slim-proof way_slim.cbor
+    run_check "fold"    0 fold     --curve "$CURVE" $CREDS --circuit vrf_verify_nova.r1cs --steps poc_witnesses --out way.ivc.cbor
+    run_check "compress" 0 compress --slim --curve "$CURVE" $CREDS --circuit vrf_verify_nova.r1cs --steps poc_witnesses --out way_slim.cbor
+    run_check "verify"  0 verify   --curve "$CURVE" $CREDS --ivc way.ivc.cbor --slim-proof way_slim.cbor
 
-    note "$label: tamper rejection (same for both ways)"
+    note "$label: tamper rejection"
     # T1: corrupt a step witness -> re-fold must fail (state chain broken)
     mkdir -p poc_tampered
     cp poc_witnesses/step_*.wtns poc_tampered/
@@ -92,55 +93,51 @@ if src:
     d[len(d) // 4] ^= 1
     open(src[0], "wb").write(bytes(d))
 PY
-    run_check "fold rejects tampered witness" 1 fold --curve "$curve" $CREDS \
+    run_check "fold rejects tampered witness" 1 fold --curve "$CURVE" $CREDS \
         --circuit vrf_verify_nova.r1cs --steps poc_tampered --out tampered.ivc.cbor
     # T2: byte-flip the slim proof -> verify must fail
     cp way_slim.cbor way_slim_bad.cbor
     python3 -c "
 d = bytearray(open('way_slim_bad.cbor','rb').read()); d[len(d)//2] ^= 1
 open('way_slim_bad.cbor','wb').write(bytes(d))"
-    run_check "verify rejects tampered slim proof" 1 verify --curve "$curve" $CREDS \
+    run_check "verify rejects tampered slim proof" 1 verify --curve "$CURVE" $CREDS \
         --ivc way.ivc.cbor --slim-proof way_slim_bad.cbor
 
     cd "$back" || exit 1
 }
 
 # ---------------------------------------------------------------------------
-# Way I — README.md flavour (bls12-381, on-chain compatible)
+# Shared bls12-381 pipeline (the curve both README.md and E2E.md use)
 # ---------------------------------------------------------------------------
-run_way way1_bls381 "Way I (README: bls12-381)" "--prime bls12381" bls12-381
-
-# ---------------------------------------------------------------------------
-# Way II — E2E.md flavour (bn254, off-chain demo)
-# ---------------------------------------------------------------------------
-run_way way2_bn254 "Way II (E2E: bn254)" "" bn254
+run_way way_e2e  "E2E.md walkthrough (bls12-381)"
+run_way way_readme "README quick walkthrough (bls12-381)"
 
 # ---------------------------------------------------------------------------
 # Interchangeable knobs — same pipeline, different flags
 # ---------------------------------------------------------------------------
 note "Interchange: commitment scheme (pedersen instead of SIS)"
-cd "$WORK/way2_bn254" || exit 1
-run_check "fold (pedersen)"     0 fold     --curve bn254 --commitment pedersen --circuit vrf_verify_nova.r1cs --steps poc_witnesses --out ped.ivc.cbor
-run_check "compress (pedersen)" 0 compress --slim --curve bn254 --commitment pedersen --circuit vrf_verify_nova.r1cs --steps poc_witnesses --out ped_slim.cbor
-run_check "verify (pedersen)"   0 verify   --curve bn254 --commitment pedersen --ivc ped.ivc.cbor --slim-proof ped_slim.cbor
+cd "$WORK/way_e2e" || exit 1
+run_check "fold (pedersen)"     0 fold     --curve "$CURVE" --commitment pedersen --circuit vrf_verify_nova.r1cs --steps poc_witnesses --out ped.ivc.cbor
+run_check "compress (pedersen)" 0 compress --slim --curve "$CURVE" --commitment pedersen --circuit vrf_verify_nova.r1cs --steps poc_witnesses --out ped_slim.cbor
+run_check "verify (pedersen)"   0 verify   --curve "$CURVE" --commitment pedersen --ivc ped.ivc.cbor --slim-proof ped_slim.cbor
 
 note "Interchange: proof form (full sumcheck proof instead of slim)"
-cd "$WORK/way1_bls381" || exit 1
-run_check "compress (full)" 0 compress --curve bls12-381 $CREDS --circuit vrf_verify_nova.r1cs --steps poc_witnesses --out way_full.cbor
-run_check "verify (full)"   0 verify   --curve bls12-381 $CREDS --ivc way.ivc.cbor --sumcheck-proof way_full.cbor
+cd "$WORK/way_readme" || exit 1
+run_check "compress (full)" 0 compress --curve "$CURVE" $CREDS --circuit vrf_verify_nova.r1cs --steps poc_witnesses --out way_full.cbor
+run_check "verify (full)"   0 verify   --curve "$CURVE" $CREDS --ivc way.ivc.cbor --sumcheck-proof way_full.cbor
 
 note "Interchange: binding (SIS proof must not verify a Pedersen bundle)"
-cd "$WORK/way2_bn254" || exit 1
-run_check "compress (pedersen, full)" 0 compress --curve bn254 --commitment pedersen \
+cd "$WORK/way_e2e" || exit 1
+run_check "compress (pedersen, full)" 0 compress --curve "$CURVE" --commitment pedersen \
     --circuit vrf_verify_nova.r1cs --steps poc_witnesses --out ped_full.cbor
-run_check "verify rejects cross-commitment proof" 1 verify --curve bn254 $CREDS \
+run_check "verify rejects cross-commitment proof" 1 verify --curve "$CURVE" $CREDS \
     --ivc way.ivc.cbor --sumcheck-proof ped_full.cbor
 
 # ---------------------------------------------------------------------------
 # Optional: real BIP32 key derivation à la E2E.md (context only, not pipeline)
 # ---------------------------------------------------------------------------
 if command -v cardano-address >/dev/null 2>&1; then
-    note "Interchange: key provenance (real cardano-address derivation, E2E Step 0)"
+    note "Key provenance: real cardano-address derivation (E2E Step 0, context only)"
     (
         cd "$WORK" || exit 1
         cardano-address recovery-phrase generate --size 15 > rp.txt
@@ -154,7 +151,7 @@ if command -v cardano-address >/dev/null 2>&1; then
     )
     PASS_COUNT=$((PASS_COUNT + 1))
 else
-    note "cardano-address not found — skipping optional key-provenance interchange (not needed by the pipeline)"
+    note "cardano-address not found — skipping optional key-provenance (not needed by the pipeline)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -162,15 +159,13 @@ fi
 # ---------------------------------------------------------------------------
 echo
 echo "================================================================"
-printf 'Way I (bls12-381): bundle %s B, slim %s B  |  Way II (bn254): bundle %s B, slim %s B\n' \
-    "$(stat -c%s "$WORK/way1_bls381/way.ivc.cbor")" "$(stat -c%s "$WORK/way1_bls381/way_slim.cbor")" \
-    "$(stat -c%s "$WORK/way2_bn254/way.ivc.cbor")" "$(stat -c%s "$WORK/way2_bn254/way_slim.cbor")"
-echo "Two e2e demonstration ways (README.md and E2E.md) run the same"
-echo "fold -> compress --slim -> verify pipeline.  Only the curve, circuit"
-echo "compile prime, commitment and proof form differ -- all interchangeable."
-echo "bls12-381 (Way I) is the on-chain flavour: its proofs are bound to the"
-echo "BLS12-381 scalar field used by ../nova-slim-verifier (Plutus V3)."
-echo "bn254 (Way II) suits the off-chain demo: same pipeline, faster constants."
+printf 'bundle %s B, slim %s B\n' \
+    "$(stat -c%s "$WORK/way_e2e/way.ivc.cbor")" "$(stat -c%s "$WORK/way_e2e/way_slim.cbor")"
+echo "Both documented walkthroughs (README.md and E2E.md) run the same"
+echo "bls12-381 fold -> compress --slim -> verify pipeline — the curve Cardano"
+echo "uses on-chain (Plutus V3) — so the proofs are directly verifiable by"
+echo "../nova-slim-verifier.  Only commitment, proof form and key provenance"
+echo "may be swapped — all interchangeable."
 echo "--------------------------------------------------------------"
 printf 'RESULT: %d passed, %d failed\n' "$PASS_COUNT" "$FAIL_COUNT"
 echo "================================================================"

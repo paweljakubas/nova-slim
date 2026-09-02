@@ -2,8 +2,8 @@
 
 > 🚀 **Quick start:** See [E2E.md](E2E.md) for a step-by-step walkthrough with
 > mermaid diagrams, copy-paste commands, and file-size expectations at every stage.
-> To prove the two demonstration ways (E2E.md vs this README) are equivalent,
-> run `bash scripts/e2e_equivalence.sh`.
+> Both docs run the same bls12-381 pipeline (on-chain ready); to check it
+> end-to-end, including tamper rejection, run `bash scripts/e2e_equivalence.sh`.
 
 This directory contains a proof-of-concept (PoC) demonstrating how **NovaSlim** can be
 used as a practical stepping stone for [CIP-197](https://github.com/cardano-foundation/CIPs/pull/1242):
@@ -93,28 +93,31 @@ The circuit would have:
 
 > **Not yet implemented.** `circom/Bip32Step/` does not exist yet. The runnable
 > stand-in circuit is `circom/VRF/vrf_verify_nova.circom` (4 public I/O, ~0
-> constraints, one JubJub ladder bit per step) — see E2E.md and the two ways
+> constraints, one JubJub ladder bit per step) — see E2E.md and the two walkthroughs
 > below.
 
 ## Running the PoC — Two Equivalent Ways
 
-There are two documented ways to demonstrate the PoC. They compile the **same
-step circuit**, feed the **same NovaSlim pipeline**, and differ only in a few
-interchangeable flags:
+There are two documented walkthroughs of the PoC ([E2E.md](E2E.md) and this
+README). They run the **same step circuit**, the **same NovaSlim pipeline**, and —
+importantly — the **same BLS12-381 scalar field** used on-chain by Cardano (Plutus V3).
+They differ only in presentation and the optional key-provenance step:
 
-| | **Way II — E2E.md** | **Way I — this README** |
+| | **E2E.md walkthrough** | **this README** |
 |---|---|---|
 | Step circuit | `circom/VRF/vrf_verify_nova.circom` | same |
-| Key provenance | real `cardano-address` BIP32 keys | synthetic step witnesses |
-| circom prime | default (`bn128`) | `--prime bls12381` |
-| `--curve` | `bn254` | `bls12-381` |
+| Key provenance | real `cardano-address` BIP32 keys (optional) | synthetic step witnesses |
+| circom prime | `--prime bls12381` | `--prime bls12381` |
+| `--curve` | `bls12-381` | `bls12-381` |
 | Commitment | SIS m=128 | SIS m=128 (or Pedersen) |
 | Proof size | ~0.4 KiB slim | ~0.4 KiB slim |
-| On-chain (Aiken) | not supported¹ | ✅ `../nova-slim-verifier` |
+| On-chain (Aiken) | ✅ `../nova-slim-verifier` | ✅ `../nova-slim-verifier` |
 
-¹ The Aiken verifier (`../nova-slim-verifier/`) is written for the **BLS12-381
-scalar field**. Way I is therefore the on-chain flavour; Way II exists for the
-off-chain demo (same pipeline, faster constants).
+Because both docs use the BLS12-381 field (the same as the Aiken verifier in
+`../nova-slim-verifier/`), the proofs each produces are **directly verifiable
+on-chain** — no re-folding or field change is needed. `cardano-address` is optional:
+it supplies the real BIP32 keys that the future BIP32 derivation circuit will
+certify, but it is not part of the folding pipeline itself.
 
 ### Equivalence test
 
@@ -122,42 +125,41 @@ off-chain demo (same pipeline, faster constants).
 bash cardano/cip197/scripts/e2e_equivalence.sh 5
 ```
 
-This script runs **both** ways end-to-end (`circom` compile → witness generation →
-`fold` → `compress --slim` → `verify`) — 5 steps each — and asserts that:
+This script runs the pipeline end-to-end (`circom` compile → witness generation →
+`fold` → `compress --slim` → `verify`) — 5 steps — on the **bls12-381** field, and
+asserts that:
 
-- every stage succeeds for **both** ways, producing identical-size artifacts,
-- tampered inputs (corrupted step witness, flipped proof byte) are rejected in
-  **both** ways,
-- the knobs the two docs pick are **interchangeable**: Pedersen instead of SIS,
-  full sumcheck proof instead of slim, and a proof never verifies a bundle it was
-  not created for.
+- every stage succeeds, producing the expected artifacts,
+- tampered inputs (corrupted step witness, flipped proof byte) are rejected,
+- the interchangeable knobs hold: Pedersen instead of SIS, full sumcheck proof
+  instead of slim, and a proof never verifies a bundle it was not created for.
 
-It prints e.g. `Way I (bls12-381): bundle 8845 B, slim 388 B | Way II (bn254):
-bundle 8845 B, slim 388 B` and a `RESULT: N passed, 0 failed` verdict.
+It prints e.g. `bundle 8845 B, slim 388 B` and a `RESULT: N passed, 0 failed`
+verdict.
 
-The same equivalence is enforced by the repo's test suite:
+The same behaviour is enforced by the repo's test suite:
 `cargo test --manifest-path cli/Cargo.toml --test cli -- cip197_e2e_ways_are_equivalent_and_interchangeable`
 (synthetic circuit, no circom needed).
 
-### At a glance (both ways use these steps)
+### At a glance (both docs use these steps)
 
 ```bash
 cd cardano/cip197
 
-# 1. Compile the step circuit (Way II: default prime; Way I: add --prime bls12381)
-circom -l ../../circom/Ed25519Verify/node_modules/circomlib/circuits \
+# 1. Compile the step circuit (--prime bls12381 to match the on-chain field)
+circom --prime bls12381 -l ../../circom/Ed25519Verify/node_modules/circomlib/circuits \
   ../../circom/VRF/vrf_verify_nova.circom --r1cs --wasm --sym
 
 # 2. Generate the step-witness chain
 python3 ../../benchmarks/gen_vrf_witnesses.py \
   --wasm vrf_verify_nova_js/vrf_verify_nova.wasm --steps 5 --dir poc_witnesses
 
-# 3. Fold → compress --slim → verify (Way I uses --curve bls12-381)
-nova-slim fold     --curve bn254 --commitment sis --sis-param 128 \
+# 3. Fold → compress --slim → verify (--curve bls12-381)
+nova-slim fold     --curve bls12-381 --commitment sis --sis-param 128 \
   --circuit vrf_verify_nova.r1cs --steps poc_witnesses --out vrf.ivc.cbor
-nova-slim compress --slim --curve bn254 --commitment sis --sis-param 128 \
+nova-slim compress --slim --curve bls12-381 --commitment sis --sis-param 128 \
   --circuit vrf_verify_nova.r1cs --steps poc_witnesses --out vrf_slim.cbor
-nova-slim verify   --curve bn254 --commitment sis --sis-param 128 \
+nova-slim verify   --curve bls12-381 --commitment sis --sis-param 128 \
   --ivc vrf.ivc.cbor --slim-proof vrf_slim.cbor
 # → "Verified 5 steps: slim sumcheck proof OK, state chain OK"
 ```
@@ -168,16 +170,19 @@ nova-slim verify   --curve bn254 --commitment sis --sis-param 128 \
 - circom
 - snarkjs (witness generation via `benchmarks/gen_vrf_witnesses.py`)
 - Aiken v1.1.19+ (on-chain verifier, `../nova-slim-verifier/`)
-- `cardano-address` v4.0.0+ (optional — real key derivation, Way II only)
+- `cardano-address` v4.0.0+ (optional — real key derivation, not part of the pipeline)
 
 ## Benchmarks (PoC)
 
-**Actual results** from running the VRF step circuit (5 steps, BN254, SIS m=128).
+**Actual results** from running the VRF step circuit (5 steps, SIS m=128).
+Timings below were measured with the faster `bn254` field; the pipeline and proof
+sizes are field-independent, and the docs/tooling use `bls12-381` for on-chain
+compatibility (slightly slower folding, same ~0.4 KiB slim proof).
 
 | Metric | Value | Notes |
 |---|---|---|
 | Step circuit | VRF scalar mul (JubJub) | 0 linear constraints, 4 public I/O |
-| Fold time (5 steps) | **78 ms** | SIS m=128, BN254 |
+| Fold time (5 steps) | **78 ms** | SIS m=128 |
 | Compress time (slim) | **127 ms** | Sumcheck + HashPC |
 | Slim proof size | **388 bytes** | 96% reduction from full (9,770 B) |
 | Verification (slim, off-chain) | **8 ms** | Sumcheck arithmetic only |
@@ -233,10 +238,10 @@ nova-slim verify   --curve bn254 --commitment sis --sis-param 128 \
 
 ```
 cardano/cip197/
-├── README.md              # This file (concept + benchmarks + two ways)
+├── README.md              # This file (concept + benchmarks + quick walkthrough)
 ├── E2E.md                 # 🚀 Step-by-step walkthrough with mermaid diagrams
 ├── scripts/
-│   └── e2e_equivalence.sh # Equivalence test for the two demonstration ways
+│   └── e2e_equivalence.sh # End-to-end check of the bls12-381 pipeline (incl. tamper rejection)
 ├── cardano_keys/          # Real BIP32 key derivations via cardano-address
 │   ├── DERIVATION.md      # Key derivation log (paths + public key hex)
 │   ├── acct.xpub          # Account extended public key (m/1852'/1815'/0')
