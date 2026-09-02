@@ -1404,8 +1404,11 @@ pub fn prove_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>
 /// 1. Bundle binding (final_instance hash).
 /// 2. Degree-2 sumcheck validity (round polys, Fiat-Shamir).
 /// 3. Level-1 equation: `az_r·bz_r − u·cz_r − er_r == final_claim`.
-/// 4. HashPC opening proofs for W and E (closes the "free E" gap).
-/// 5. Pedersen commitment consistency with the bundle.
+/// 4. Final claim is zero (residual vanishes at the random point ⇒ relaxed
+///    R1CS holds), closing the all-zeros / "free E" tautology.
+/// 5. HashPC opening proofs for W and E (binds az_r/bz_r/cz_r/er_r to the
+///    committed values).
+/// 6. Pedersen commitment consistency with the bundle.
 pub fn verify_slim_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     bundle: &NifsBundle,
     proof: &Level1SlimProof,
@@ -1500,7 +1503,26 @@ pub fn verify_slim_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarFiel
         .into());
     }
 
-    // 5. Verify HashPC opening proofs (W and E).
+    // 5. Assert the final claim vanishes.  The so-called "level-1 equation"
+    //    (az_r * bz_r - u * cz_r - er_r == final_claim) is a tautology for any
+    //    (az_r, bz_r, cz_r, er_r): it always holds by definition.  Without an
+    //    additional zero-check it would NOT assert that the relaxed R1CS
+    //    constraints are satisfied -- a prover could pick arbitrary values and
+    //    set er_r = az_r * bz_r - u * cz_r.  Requiring final_claim == 0 forces
+    //    the residual polynomial (AZ)∘(BZ) - u·(CZ) - E to vanish at the random
+    //    point r; together with the commitment binding below (which fixes
+    //    az_r/bz_r/cz_r/er_r to the committed Z, E) and Schwartz-Zippel, this
+    //    implies the residual is identically zero, i.e. every constraint is
+    //    satisfied.
+    if !v_out.final_claim.is_zero() {
+        return Err(format!(
+            "level-1 final claim is non-zero ({}) — the relaxed R1CS equation does not hold at the random point",
+            fr_to_string(&v_out.final_claim)
+        )
+        .into());
+    }
+
+    // 6. Verify HashPC opening proofs (W and E).
     let w_opening = sumcheck::OpeningProof::<C> {
         table: frs_from_strings::<ScalarField<C>>(&proof.w_opening)?,
     };
@@ -1537,7 +1559,7 @@ pub fn verify_slim_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarFiel
         return Err("E HashPC opening truth table hash mismatch".into());
     }
 
-    // 6. Verify Pedersen commitments match the bundle.
+    // 7. Verify Pedersen commitments match the bundle.
     let params = CS::params_from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints, sis_param);
     let w_vec = &w_opening.table[..n_wires.min(w_opening.table.len())];
     let expected_w_commit: CS::Commitment = commitment_parse(&bundle.final_instance.w_commit)?;
