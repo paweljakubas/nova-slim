@@ -14,7 +14,7 @@ use clap::Parser;
 use prover::{
     commitment::{HashCommitment, PedersenCommitment, SisCommitment},
     curve::{Bandersnatch, Bls12_381, Bn254, Grumpkin, NovaCurve, Pallas, ScalarField, Vesta},
-    run_compress_level1_opt, run_compress_sumcheck_opt, NifsSumcheckProof, OptFlags,
+    norm, run_compress_level1_opt, run_compress_sumcheck_opt, NifsSumcheckProof, OptFlags,
     DEFAULT_SIS_PARAM,
 };
 use std::error::Error;
@@ -73,6 +73,28 @@ pub struct Args {
     /// A value of 128 provides 128-bit post-quantum security.
     #[arg(long, value_name = "M", default_value_t = DEFAULT_SIS_PARAM)]
     pub sis_param: usize,
+
+    /// (Audit-only) enforce an ∞-norm bound on every fold step's *pre-fold*
+    /// witness `Z_j` and error `E_j` using Option A — a per-coordinate
+    /// range/bit-decomposition certificate.  Only meaningful with `--level1`;
+    /// the proof carries one certificate per step and the size grows linearly
+    /// in the circuit width.
+    #[arg(long, requires = "level1")]
+    pub norm_range: bool,
+
+    /// (Audit-only) enforce an ∞-norm bound on every fold step's *pre-fold*
+    /// witness `Z_j` and error `E_j` using Option B — a single JL/sketch
+    /// inner-product certificate.  Only meaningful with `--level1`; proof size
+    /// is constant per step (a few field elements).  Conflicts with
+    /// `--norm-range`.
+    #[arg(long, requires = "level1", conflicts_with = "norm_range")]
+    pub norm_jl: bool,
+
+    /// Public ∞-norm bound `B` (bit-length) used by the norm certificates.
+    /// The prover fails up front if any honest step witness/error exceeds
+    /// `2^B`.  Only meaningful with `--norm-range`/`--norm-jl`.
+    #[arg(long, value_name = "BITS", default_value_t = 64)]
+    pub norm_bits: u32,
 }
 
 fn parse_opt_flags(s: &str) -> Result<OptFlags, Box<dyn Error>> {
@@ -116,6 +138,14 @@ fn strip_and_write<C: NovaCurve>(
 pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
     let opts = parse_opt_flags(&args.opt)?;
     if args.level1 {
+        // (audit-only) norm enforcement mode, if any.
+        let norm_mode = if args.norm_range {
+            norm::NormMode::Range
+        } else if args.norm_jl {
+            norm::NormMode::Jl
+        } else {
+            norm::NormMode::None
+        };
         dispatch!(args.curve, args.commitment, {
             run_compress_level1_opt::<C, CS>(
                 &args.circuit,
@@ -123,6 +153,8 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
                 &args.out,
                 opts,
                 args.sis_param,
+                norm_mode,
+                args.norm_bits,
             )
         })?;
         return Ok(());

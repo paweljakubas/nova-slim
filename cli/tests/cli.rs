@@ -1412,6 +1412,86 @@ fn nifs_level1_compress_verify_end_to_end() {
     verify2.assert().failure();
 }
 
+/// Full Level-1 norm-audit flow at the CLI level: compress --level1 with a JL
+/// norm record, then verify --level1-proof --norm-jl re-folds the step
+/// witnesses, enforces the per-step bound, and cross-checks the record.
+#[test]
+fn nifs_level1_norm_audit_compress_verify_end_to_end() {
+    let r1cs = NamedTempFile::new().unwrap();
+    fs::write(r1cs.path(), build_synthetic_step_r1cs()).unwrap();
+
+    let steps_dir = tempfile::tempdir().unwrap();
+    let mut state = 2u64;
+    for (i, x) in [3u64, 5, 7].iter().enumerate() {
+        state = write_step_wtns(steps_dir.path(), i, state, *x);
+    }
+
+    // 1. fold -> bundle
+    let bundle_file = NamedTempFile::new().unwrap();
+    let mut fold = Command::cargo_bin("nova-slim").unwrap();
+    fold.arg("fold")
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(bundle_file.path());
+    fold.assert().success();
+
+    // 2. compress --level1 --norm-jl -> level-1 proof with a norm record
+    let proof_file = NamedTempFile::new().unwrap();
+    let mut compress = Command::cargo_bin("nova-slim").unwrap();
+    compress
+        .arg("compress")
+        .arg("--level1")
+        .arg("--norm-jl")
+        .arg("--norm-bits")
+        .arg("64")
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(proof_file.path());
+    compress
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Level-1 proof written"));
+
+    // 3. verify --level1-proof --norm-jl (requires --circuit/--steps re-fold)
+    let mut verify = Command::cargo_bin("nova-slim").unwrap();
+    verify
+        .arg("verify")
+        .arg("--ivc")
+        .arg(bundle_file.path())
+        .arg("--level1-proof")
+        .arg(proof_file.path())
+        .arg("--norm-jl")
+        .arg("--norm-bits")
+        .arg("64")
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path());
+    verify
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Per-step norm audit OK"));
+
+    // 4. requesting a norm audit without --circuit/--steps must be rejected
+    let mut verify2 = Command::cargo_bin("nova-slim").unwrap();
+    verify2
+        .arg("verify")
+        .arg("--ivc")
+        .arg(bundle_file.path())
+        .arg("--level1-proof")
+        .arg(proof_file.path())
+        .arg("--norm-jl")
+        .arg("--norm-bits")
+        .arg("64");
+    verify2.assert().failure();
+}
+
 /// `--level1` and `--slim` conflict at the CLI level.
 #[test]
 fn level1_conflicts_with_slim() {

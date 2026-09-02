@@ -301,6 +301,7 @@ fn nifs_fold_in_memory<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C
     let mut initial_state: Vec<String> = Vec::new();
     let mut acc_u: Option<nifs::RelaxedR1csInstance<CS>> = None;
     let mut acc_w: Option<nifs::RelaxedR1csWitness<CS>> = None;
+    let mut step_witnesses: Vec<(Vec<String>, Vec<String>)> = Vec::new();
 
     for w in witnesses {
         circuit.witness = w.clone();
@@ -329,6 +330,10 @@ fn nifs_fold_in_memory<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C
             w: w.to_vec(),
             e: zero_e.clone(),
         };
+        step_witnesses.push((
+            step_w.w.iter().map(fr_to_string).collect(),
+            step_w.e.iter().map(fr_to_string).collect(),
+        ));
 
         match acc_u.take() {
             None => {
@@ -380,6 +385,7 @@ fn nifs_fold_in_memory<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C
         bundle,
         final_instance: final_u,
         final_witness: final_w,
+        step_witnesses,
     }
 }
 

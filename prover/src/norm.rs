@@ -32,10 +32,11 @@
 
 use ark_ff::{BigInteger, PrimeField};
 use blake2::{Blake2b512, Digest};
+use serde::{Deserialize, Serialize};
 
 /// The infinity-norm bound parameter `B` expressed as a value and its
 /// bit-length.  Used to specify how short a witness/error must be.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NormBound {
     /// The bound value `B`.
     pub value: Vec<u8>,
@@ -167,7 +168,7 @@ pub fn jl_sketch_vector<F: PrimeField>(
 /// bound's bit-length.  The verifier recomputes the magnitude bit-lengths
 /// from the opened truth table and requires each `≤ bound.bits`, i.e. the
 /// decomposition genuinely ranges the vector inside `[-B, B]`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RangeCertificate {
     /// Per-coordinate magnitude bit-lengths (`ceil(log2(|v_i|+1))`).
     pub per_coord_bits: Vec<u32>,
@@ -226,7 +227,7 @@ pub fn verify_range<F: PrimeField>(truth_table: &[F], cert: &RangeCertificate) -
 /// public sketch vector `g`, plus the bound.  Since `‖v‖_∞ ≤ ‖v‖_2`, a bound
 /// on the sketch-certified 2-norm is an infinity-norm bound; the verifier
 /// additionally cross-checks against the ground-truth infinity norm.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JlCertificate {
     /// The sketch inner product `y = ⟨g, v⟩`.
     pub y: Vec<u8>,
@@ -294,7 +295,7 @@ pub fn jl_seed_from_bits(bound_bits: u32) -> Vec<u8> {
 }
 
 /// A norm-enforcement mode, selectable at the CLI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NormMode {
     /// No norm enforcement (the plain slim / level-1 proofs).
     None,
@@ -309,10 +310,10 @@ impl NormMode {
     pub fn parse(s: &str) -> Result<Self, String> {
         match s.to_ascii_lowercase().as_str() {
             "none" | "off" => Ok(NormMode::None),
-            "range" | "a" => Ok(NormMode::Range),
-            "jl" | "b" => Ok(NormMode::Jl),
+            "range" => Ok(NormMode::Range),
+            "jl" => Ok(NormMode::Jl),
             other => Err(format!(
-                "unknown norm mode '{other}' — valid: none, range (A), jl (B)"
+                "unknown norm mode '{other}' — valid: none, range, jl"
             )),
         }
     }
@@ -328,7 +329,7 @@ impl NormMode {
 
 /// A norm certificate for a single vector (witness or error), covering both
 /// flavours.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NormCertificate {
     Range(RangeCertificate),
     Jl(JlCertificate),
@@ -373,83 +374,112 @@ impl NormCertificate {
     }
 }
 
-/// The norm section carried in a level-1 audit proof: certificates for both
-/// the folded witness `Z` and the error `E`, under a single mode and bound.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NormCertBundle {
+/// A per-step norm certificate for one fold step: the pre-fold witness `Z_j`
+/// and error `E_j`.  These are the vectors that are genuinely short — the
+/// *folded* instance is `Z' = Z_1 + r·Z_2` with a full-field challenge `r`, so
+/// its norm is inherently field-scale and cannot be bounded.  Norm
+/// enforcement therefore targets each step's witness at fold time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StepNormCert {
+    /// Certificate asserting `‖Z_j‖_∞ ≤ 2^{bound_bits}` for this step.
+    pub cert_w: NormCertificate,
+    /// Certificate asserting `‖E_j‖_∞ ≤ 2^{bound_bits}` for this step.
+    pub cert_e: NormCertificate,
+}
+
+/// The norm section carried in a level-1 audit proof: one certificate per
+/// fold step over that step's pre-fold witness `Z_j` and error `E_j`, under a
+/// single mode and bound.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StepNormRecord {
     /// The enforcement mode (how the certificates were produced).
     pub mode: NormMode,
     /// Public protocol bound `B` (bit-length) shared by prover and verifier.
     pub bound_bits: u32,
-    /// Certificate for the witness `Z`'s truth table.
-    pub cert_w: NormCertificate,
-    /// Certificate for the error `E`'s truth table.
-    pub cert_e: NormCertificate,
+    /// One certificate per fold step, in fold order.
+    pub steps: Vec<StepNormCert>,
 }
 
-impl NormCertBundle {
-    /// Build the norm section for the honest witness/error truth tables.
-    ///
-    /// Returns `None` if the measured norm exceeds `B` (bound too tight).
+impl StepNormRecord {
+    /// Build the step-norm record for a deterministic chain of pre-fold step
+    /// witnesses `(Z_j, E_j)`.  Returns `None` if any step's witness or error
+    /// exceeds the bound (bound too tight).
     pub fn make<F: PrimeField>(
         mode: NormMode,
-        w_tt: &[F],
-        e_tt: &[F],
+        step_witnesses: &[(Vec<F>, Vec<F>)],
         bound_bits: u32,
         coord_bits: u32,
     ) -> Option<Self> {
-        if mode == NormMode::None {
-            return Some(NormCertBundle {
-                mode,
-                bound_bits,
-                cert_w: NormCertificate::Range(RangeCertificate {
-                    per_coord_bits: vec![1; w_tt.len()],
-                    bound_bits,
-                }),
-                cert_e: NormCertificate::Range(RangeCertificate {
-                    per_coord_bits: vec![1; e_tt.len()],
-                    bound_bits,
-                }),
-            });
-        }
         let bound = NormBound::from_bits(bound_bits);
-        Some(NormCertBundle {
+        let steps = step_witnesses
+            .iter()
+            .map(|(z, e)| -> Option<StepNormCert> {
+                if mode == NormMode::None {
+                    return Some(StepNormCert {
+                        cert_w: NormCertificate::Range(RangeCertificate {
+                            per_coord_bits: vec![1; z.len()],
+                            bound_bits,
+                        }),
+                        cert_e: NormCertificate::Range(RangeCertificate {
+                            per_coord_bits: vec![1; e.len()],
+                            bound_bits,
+                        }),
+                    });
+                }
+                Some(StepNormCert {
+                    cert_w: NormCertificate::make(mode, z, &bound, coord_bits)?,
+                    cert_e: NormCertificate::make(mode, e, &bound, coord_bits)?,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(StepNormRecord {
             mode,
             bound_bits,
-            cert_w: NormCertificate::make(mode, w_tt, &bound, coord_bits)?,
-            cert_e: NormCertificate::make(mode, e_tt, &bound, coord_bits)?,
+            steps,
         })
     }
 
-    /// Verify both certificates against the opened truth tables.
-    ///
-    /// Enforces: (1) `mode` matches; (2) the certificate's claimed bound does
-    /// not exceed the public `bound_bits`; (3) both certificates verify
-    /// (ground-truth recomputation) against the opened tables.
-    pub fn verify<F: PrimeField>(
-        &self,
-        w_tt: &[F],
-        e_tt: &[F],
-        expected_mode: NormMode,
+    /// Recompute the same record from ground-truth step witnesses (audit
+    /// verifier path, which re-folds the public step inputs).
+    pub fn recompute<F: PrimeField>(
+        mode: NormMode,
+        step_witnesses: &[(Vec<F>, Vec<F>)],
         bound_bits: u32,
-    ) -> bool {
-        if self.mode != expected_mode {
+        coord_bits: u32,
+    ) -> Option<Self> {
+        Self::make(mode, step_witnesses, bound_bits, coord_bits)
+    }
+
+    /// Audit cross-check: the carried record must exactly match one recomputed
+    /// from the independently re-folded step witnesses, and every step must be
+    /// within the public bound `B`.
+    ///
+    /// Because the verifier recomputes the certificates from ground truth, a
+    /// malicious carrier cannot pass unless the actual per-step witnesses are
+    /// short and match the carried certificates.
+    pub fn verify_against(&self, recomputed: &StepNormRecord, bound_bits: u32) -> bool {
+        if self.mode != recomputed.mode {
             return false;
         }
-        if self.bound_bits > bound_bits {
-            return false;
-        }
-        if self.cert_w.verify(expected_mode, w_tt) && self.cert_e.verify(expected_mode, e_tt) {
-            // Ground-truth infinity-norm bound: the public `B` must dominate
-            // both true norms in addition to the certificate-level check.
-            return fits_bits(w_tt, bound_bits) && fits_bits(e_tt, bound_bits);
-        }
-        false
+        // Public bound `B` must dominate the carried bound, mode must be
+        // consistent, and the carried record must equal the recomputed one.
+        self.bound_bits == recomputed.bound_bits
+            && self.bound_bits <= bound_bits
+            && *self == *recomputed
+    }
+
+    /// Whether the record carries a non-trivial (audit) enforcement mode.
+    /// `None` mode is a placeholder that never passes an audit.
+    pub fn is_audited(&self) -> bool {
+        self.mode != NormMode::None && !self.steps.is_empty()
     }
 
     /// Combined estimated audit size in bytes.
     pub fn size_bytes(&self) -> usize {
-        self.cert_w.size_bytes() + self.cert_e.size_bytes()
+        self.steps
+            .iter()
+            .map(|s| s.cert_w.size_bytes() + s.cert_e.size_bytes())
+            .sum()
     }
 }
 
@@ -629,42 +659,52 @@ mod tests {
     }
 
     #[test]
-    fn bundle_roundtrip_both_modes() {
-        let w = vec![Fr::from(3u64), -Fr::from(5u64)];
-        let e = vec![Fr::from(2u64), Fr::from(1u64)];
-        let w_tt = crate::sumcheck::truth_table(&w);
-        let e_tt = crate::sumcheck::truth_table(&e);
+    fn step_norm_roundtrip_both_modes() {
+        // Step 0 and step 1 have genuinely small pre-fold witnesses.
+        let steps = vec![
+            (vec![Fr::from(2u64), Fr::from(3u64), Fr::from(6u64)], vec![Fr::from(0u64)]),
+            (vec![Fr::from(6u64), Fr::from(5u64), Fr::from(30u64)], vec![Fr::from(0u64)]),
+        ];
         for mode in [NormMode::Range, NormMode::Jl] {
-            let b = bound(&w_tt)
-                .bits
-                .max(bound(&e_tt).bits)
-                .max(8);
-            let bundle = NormCertBundle::make(mode, &w_tt, &e_tt, b, 24).expect("should fit");
-            assert!(bundle.verify(&w_tt, &e_tt, mode, b), "{mode:?}");
+            let b = 16u32;
+            let carried = StepNormRecord::make(mode, &steps, b, 24).expect("should fit");
+            assert!(carried.is_audited());
+            let recomputed = StepNormRecord::recompute(mode, &steps, b, 24).unwrap();
+            assert!(carried.verify_against(&recomputed, b), "{mode:?}");
         }
     }
 
     #[test]
-    fn bundle_rejects_tampered_w() {
-        let w = vec![Fr::from(3u64)];
-        let e = vec![Fr::from(2u64)];
-        let w_tt = crate::sumcheck::truth_table(&w);
-        let e_tt = crate::sumcheck::truth_table(&e);
-        let b = 8;
-        let bundle = NormCertBundle::make(NormMode::Jl, &w_tt, &e_tt, b, 24).unwrap();
-        // Tamper the opened W to a large coordinate the 8-bit bound cannot hold.
-        let bad_w = crate::sumcheck::truth_table(&vec![Fr::from(1u64 << 63)]);
-        assert!(!bundle.verify(&bad_w, &e_tt, NormMode::Jl, b));
+    fn step_norm_rejects_tampered_step() {
+        let steps = vec![
+            (vec![Fr::from(2u64), Fr::from(3u64)], vec![Fr::from(0u64)]),
+            (vec![Fr::from(6u64), Fr::from(5u64)], vec![Fr::from(0u64)]),
+        ];
+        let b = 16u32;
+        let carried = StepNormRecord::make(NormMode::Jl, &steps, b, 24).unwrap();
+        // The verifier re-folds and sees a different (tampered) step witness
+        // whose coordinate far exceeds B; the honest recomputation cannot
+        // certify it under the same bound, so the audit rejects it.
+        let tampered = vec![
+            (vec![Fr::from(2u64), Fr::from(3u64)], vec![Fr::from(0u64)]),
+            (vec![Fr::from(1u64 << 63), Fr::from(5u64)], vec![Fr::from(0u64)]),
+        ];
+        assert!(
+            StepNormRecord::recompute(NormMode::Jl, &tampered, b, 24).is_none(),
+            "oversized tampered witness must not be certifiable"
+        );
+        // And a carried record cannot match a recomputation produced over a
+        // different (here: larger) public bound.
+        let forced = StepNormRecord::make(NormMode::Jl, &steps, 24, 24).unwrap();
+        assert!(!carried.verify_against(&forced, 24));
     }
 
     #[test]
-    fn bundle_rejects_exceeding_public_bound() {
-        let w = vec![Fr::from(3u64)];
-        let e = vec![Fr::from(2u64)];
-        let w_tt = crate::sumcheck::truth_table(&w);
-        let e_tt = crate::sumcheck::truth_table(&e);
-        // Cert certifies norm for a 64-bit bound, but the public B is 4 bits.
-        let bundle = NormCertBundle::make(NormMode::Range, &w_tt, &e_tt, 64, 24).unwrap();
-        assert!(!bundle.verify(&w_tt, &e_tt, NormMode::Range, 4));
+    fn step_norm_rejects_exceeding_public_bound() {
+        let steps = vec![(vec![Fr::from(2u64)], vec![Fr::from(0u64)])];
+        // Carried cert certifies a 64-bit bound, but the public B is 4 bits.
+        let carried = StepNormRecord::make(NormMode::Range, &steps, 64, 24).unwrap();
+        let recomputed = StepNormRecord::recompute(NormMode::Range, &steps, 64, 24).unwrap();
+        assert!(!carried.verify_against(&recomputed, 4));
     }
 }

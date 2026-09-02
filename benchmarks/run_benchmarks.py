@@ -476,6 +476,17 @@ def parse_bench_log(path):
             out["slim_proof_bytes"] = int(line.split()[2])
         elif line.startswith("level1 proof:"):
             out["level1_proof_bytes"] = int(line.split()[2])
+        elif line.startswith("norm-range level1 compress:"):
+            parts = line.split()
+            # "norm-range level1 compress: 0.0100 s | verify: 0.0090 s | proof: 8192 B (B = 2^64)"
+            out["norm_range_compress_s"] = float(parts[3])
+            out["norm_range_verify_s"] = float(parts[7])
+            out["norm_range_proof_bytes"] = int(parts[11])
+        elif line.startswith("norm-jl level1 compress:"):
+            parts = line.split()
+            out["norm_jl_compress_s"] = float(parts[3])
+            out["norm_jl_verify_s"] = float(parts[7])
+            out["norm_jl_proof_bytes"] = int(parts[11])
         elif line.startswith("sumcheck proof (full):"):
             out["full_proof_bytes"] = int(line.split()[3])
     return out
@@ -584,8 +595,8 @@ def render_summary(stamp, rows):
         "Measured with `benchmark_nova --release` (prover crate); slim IVC flow:",
         "NIFS fold → sumcheck compress → verify. Witnesses pre-generated.",
         "",
-        "| Step circuit | Curve | Commitment | Constraints | Steps | Fold total | Fold/step | Compress | Verify (full) | Verify (slim) | Level-1 compress | Verify (level-1) | Slim proof | Level-1 proof | Bundle |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| Step circuit | Curve | Commitment | Constraints | Steps | Fold total | Fold/step | Compress | Verify (full) | Verify (slim) | Level-1 compress | Verify (level-1) | Slim proof | Level-1 proof | Norm A (range) proof | Norm B (jl) proof | Bundle |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for r in rows:
         b, p = r["base"], r["parallel"]
@@ -594,10 +605,15 @@ def render_summary(stamp, rows):
         l1c = b.get("level1_compress_s", "—")
         l1v = b.get("verify_level1_s", "—")
         l1s = b.get("level1_proof_bytes", "—")
+        nr = b.get("norm_range_proof_bytes", "—")
+        nj = b.get("norm_jl_proof_bytes", "—")
         if l1c != "—":
             l1c = f"{b['level1_compress_s']:.2f} s / {p['level1_compress_s']:.2f} s"
             l1v = f"{b['verify_level1_s']*1000:.1f} ms"
             l1s = f"{b['level1_proof_bytes']/1024:.1f} KiB"
+        if nr != "—":
+            nr = f"{b['norm_range_proof_bytes']/1024:.1f} KiB"
+            nj = f"{b['norm_jl_proof_bytes']/1024:.1f} KiB"
         lines.append(
             f"| `{r['family']}` | {r['curve']} | {commit} | {constraints_str} | {r['steps']} "
             f"| {b['fold_s']:.1f} s / {p['fold_s']:.1f} s "
@@ -607,7 +623,7 @@ def render_summary(stamp, rows):
             f"| {b['verify_slim_s']*1000:.1f} ms "
             f"| {l1c} | {l1v} "
             f"| {b['slim_proof_bytes']/1024:.1f} KiB "
-            f"| {l1s} "
+            f"| {l1s} | {nr} | {nj} "
             f"| {b['bundle_bytes']/1024:.1f} KiB |"
         )
     lines += ["", "*Each cell shows baseline / --opt-parallel where two values are shown.*", ""]

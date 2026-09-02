@@ -21,10 +21,11 @@ use blake2::{Blake2b512, Digest};
 use prover::circuit::SparseCircuit;
 use prover::commitment::{CommitmentScheme, HashCommitment, PedersenCommitment, SisCommitment};
 use prover::nifs;
+use prover::norm;
 use prover::{
     curve::{NovaCurve, ScalarField},
-    fr_to_string, prove_level1, prove_sumcheck_compression_opt, verify_slim, verify_slim_level1,
-    verify_sumcheck_compression,
+    fr_to_string, frs_from_strings, prove_level1, prove_sumcheck_compression_opt, verify_slim,
+    verify_slim_level1, verify_sumcheck_compression,
     NifsBundle, NifsFinalInstance, NifsFoldOutput, OptFlags, DEFAULT_SIS_PARAM, NIFS_PARAMS_SEED,
     NIFS_TRANSCRIPT_PREFIX,
 };
@@ -274,6 +275,10 @@ fn benchmark_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
         std::any::type_name::<C>()
     );
 
+    // Starting norm bound B (bit-length); the per-mode loop below increases it
+    // until the honest witness actually fits, so this is just a lower bound.
+    let bound_bits = 64u32;
+
     // 1. NIFS fold.
     let t = Instant::now();
     let folded = nifs_fold::<C, CS>(circuit, wtns, parallel, sis_param);
@@ -321,17 +326,16 @@ fn benchmark_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     // 4. Level-1 path — degree-2 sumcheck + W/E opening proofs +
     //    final-claim-zero check.  Closes the "free E" / all-zeros gap;
     //    carries the commitment openings so it is auditable.
+    let opts = if parallel {
+        OptFlags::PARALLEL
+    } else {
+        OptFlags::NONE
+    };
+
+    // 4a. Plain level-1 (no norm enforcement).
     let t = Instant::now();
-    let l1 = prove_level1::<C, CS>(
-        circuit,
-        &folded,
-        if parallel {
-            OptFlags::PARALLEL
-        } else {
-            OptFlags::NONE
-        },
-    )
-    .unwrap_or_else(|e| panic!("failed to build Level-1 proof: {e}"));
+    let l1 = prove_level1::<C, CS>(circuit, &folded, opts, norm::NormMode::None, bound_bits)
+        .unwrap_or_else(|e| panic!("failed to build Level-1 proof: {e}"));
     let level1_compress_s = t.elapsed().as_secs_f64();
     println!(
         "level1 compress: {:.3} s (degree-2 sumcheck + W/E openings + final-claim-zero)",
@@ -345,6 +349,60 @@ fn benchmark_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     println!(
         "verify (level-1): {verify_level1_s:.4} s (degree-2 sumcheck + openings + final-claim-zero)"
     );
+
+    // 4b. Norm-enforced level-1, both Option A (range) and Option B (JL).
+    let mut range_level1_bytes = 0usize;
+    let mut jl_level1_bytes = 0usize;
+    for (mode, label) in [
+        (norm::NormMode::Range, "range"),
+        (norm::NormMode::Jl, "jl"),
+    ] {
+        // Ensure the honest witness actually fits B, else pick a larger bound.
+        let mut b = bound_bits;
+        while prove_level1::<C, CS>(circuit, &folded, opts, mode, b).is_err() {
+            b *= 2;
+        }
+        let t = Instant::now();
+        let l1n = prove_level1::<C, CS>(circuit, &folded, opts, mode, b)
+            .unwrap_or_else(|e| panic!("failed to build norm-{label} Level-1 proof: {e}"));
+        let norm_compress_s = t.elapsed().as_secs_f64();
+        let t = Instant::now();
+        verify_slim_level1::<C, CS>(&folded.bundle, &l1n, sis_param)
+            .unwrap_or_else(|e| panic!("norm-{label} Level-1 base verification failed: {e}"));
+        let step_w: Vec<(Vec<ScalarField<C>>, Vec<ScalarField<C>>)> = folded
+            .step_witnesses
+            .iter()
+            .map(|(z, e)| {
+                (
+                    frs_from_strings::<ScalarField<C>>(z)
+                        .unwrap_or_else(|_| panic!("norm-{label} parse Z")),
+                    frs_from_strings::<ScalarField<C>>(e)
+                        .unwrap_or_else(|_| panic!("norm-{label} parse E")),
+                )
+            })
+            .collect();
+        let carried = l1n
+            .norm
+            .as_ref()
+            .unwrap_or_else(|| panic!("norm-{label} proof carries no record"));
+        let recomputed = norm::StepNormRecord::recompute(mode, &step_w, b, b.min(128))
+            .unwrap_or_else(|| panic!("norm-{label} exceeds bound"));
+        if !carried.verify_against(&recomputed, b) {
+            panic!("norm-{label} audit mismatch");
+        }
+        let norm_verify_s = t.elapsed().as_secs_f64();
+        let bytes = l1n.to_cbor::<ScalarField<C>>()
+            .map(|c| c.len())
+            .unwrap_or(0);
+        if mode == norm::NormMode::Range {
+            range_level1_bytes = bytes;
+        } else {
+            jl_level1_bytes = bytes;
+        }
+        println!(
+            "norm-{label} level1 compress: {norm_compress_s:.4} s | verify: {norm_verify_s:.4} s | proof: {bytes} B (B = 2^{b})"
+        );
+    }
 
     // Sizes: the bundle is O(1) in N; the slim proof is what lands on-chain.
     let bundle_json =
@@ -390,6 +448,12 @@ fn benchmark_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
         level1_cbor.len() as f64 / 1024.0,
         level1_json.len() as f64 / 1024.0
     );
+    println!(
+        "level1 proof (+norm range): {range_level1_bytes} B — per-step Option-A range/bit-decomposition certificates"
+    );
+    println!(
+        "level1 proof (+norm jl): {jl_level1_bytes} B — per-step Option-B JL/sketch certificates"
+    );
     println!("verify (slim): {verify_slim_s:.4} s");
     println!(
         "verify (level-1): {:.4} s",
@@ -420,6 +484,7 @@ fn nifs_fold<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     let mut initial_state: Vec<String> = Vec::new();
     let mut acc_u: Option<nifs::RelaxedR1csInstance<CS>> = None;
     let mut acc_w: Option<nifs::RelaxedR1csWitness<CS>> = None;
+    let mut step_witnesses: Vec<(Vec<String>, Vec<String>)> = Vec::new();
 
     for p in wtns {
         circuit
@@ -452,6 +517,10 @@ fn nifs_fold<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
             w: w.to_vec(),
             e: zero_e.clone(),
         };
+        step_witnesses.push((
+            step_w.w.iter().map(fr_to_string).collect(),
+            step_w.e.iter().map(fr_to_string).collect(),
+        ));
 
         match acc_u.take() {
             None => {
@@ -503,6 +572,7 @@ fn nifs_fold<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
         bundle,
         final_instance: final_u,
         final_witness: final_w,
+        step_witnesses,
     }
 }
 

@@ -440,6 +440,118 @@ pub mod codec {
         w_opening: Vec<FrCbor>,
         e_opening: Vec<FrCbor>,
         bundle_instance_hash: ByteBuf,
+        norm: Option<StepNormRecordCbor>,
+    }
+
+    /// CBOR form of a single norm certificate (flavour-tagged).
+    #[derive(Serialize, Deserialize)]
+    enum NormCertCbor {
+        Range {
+            per_coord_bits: Vec<u32>,
+            bound_bits: u32,
+        },
+        Jl {
+            y: ByteBuf,
+            bound_bits: u32,
+            len: usize,
+            coord_bits: u32,
+        },
+    }
+
+    /// CBOR form of a single step's norm certificate (witness + error).
+    #[derive(Serialize, Deserialize)]
+    struct StepNormCertCbor {
+        cert_w: NormCertCbor,
+        cert_e: NormCertCbor,
+    }
+
+    /// CBOR form of the norm record carried in a level-1 proof.
+    #[derive(Serialize, Deserialize)]
+    struct StepNormRecordCbor {
+        mode: u8, // 0=none, 1=range, 2=jl
+        bound_bits: u32,
+        steps: Vec<StepNormCertCbor>,
+    }
+
+    fn norm_cert_enc(c: &super::norm::NormCertificate) -> NormCertCbor {
+        match c {
+            super::norm::NormCertificate::Range(r) => NormCertCbor::Range {
+                per_coord_bits: r.per_coord_bits.clone(),
+                bound_bits: r.bound_bits,
+            },
+            super::norm::NormCertificate::Jl(j) => NormCertCbor::Jl {
+                y: ByteBuf::from(j.y.clone()),
+                bound_bits: j.bound_bits,
+                len: j.len,
+                coord_bits: j.coord_bits,
+            },
+        }
+    }
+
+    fn norm_cert_dec(c: &NormCertCbor) -> Result<super::norm::NormCertificate, String> {
+        Ok(match c {
+            NormCertCbor::Range {
+                per_coord_bits,
+                bound_bits,
+            } => super::norm::NormCertificate::Range(super::norm::RangeCertificate {
+                per_coord_bits: per_coord_bits.clone(),
+                bound_bits: *bound_bits,
+            }),
+            NormCertCbor::Jl {
+                y,
+                bound_bits,
+                len,
+                coord_bits,
+            } => super::norm::NormCertificate::Jl(super::norm::JlCertificate {
+                y: y.to_vec(),
+                bound_bits: *bound_bits,
+                len: *len,
+                coord_bits: *coord_bits,
+            }),
+        })
+    }
+
+    fn norm_record_enc(r: &super::norm::StepNormRecord) -> StepNormRecordCbor {
+        StepNormRecordCbor {
+            mode: match r.mode {
+                super::norm::NormMode::None => 0,
+                super::norm::NormMode::Range => 1,
+                super::norm::NormMode::Jl => 2,
+            },
+            bound_bits: r.bound_bits,
+            steps: r
+                .steps
+                .iter()
+                .map(|s| StepNormCertCbor {
+                    cert_w: norm_cert_enc(&s.cert_w),
+                    cert_e: norm_cert_enc(&s.cert_e),
+                })
+                .collect(),
+        }
+    }
+
+    fn norm_record_dec(d: &StepNormRecordCbor) -> Result<super::norm::StepNormRecord, String> {
+        let mode = match d.mode {
+            0 => super::norm::NormMode::None,
+            1 => super::norm::NormMode::Range,
+            2 => super::norm::NormMode::Jl,
+            other => return Err(format!("unknown norm mode tag {other}")),
+        };
+        let steps = d
+            .steps
+            .iter()
+            .map(|s| {
+                Ok(super::norm::StepNormCert {
+                    cert_w: norm_cert_dec(&s.cert_w)?,
+                    cert_e: norm_cert_dec(&s.cert_e)?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(super::norm::StepNormRecord {
+            mode,
+            bound_bits: d.bound_bits,
+            steps,
+        })
     }
 
     pub fn level1_proof_encode<F: PrimeField>(
@@ -464,6 +576,7 @@ pub mod codec {
             w_opening: frs_enc::<F>(&p.w_opening)?,
             e_opening: frs_enc::<F>(&p.e_opening)?,
             bundle_instance_hash: hash_enc(&p.bundle_final_instance_hash)?,
+            norm: p.norm.as_ref().map(norm_record_enc),
         };
         write(&dto)
     }
@@ -492,6 +605,12 @@ pub mod codec {
             w_opening: frs_dec::<F>(&d.w_opening)?,
             e_opening: frs_dec::<F>(&d.e_opening)?,
             bundle_final_instance_hash: hex::encode(&d.bundle_instance_hash),
+            norm: d
+                .norm
+                .as_ref()
+                .map(norm_record_dec)
+                .transpose()
+                .map_err(Box::<dyn Error>::from)?,
         })
     }
 
@@ -543,6 +662,10 @@ pub struct NifsFoldOutput<CS: CommitmentScheme> {
     pub bundle: NifsBundle,
     pub final_instance: nifs::RelaxedR1csInstance<CS>,
     pub final_witness: nifs::RelaxedR1csWitness<CS>,
+    /// Per-fold-step pre-fold witnesses `(Z_j, E_j)` as hex field elements, in
+    /// fold order.  These are the genuinely short vectors used for norm
+    /// enforcement (the folded instance is field-scale and cannot be bounded).
+    pub step_witnesses: Vec<(Vec<String>, Vec<String>)>,
 }
 
 /// Sumcheck-based compression proof.
@@ -727,6 +850,7 @@ fn fold_nifs<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     let mut initial_state: Vec<String> = Vec::new();
     let mut acc_u: Option<nifs::RelaxedR1csInstance<CS>> = None;
     let mut acc_w: Option<nifs::RelaxedR1csWitness<CS>> = None;
+    let mut step_witnesses: Vec<(Vec<String>, Vec<String>)> = Vec::new();
 
     for (i, p) in wtns_paths.iter().enumerate() {
         circuit
@@ -767,6 +891,10 @@ fn fold_nifs<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
             w: w.to_vec(),
             e: zero_e.clone(),
         };
+        step_witnesses.push((
+            step_w.w.iter().map(fr_to_string).collect(),
+            step_w.e.iter().map(fr_to_string).collect(),
+        ));
 
         match acc_u.take() {
             None => {
@@ -830,6 +958,7 @@ fn fold_nifs<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
         bundle,
         final_instance: final_u,
         final_witness: final_w,
+        step_witnesses,
     })
 }
 
@@ -1271,6 +1400,10 @@ pub struct Level1SlimProof {
     pub e_opening: Vec<String>,
     /// Hash of the bundle's `final_instance` (binds proof to bundle).
     pub bundle_final_instance_hash: String,
+    /// Optional per-step norm-enforcement record (audit-only): a certificate
+    /// per fold step over that step's pre-fold witness `Z_j` and error `E_j`.
+    /// `None` when no norm check was requested (backward compatible).
+    pub norm: Option<norm::StepNormRecord>,
 }
 
 /// Verify a slim sumcheck compression proof against a NIFS bundle (in-memory).
@@ -1416,10 +1549,18 @@ pub fn verify_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
 /// Runs the degree-2 sumcheck over the raw relaxed-R1CS expression,
 /// creates HashPC opening proofs for W and E (binding them to the
 /// bundle's Pedersen commitments), and returns a [`Level1SlimProof`].
+///
+/// When `norm_mode` is [`norm::NormMode::Range`] or [`norm::NormMode::Jl`],
+/// the returned proof carries a [`norm::NormCertBundle`] asserting the
+/// infinity-norm of the folded witness `Z` and error `E` is ≤ `2^bound_bits`.
+/// If the honest witness/error exceeds the bound, the proof is rejected up
+/// front (bound too tight) — the caller must pick a `bound_bits` large enough.
 pub fn prove_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     circuit: &SparseCircuit<ScalarField<C>>,
     folded: &NifsFoldOutput<CS>,
     opts: OptFlags,
+    norm_mode: norm::NormMode,
+    bound_bits: u32,
 ) -> Result<Level1SlimProof, Box<dyn Error>> {
     let n_wires = circuit.n_wires as usize;
     let n_constraints = circuit.n_constraints as usize;
@@ -1460,6 +1601,36 @@ pub fn prove_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>
     let hash = blake2::Blake2b512::digest(instance_str.as_bytes());
     let bundle_final_instance_hash = hex::encode(&hash[..32]);
 
+    // Optional norm section: per-step certificates over the *pre-fold* step
+    // witnesses `(Z_j, E_j)` (audit-only).  The folded instance itself is
+    // field-scale and cannot be bounded, so enforcement targets each step.
+    let norm_section = if norm_mode == norm::NormMode::None {
+        None
+    } else {
+        let step_w = folded
+            .step_witnesses
+            .iter()
+            .map(|(z, e)| {
+                Ok((
+                    frs_from_strings::<ScalarField<C>>(z)?,
+                    frs_from_strings::<ScalarField<C>>(e)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
+        norm::StepNormRecord::make(
+            norm_mode,
+            &step_w,
+            bound_bits,
+            bound_bits.min(128),
+        )
+        .ok_or_else(|| {
+            format!(
+                "norm bound B = 2^{bound_bits} is too tight for this circuit's honest step witnesses"
+            )
+        })?
+        .into()
+    };
+
     Ok(Level1SlimProof {
         sumcheck_polys: sc_proof
             .polys
@@ -1478,10 +1649,11 @@ pub fn prove_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>
         e_commit_hash: hex::encode(&e_hash),
         e_opening: e_opening.table.iter().map(fr_to_string).collect(),
         bundle_final_instance_hash,
+        norm: norm_section,
     })
 }
 
-/// Verify a Level-1 slim proof against a NIFS bundle.
+/// /// Verify a Level-1 slim proof against a NIFS bundle.
 ///
 /// Checks:
 /// 1. Bundle binding (final_instance hash).
@@ -1492,6 +1664,11 @@ pub fn prove_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>
 /// 5. HashPC opening proofs for W and E (binds az_r/bz_r/cz_r/er_r to the
 ///    committed values).
 /// 6. Pedersen commitment consistency with the bundle.
+///
+/// Norm enforcement (per-step, audit-only) is a separate check performed by
+/// [`verify_level1_norm`], which re-folds the public step witnesses: it is
+/// not part of this function because the per-step witnesses live in the fold
+/// log, not in the bundle/proof.
 pub fn verify_slim_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     bundle: &NifsBundle,
     proof: &Level1SlimProof,
@@ -1661,6 +1838,87 @@ pub fn verify_slim_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarFiel
     })
 }
 
+/// Verify a Level-1 proof's per-step norm record (audit-only).
+///
+/// The norm record carried by the proof asserts a bound `B` on each fold
+/// step's *pre-fold* witness `Z_j` and error `E_j`.  This verifier:
+///
+/// 1. Re-runs [`fold_nifs`] on the public circuit + step witnesses to
+///    independently recompute the per-step witnesses (ground truth).
+/// 2. Recomputes the [`norm::StepNormRecord`] from those witnesses.
+/// 3. Requires the proof to carry a record, and cross-checks that the carried
+///    record exactly equals the recomputed one (`verify_against`), which also
+///    enforces that every step is within the public bound `B`.
+/// 4. Returns the carried record so the caller can report audit metrics.
+///
+/// This is a genuine *audit* check: it does not affect the base soundness
+/// proof ([`verify_slim_level1`]), but gives the verifier cryptographic
+/// assurance that every pre-fold witness was short — closing the "conjectured
+/// PQ" gap in [`norm::NormMode::Jl`] (SIS-style) and the range decomposition
+/// in [`norm::NormMode::Range`].
+pub fn verify_level1_norm<
+    C: NovaCurve,
+    CS: CommitmentScheme<Scalar = ScalarField<C>>,
+>(
+    circuit: &Path,
+    steps: &Path,
+    opts: OptFlags,
+    sis_param: usize,
+    bundle: &NifsBundle,
+    proof: &Level1SlimProof,
+    norm_mode: norm::NormMode,
+    bound_bits: u32,
+) -> Result<norm::StepNormRecord, Box<dyn Error>> {
+    if norm_mode == norm::NormMode::None {
+        return Err("norm audit requested with mode = none".into());
+    }
+    let folded: NifsFoldOutput<CS> = fold_nifs::<C, CS>(circuit, steps, opts, sis_param)?;
+    if folded.bundle != *bundle {
+        return Err("re-folded bundle differs from the level-1 bundle".into());
+    }
+
+    let carried = proof.norm.as_ref().ok_or_else(|| {
+        format!(
+            "level-1 proof carries no norm record (mode = {})",
+            norm_mode.as_str()
+        )
+    })?;
+
+    let step_w = folded
+        .step_witnesses
+        .iter()
+        .map(|(z, e)| {
+            Ok((
+                frs_from_strings::<ScalarField<C>>(z)?,
+                frs_from_strings::<ScalarField<C>>(e)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
+
+    let recomputed = norm::StepNormRecord::recompute(
+        norm_mode,
+        &step_w,
+        bound_bits,
+        bound_bits.min(128),
+    )
+    .ok_or_else(|| {
+        format!(
+            "recomputed per-step norms exceed public bound B = 2^{bound_bits} (mode = {})",
+            norm_mode.as_str()
+        )
+    })?;
+
+    if !carried.verify_against(&recomputed, bound_bits) {
+        return Err(format!(
+            "per-step norm audit failed: carried record does not match ground-truth \
+             recomputation or a step exceeds B = 2^{bound_bits} (mode = {})",
+            norm_mode.as_str()
+        )
+        .into());
+    }
+    Ok(carried.clone())
+}
+
 /// Verify a slim sumcheck compression proof against a NIFS bundle (CLI path).
 ///
 /// Loads the NIFS bundle and the compact CBOR slim proof, then runs
@@ -1689,10 +1947,20 @@ pub fn run_verify_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C
 /// additionally checks the final claim is zero, verifies the W/E HashPC
 /// opening proofs, and checks Pedersen commitment consistency with the
 /// bundle — closing the "free E" / all-zeros soundness gap.
+///
+/// When `norm_mode ≠ None`, the per-step norm audit is also run: this
+/// requires the public `circuit` and `steps` inputs (to re-fold and recompute
+/// the ground-truth step witnesses).  The audit cross-checks the record
+/// carried in the proof against that recomputation.
 pub fn run_verify_slim_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     ivc: &Path,
     level1_proof: &Path,
     sis_param: usize,
+    norm_mode: norm::NormMode,
+    bound_bits: u32,
+    circuit: Option<&Path>,
+    steps: Option<&Path>,
+    opts: OptFlags,
 ) -> Result<VerifyOutput, Box<dyn Error>> {
     let bundle_bytes =
         fs::read(ivc).map_err(|e| format!("failed to read IVC bundle {}: {e}", ivc.display()))?;
@@ -1708,7 +1976,34 @@ pub fn run_verify_slim_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = Scalar
     let l1: Level1SlimProof = codec::level1_proof_decode::<ScalarField<C>>(&proof_bytes)
         .map_err(|e| format!("failed to parse level-1 proof: {e}"))?;
 
-    verify_slim_level1::<C, CS>(&bundle, &l1, sis_param)
+    let out = verify_slim_level1::<C, CS>(&bundle, &l1, sis_param)?;
+
+    if norm_mode != norm::NormMode::None {
+        let circuit = circuit.ok_or_else(|| {
+            "norm audit requires --circuit (needed to re-fold step witnesses)".to_string()
+        })?;
+        let steps = steps
+            .ok_or_else(|| "norm audit requires --steps (needed to re-fold step witnesses)".to_string())?;
+        let record = verify_level1_norm::<C, CS>(
+            circuit,
+            steps,
+            opts,
+            sis_param,
+            &bundle,
+            &l1,
+            norm_mode,
+            bound_bits,
+        )?;
+        eprintln!(
+            "Per-step norm audit passed (mode = {}, B = 2^{}, {} steps, {} bytes of certs)",
+            norm_mode.as_str(),
+            bound_bits,
+            record.steps.len(),
+            record.size_bytes()
+        );
+    }
+
+    Ok(out)
 }
 
 /// Compress a NIFS bundle into a Level-1 proof (degree-2 sumcheck + W/E
@@ -1719,12 +2014,14 @@ pub fn run_compress_level1_opt<C: NovaCurve, CS: CommitmentScheme<Scalar = Scala
     out: &Path,
     opts: OptFlags,
     sis_param: usize,
+    norm_mode: norm::NormMode,
+    bound_bits: u32,
 ) -> Result<CompressOutput, Box<dyn Error>> {
     let c = load_circuit::<C>(circuit)?;
     check_step_circuit::<C>(&c)?;
 
     let folded = fold_nifs::<C, CS>(circuit, steps, opts, sis_param)?;
-    let l1 = prove_level1::<C, CS>(&c, &folded, opts)?;
+    let l1 = prove_level1::<C, CS>(&c, &folded, opts, norm_mode, bound_bits)?;
 
     let cbor = codec::level1_proof_encode::<ScalarField<C>>(&l1)
         .map_err(|e| format!("failed to serialize level-1 proof: {e}"))?;
@@ -2613,7 +2910,7 @@ mod tests {
         let l1_proof = prove_level1::<
             crate::curve::Bls12_381,
             PedersenCommitment<crate::curve::Bls12_381>,
-        >(&c, &fold_out, OptFlags::NONE)
+        >(&c, &fold_out, OptFlags::NONE, norm::NormMode::None, 64)
         .unwrap();
 
         let vout = verify_slim_level1::<
@@ -2659,6 +2956,7 @@ mod tests {
             e_commit_hash: "00".repeat(64),
             e_opening: vec![],
             bundle_final_instance_hash: "deadbeef".to_string(),
+            norm: None,
         };
 
         let result = verify_slim_level1::<
@@ -2692,7 +2990,7 @@ mod tests {
         let mut l1_proof = prove_level1::<
             crate::curve::Bls12_381,
             PedersenCommitment<crate::curve::Bls12_381>,
-        >(&c, &fold_out, OptFlags::NONE)
+        >(&c, &fold_out, OptFlags::NONE, norm::NormMode::None, 64)
         .unwrap();
 
         // The 1-constraint test circuit produces 0 sumcheck rounds.
@@ -2704,6 +3002,186 @@ mod tests {
             >(&fold_out.bundle, &l1_proof, DEFAULT_SIS_PARAM);
             assert!(result.is_err(), "tampered poly must be rejected");
         }
+    }
+
+    /// Helper: fold a 3-step chain into a bundle + level-1 proof proving
+    /// infrastructure (shared by the norm tests).  Also returns the circuit
+    /// and steps paths so the norm-audit verifier can re-fold ground truth.
+    fn norm_setup() -> (
+        tempfile::TempDir,
+        PathBuf,
+        PathBuf,
+        NifsFoldOutput<PedersenCommitment<crate::curve::Bls12_381>>,
+        SparseCircuit<Fr>,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let r1cs_path = tmp.path().join("step.r1cs");
+        let steps_dir = tmp.path().join("steps");
+        fs::write(&r1cs_path, step_r1cs_bytes()).unwrap();
+        fs::create_dir(&steps_dir).unwrap();
+        let mut state = 2u64;
+        for (i, x) in [3u64, 5, 7].iter().enumerate() {
+            state = write_step_wtns(&steps_dir, i, state, *x);
+        }
+        let fold_out = run_fold_nifs::<
+            crate::curve::Bls12_381,
+            PedersenCommitment<crate::curve::Bls12_381>,
+        >(&r1cs_path, &steps_dir)
+        .unwrap();
+        let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
+        (tmp, r1cs_path, steps_dir, fold_out, c)
+    }
+
+    /// E2E: norm-enforced level-1 proof (Option A — range) verifies against a
+    /// re-fold norm audit.
+    #[test]
+    fn level1_norm_range_e2e() {
+        let (_tmp, r1cs_path, steps_dir, fold_out, c) = norm_setup();
+        let l1 = prove_level1::<
+            crate::curve::Bls12_381,
+            PedersenCommitment<crate::curve::Bls12_381>,
+        >(&c, &fold_out, OptFlags::NONE, norm::NormMode::Range, 64)
+        .unwrap();
+        let rec = verify_level1_norm::<
+            crate::curve::Bls12_381,
+            PedersenCommitment<crate::curve::Bls12_381>,
+        >(
+            &r1cs_path,
+            &steps_dir,
+            OptFlags::NONE,
+            DEFAULT_SIS_PARAM,
+            &fold_out.bundle,
+            &l1,
+            norm::NormMode::Range,
+            64,
+        )
+        .unwrap();
+        assert_eq!(rec.steps.len(), 3);
+        assert!(l1.norm.is_some());
+    }
+
+    /// E2E: norm-enforced level-1 proof (Option B — JL) verifies against a
+    /// re-fold norm audit.
+    #[test]
+    fn level1_norm_jl_e2e() {
+        let (_tmp, r1cs_path, steps_dir, fold_out, c) = norm_setup();
+        let l1 = prove_level1::<
+            crate::curve::Bls12_381,
+            PedersenCommitment<crate::curve::Bls12_381>,
+        >(&c, &fold_out, OptFlags::NONE, norm::NormMode::Jl, 64)
+        .unwrap();
+        verify_level1_norm::<
+            crate::curve::Bls12_381,
+            PedersenCommitment<crate::curve::Bls12_381>,
+        >(
+            &r1cs_path,
+            &steps_dir,
+            OptFlags::NONE,
+            DEFAULT_SIS_PARAM,
+            &fold_out.bundle,
+            &l1,
+            norm::NormMode::Jl,
+            64,
+        )
+        .unwrap();
+        assert!(l1.norm.is_some());
+    }
+
+    /// E2E: a norm record with a bound tampered tighter than the honest
+    /// recomputation is rejected by the re-fold audit.
+    #[test]
+    fn level1_norm_jl_rejects_tampered_w() {
+        let (_tmp, r1cs_path, steps_dir, fold_out, c) = norm_setup();
+        let mut l1 = prove_level1::<
+            crate::curve::Bls12_381,
+            PedersenCommitment<crate::curve::Bls12_381>,
+        >(&c, &fold_out, OptFlags::NONE, norm::NormMode::Jl, 64)
+        .unwrap();
+        // Flip the carried bound_bits to a tighter value so it can no longer
+        // equal the ground-truth recomputation.
+        l1.norm.as_mut().unwrap().bound_bits = 8;
+        let result = verify_level1_norm::<
+            crate::curve::Bls12_381,
+            PedersenCommitment<crate::curve::Bls12_381>,
+        >(
+            &r1cs_path,
+            &steps_dir,
+            OptFlags::NONE,
+            DEFAULT_SIS_PARAM,
+            &fold_out.bundle,
+            &l1,
+            norm::NormMode::Jl,
+            64,
+        );
+        assert!(result.is_err(), "tampered norm bound must be rejected");
+    }
+
+    /// E2E: requesting a norm audit when the proof carries no record is
+    /// rejected.
+    #[test]
+    fn level1_norm_requires_certificate_in_proof() {
+        let (_tmp, r1cs_path, steps_dir, fold_out, c) = norm_setup();
+        let l1 = prove_level1::<
+            crate::curve::Bls12_381,
+            PedersenCommitment<crate::curve::Bls12_381>,
+        >(&c, &fold_out, OptFlags::NONE, norm::NormMode::None, 64)
+        .unwrap();
+        let result = verify_level1_norm::<
+            crate::curve::Bls12_381,
+            PedersenCommitment<crate::curve::Bls12_381>,
+        >(
+            &r1cs_path,
+            &steps_dir,
+            OptFlags::NONE,
+            DEFAULT_SIS_PARAM,
+            &fold_out.bundle,
+            &l1,
+            norm::NormMode::Range,
+            64,
+        );
+        assert!(result.is_err(), "missing norm record must be rejected");
+    }
+
+    /// E2E: proving with a bound too tight for the honest step witnesses fails
+    /// up front.
+    #[test]
+    fn level1_norm_rejects_tight_bound_at_prove() {
+        let (_tmp, _r1cs_path, _steps_dir, fold_out, c) = norm_setup();
+        // A 1-bit bound cannot hold coordinates of magnitude ≥ 2.
+        let result = prove_level1::<
+            crate::curve::Bls12_381,
+            PedersenCommitment<crate::curve::Bls12_381>,
+        >(&c, &fold_out, OptFlags::NONE, norm::NormMode::Range, 1);
+        assert!(result.is_err(), "bound too tight must be rejected at prove time");
+    }
+
+    /// E2E: CBOR round-trip preserves the norm record, and a round-tripped
+    /// proof still passes the re-fold norm audit.
+    #[test]
+    fn level1_norm_cbor_roundtrip() {
+        let (_tmp, r1cs_path, steps_dir, fold_out, c) = norm_setup();
+        let l1 = prove_level1::<
+            crate::curve::Bls12_381,
+            PedersenCommitment<crate::curve::Bls12_381>,
+        >(&c, &fold_out, OptFlags::NONE, norm::NormMode::Jl, 64)
+        .unwrap();
+        let bytes = l1.to_cbor::<Fr>().unwrap();
+        let decoded = Level1SlimProof::from_cbor::<Fr>(&bytes).unwrap();
+        assert_eq!(decoded.norm, l1.norm);
+        verify_level1_norm::<
+            crate::curve::Bls12_381,
+            PedersenCommitment<crate::curve::Bls12_381>,
+        >(
+            &r1cs_path,
+            &steps_dir,
+            OptFlags::NONE,
+            DEFAULT_SIS_PARAM,
+            &fold_out.bundle,
+            &decoded,
+            norm::NormMode::Jl,
+            64,
+        )
+        .unwrap();
     }
 
     // ── Parameter-mismatch adversarial tests ──────────────────────────
