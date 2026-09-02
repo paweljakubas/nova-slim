@@ -8,7 +8,7 @@ no trusted setup, and sub-millisecond verification**.
 📄 **[Technical specification / whitepaper](whitepaper.pdf)** — formal
 description of the protocol, security proofs, and benchmark analysis.
 
-Supports **BLS12-381** (Cardano), **BN254** (Ethereum), **Pallas** (Zcash), **Vesta**, **Grumpkin**, and **Bandersnatch**. Three commitment schemes — **Pedersen** (fast, classical), **SIS** (faster folding, quantum-ready), and **Hash** (zero-param, on-the-fly derivation, post-quantum) — are selectable at runtime via `--commitment {pedersen,sis,hash}`.
+Supports **BLS12-381** (Cardano), **BN254** (Ethereum), **Pallas** (Zcash), **Vesta**, **Grumpkin**, and **Bandersnatch**. Three commitment schemes — **Pedersen** (fast, classical), **SIS** (faster folding, quantum-ready), and **Hash** (Blake2b-derived matrix entries, zero-param storage) — are selectable at runtime via `--commitment {pedersen,sis,hash}`.  **Hash is operationally SIS/Ajtai in disguise** ($c = A \cdot v$ with Blake2b-derived matrix entries), not a separate hash-based binding mechanism; it inherits the same missing-norm-enforcement caveat as SIS.
 
 ## Disclaimer
 
@@ -61,10 +61,13 @@ nova-slim verify   → check bundle + proof (slim: ~0.2 ms)
 | **Parallel optimizations** (`--opt parallel`) | ✅ 0.2.0 | Rayon-based; 3–5× speedup on large circuits |
 | **Aiken eUTXO verifier** | ✅ 0.2.0 | On-chain Plutus-compatible verifier (`cardano/nova-slim-verifier/`) |
 | **Cross-system comparison** (Sonobe, STARK, LatticeFold) | ✅ 0.2.0 | Benchmarked against Nova+CycleFold and theoretical baselines |
-| **Formal security proof** | ✅ 0.2.0 | 4-game knowledge-soundness proof; generic over commitment scheme |
-| In-circuit recursive folding (full IVC security) | 🔜 Future | Each step proves correctness of all previous steps |
+| **Formal security proof** | ✅ 0.2.0 | 4-game knowledge-soundness proof; generic over commitment scheme **(batch-proving model only)** |
+| **Level 1 — Algebraic consistency check** | 🔜 0.3.0 | Add `az_r`, `bz_r`, `cz_r`, `er_r` to the Rust slim proof and verify `az_r·bz_r - u·cz_r - er_r == final_claim`. Prevents the trivial all-zero transcript attack. Already implemented in the Aiken verifier. |
+| **Level 2 — Sumcheck-based matrix evaluation** | 🔜 0.4.0 | Three extra sumchecks proving `az_r`, `bz_r`, `cz_r` are the *correct* evaluations of the matrix-vector products at the random point. Restores knowledge soundness under an untrusted prover. Estimated honest proof size: ~3–5 KiB for Ed25519 (k=13). |
+| **Toward quantum proofs** | 🔜 Research | Close gaps (i) and (ii) for a complete post-quantum argument: (i) QROM Fiat–Shamir soundness via multi-round measure-and-reprogram (`thm:qrom-fs`); (ii) quantum extraction via commitment collapsing (`thm:qrom-2`). These layer on top of a classically sound verifier (Level 2). |
+| In-circuit recursive folding (full IVC security) | 🔜 Future | Each step proves correctness of all previous steps; requires curve cycle (e.g. BLS12-381 + Bandersnatch) |
 | Fixed-base MSM optimization (Pedersen only) | 🔜 Future | ~2× speedup by precomputing doubling ladder |
-| SIS norm enforcement / LatticeFold range proofs | 🔜 Future | Required for post-quantum guarantee under adversarial witnesses |
+| SIS norm enforcement / LatticeFold range proofs | 🔜 Future | Required for post-quantum guarantee under adversarial witnesses; also applies to Hash (SIS in disguise) |
 | zk-SNARK decider (Groth16) for constant-size verification | 🔜 Future | Sub-200 B on-chain proofs with one-time trusted setup |
 | Bandersnatch real-circuit support | 🔜 Future | circom does not yet support Bandersnatch prime |
 | Grumpkin / Pallas / Vesta real-circuit VRF benchmarks | 🔜 Future | snarkjs witness generation for non-standard primes is slow |
@@ -140,24 +143,43 @@ The **full** sumcheck proof includes the entire HashPC opening (the witness
  (depending on $k = \log_2 n_{constraints}$) that is **independent of the
  commitment scheme and its security parameter**.
 
-| Property | Full proof | Slim proof |
+| Property | Full proof | Slim proof (batch-proving) |
 |---|---|---|
-| Soundness | Yes | Yes |
+| Soundness | Yes | Yes *in the batch-proving model* |
 | Knowledge-soundness | Yes (explicit witness) | Yes (implicit witness) |
 | On-chain size | ~240 KiB | **~0.4–2.5 KiB** (independent of m) |
+| Honest sound size | — | **~5–12 KiB** (classical) / **~30–100+ KiB** (PQ) |
 | Auditability | Full witness reconstruction | Commitment binding only |
 | Trusted setup | None | None |
-| Verifier time | ~8 s (HashPC recompute) | **~0.2 ms** (sumcheck only) |
+| Verifier time | ~8 s (HashPC recompute) | **~0.2 ms** (sumcheck only, no MLE eval) |
 
-**Do we lose security? No.** The slim proof is still a sound argument of
-knowledge: the prover cannot forge it without knowing a valid witness (W, E)
-that satisfies the relaxed R1CS equation and matches the commitments in the
-NIFS bundle. What is removed is *explicit extractability* — an auditor cannot
-directly reconstruct the witness from the slim proof alone. The audit trail is
-preserved by construction: the prover can publish the full proof off-chain;
-anyone can verify that its commitment hashes match the slim proof, confirming
-both refer to the same witness. The full proof serves as a legally binding
-audit record, while the slim proof serves as the transaction payload.
+**Do we lose security?** The slim proof preserves knowledge soundness *in the
+batch-proving model* where the prover is trusted during folding. However, the
+current verifier does **not** evaluate the circuit MLEs at the random point,
+open the committed witness/error, or re-verify the fold.  Because relaxed R1CS
+has a free error vector $E$, an all-zero-polynomial transcript passes against
+any bundle.  Acceptance therefore attests honest pipeline execution, not
+knowledge of a valid witness under an untrusted prover.
+
+**Honest sizing.** The headline ~0.4–2.5 KiB omits three things a sound
+system must carry:
+1. **PCS openings** (~1–4 KiB if succinct),
+2. **Fold verification** (~3–5 KiB amortised),
+3. **Norm proofs** (~20–80 KiB for SIS/Hash post-quantum).
+
+Closing these gaps yields estimated honest sizes of **~5–12 KiB**
+(classical) and **~30–100+ KiB** (post-quantum).
+
+The audit trail is preserved by construction: the prover can publish the full
+proof off-chain; anyone can verify that its commitment hashes match the slim
+proof, confirming both refer to the same witness. The full proof serves as a
+legally binding audit record, while the slim proof serves as the transaction
+payload.
+
+**Positioning.** Because the verifier gap remains open, NovaSlim is best
+positioned as a **fund-recovery mechanism** — verified by a Plutus contract
+once classical signatures are disabled on Cardano — rather than as a day-to-day
+signing scheme.
 
 Step circuits are bundled in `circom/`:
 - `Ed25519Verify/` — Ed25519 signature verification (~7.7K constraints)

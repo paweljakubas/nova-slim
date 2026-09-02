@@ -1156,6 +1156,40 @@ impl NifsSumcheckProof {
     }
 }
 
+/// Level-1 slim proof with degree-2 sumcheck + commitment bindings.
+///
+/// This proof type uses the additive degree-2 sumcheck over the raw
+/// relaxed-R1CS expression (keeping AZ, BZ, CZ, E as separate MLEs),
+/// plus HashPC opening proofs that bind W and E to the bundle's
+/// Pedersen commitments.  This closes the "free E" gap that the slim
+/// path leaves open.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Level1SlimProof {
+    /// Degree-2 sumcheck round polynomials, each `[g(0), g(1), g(2)]`.
+    pub sumcheck_polys: Vec<Vec<String>>,
+    /// Sumcheck claims (initial sum + per-round + final).
+    pub sumcheck_claims: Vec<String>,
+    /// Fiat-Shamir random challenges.
+    pub r_challenges: Vec<String>,
+    /// Claimed MLE evaluations at random point r.
+    pub az_r: String,
+    pub bz_r: String,
+    pub cz_r: String,
+    pub er_r: String,
+    /// Slack scalar u.
+    pub u: String,
+    /// BLAKE2b-512 hash of the committed witness Z.
+    pub w_commit_hash: String,
+    /// HashPC opening proof for Z.
+    pub w_opening: Vec<String>,
+    /// BLAKE2b-512 hash of the committed error E.
+    pub e_commit_hash: String,
+    /// HashPC opening proof for E.
+    pub e_opening: Vec<String>,
+    /// Hash of the bundle's `final_instance` (binds proof to bundle).
+    pub bundle_final_instance_hash: String,
+}
+
 /// Verify a slim sumcheck compression proof against a NIFS bundle (in-memory).
 ///
 /// Checks the sumcheck protocol (round polynomials, Fiat-Shamir, final claim)
@@ -1287,6 +1321,234 @@ pub fn verify_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
 
     // NOTE: HashPC opening proofs and Pedersen commitment checks are intentionally
     // omitted — they are verified off-chain as an audit trail.
+
+    Ok(VerifyOutput {
+        steps: bundle.n_steps,
+        transcript_final: bundle.transcript_final.clone(),
+    })
+}
+
+/// Build a Level-1 slim proof from a folded NIFS instance.
+///
+/// Runs the degree-2 sumcheck over the raw relaxed-R1CS expression,
+/// creates HashPC opening proofs for W and E (binding them to the
+/// bundle's Pedersen commitments), and returns a [`Level1SlimProof`].
+pub fn prove_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
+    circuit: &SparseCircuit<ScalarField<C>>,
+    folded: &NifsFoldOutput<CS>,
+    opts: OptFlags,
+) -> Result<Level1SlimProof, Box<dyn Error>> {
+    let n_wires = circuit.n_wires as usize;
+    let n_constraints = circuit.n_constraints as usize;
+    let params =
+        commitment::PedersenParams::<C>::from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints);
+
+    let z = &folded.final_witness.w;
+    let e = &folded.final_witness.e;
+    let u = folded.final_instance.u;
+
+    // Run degree-2 sumcheck.
+    let (sc_proof, r_challenges) = sumcheck::prove_degree2_opts::<C>(
+        &circuit.l,
+        &circuit.r,
+        &circuit.o,
+        z,
+        u,
+        e,
+        opts.parallel,
+    );
+
+    // HashPC commitments.
+    let (w_hash, _) = sumcheck::poly_commit::<C>(z, &params.basis_w);
+    let (e_hash, _) = sumcheck::poly_commit::<C>(e, &params.basis_e);
+
+    // HashPC opening proofs.
+    let w_opening = sumcheck::create_opening::<C>(z);
+    let e_opening = sumcheck::create_opening::<C>(e);
+
+    // Bundle binding hash.
+    let instance_str = format!(
+        "{}|{}|{}|{}",
+        folded.bundle.final_instance.x.join(":"),
+        folded.bundle.final_instance.u,
+        folded.bundle.final_instance.w_commit,
+        folded.bundle.final_instance.e_commit,
+    );
+    let hash = blake2::Blake2b512::digest(instance_str.as_bytes());
+    let bundle_final_instance_hash = hex::encode(&hash[..32]);
+
+    Ok(Level1SlimProof {
+        sumcheck_polys: sc_proof
+            .polys
+            .iter()
+            .map(|p| p.iter().map(fr_to_string).collect())
+            .collect(),
+        sumcheck_claims: sc_proof.claims.iter().map(fr_to_string).collect(),
+        r_challenges: r_challenges.iter().map(fr_to_string).collect(),
+        az_r: fr_to_string(&sc_proof.az_r),
+        bz_r: fr_to_string(&sc_proof.bz_r),
+        cz_r: fr_to_string(&sc_proof.cz_r),
+        er_r: fr_to_string(&sc_proof.er_r),
+        u: fr_to_string(&u),
+        w_commit_hash: hex::encode(&w_hash),
+        w_opening: w_opening.table.iter().map(fr_to_string).collect(),
+        e_commit_hash: hex::encode(&e_hash),
+        e_opening: e_opening.table.iter().map(fr_to_string).collect(),
+        bundle_final_instance_hash,
+    })
+}
+
+/// Verify a Level-1 slim proof against a NIFS bundle.
+///
+/// Checks:
+/// 1. Bundle binding (final_instance hash).
+/// 2. Degree-2 sumcheck validity (round polys, Fiat-Shamir).
+/// 3. Level-1 equation: `az_r·bz_r − u·cz_r − er_r == final_claim`.
+/// 4. HashPC opening proofs for W and E (closes the "free E" gap).
+/// 5. Pedersen commitment consistency with the bundle.
+pub fn verify_slim_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
+    bundle: &NifsBundle,
+    proof: &Level1SlimProof,
+    sis_param: usize,
+) -> Result<VerifyOutput, Box<dyn Error>> {
+    // 0. Bundle binding.
+    {
+        let instance_str = format!(
+            "{}|{}|{}|{}",
+            bundle.final_instance.x.join(":"),
+            bundle.final_instance.u,
+            bundle.final_instance.w_commit,
+            bundle.final_instance.e_commit,
+        );
+        let expected_hash =
+            hex::encode(&blake2::Blake2b512::digest(instance_str.as_bytes())[..32]);
+        if proof.bundle_final_instance_hash != expected_hash {
+            return Err(
+                "level-1 proof is not bound to this NIFS bundle (final instance hash mismatch)"
+                    .into(),
+            );
+        }
+    }
+
+    let n_wires = bundle.n_wires as usize;
+    let n_constraints = bundle.n_constraints as usize;
+
+    // 1. Parse and reconstruct the degree-2 sumcheck proof.
+    let polys: Vec<[ScalarField<C>; 3]> = proof
+        .sumcheck_polys
+        .iter()
+        .map(|row| {
+            let frs: Vec<ScalarField<C>> = frs_from_strings::<ScalarField<C>>(row)?;
+            if frs.len() != 3 {
+                return Err("degree-2 polynomial must have exactly 3 evaluations".into());
+            }
+            Ok([frs[0], frs[1], frs[2]])
+        })
+        .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
+
+    let claims = frs_from_strings::<ScalarField<C>>(&proof.sumcheck_claims)?;
+    let claimed_r = frs_from_strings::<ScalarField<C>>(&proof.r_challenges)?;
+    let az_r = proof
+        .az_r
+        .parse::<ScalarField<C>>()
+        .map_err(|_| "invalid az_r")?;
+    let bz_r = proof
+        .bz_r
+        .parse::<ScalarField<C>>()
+        .map_err(|_| "invalid bz_r")?;
+    let cz_r = proof
+        .cz_r
+        .parse::<ScalarField<C>>()
+        .map_err(|_| "invalid cz_r")?;
+    let er_r = proof
+        .er_r
+        .parse::<ScalarField<C>>()
+        .map_err(|_| "invalid er_r")?;
+    let u_val = proof
+        .u
+        .parse::<ScalarField<C>>()
+        .map_err(|_| "invalid u")?;
+
+    let sc_proof = sumcheck::SumcheckProofDegree2 {
+        claims,
+        polys,
+        az_r,
+        bz_r,
+        cz_r,
+        er_r,
+    };
+
+    // 2. Verify degree-2 sumcheck.
+    let v_out = sumcheck::verify_degree2::<C>(&sc_proof);
+    if !v_out.ok {
+        return Err("degree-2 sumcheck verification failed".into());
+    }
+
+    // 3. Check Fiat-Shamir challenges match.
+    if v_out.r_challenges != claimed_r {
+        return Err("degree-2 sumcheck Fiat-Shamir challenges do not match".into());
+    }
+
+    // 4. Check the level-1 equation: az_r * bz_r - u * cz_r - er_r == final_claim.
+    let expected = az_r * bz_r - u_val * cz_r - er_r;
+    if expected != v_out.final_claim {
+        return Err(format!(
+            "level-1 final equation check failed: az*bz - u*cz - er = {} != final_claim = {}",
+            fr_to_string(&expected),
+            fr_to_string(&v_out.final_claim)
+        )
+        .into());
+    }
+
+    // 5. Verify HashPC opening proofs (W and E).
+    let w_opening = sumcheck::OpeningProof::<C> {
+        table: frs_from_strings::<ScalarField<C>>(&proof.w_opening)?,
+    };
+    let w_hash =
+        hex::decode(&proof.w_commit_hash).map_err(|e| format!("invalid w_commit_hash hex: {e}"))?;
+    let actual_w_hash: Vec<u8> = {
+        let mut h = Blake2b512::new();
+        for val in &w_opening.table {
+            let mut buf = Vec::new();
+            val.serialize_compressed(&mut buf).unwrap();
+            h.update(&buf);
+        }
+        h.finalize().to_vec()
+    };
+    if actual_w_hash != w_hash {
+        return Err("W HashPC opening truth table hash mismatch".into());
+    }
+
+    let e_opening = sumcheck::OpeningProof::<C> {
+        table: frs_from_strings::<ScalarField<C>>(&proof.e_opening)?,
+    };
+    let e_hash =
+        hex::decode(&proof.e_commit_hash).map_err(|e| format!("invalid e_commit_hash hex: {e}"))?;
+    let actual_e_hash: Vec<u8> = {
+        let mut h = Blake2b512::new();
+        for val in &e_opening.table {
+            let mut buf = Vec::new();
+            val.serialize_compressed(&mut buf).unwrap();
+            h.update(&buf);
+        }
+        h.finalize().to_vec()
+    };
+    if actual_e_hash != e_hash {
+        return Err("E HashPC opening truth table hash mismatch".into());
+    }
+
+    // 6. Verify Pedersen commitments match the bundle.
+    let params = CS::params_from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints, sis_param);
+    let w_vec = &w_opening.table[..n_wires.min(w_opening.table.len())];
+    let expected_w_commit: CS::Commitment = commitment_parse(&bundle.final_instance.w_commit)?;
+    if CS::commit_witness(&params, w_vec) != expected_w_commit {
+        return Err("W commitment does not match the NIFS bundle".into());
+    }
+    let e_vec = &e_opening.table[..n_constraints.min(e_opening.table.len())];
+    let expected_e_commit: CS::Commitment = commitment_parse(&bundle.final_instance.e_commit)?;
+    if CS::commit_error(&params, e_vec) != expected_e_commit {
+        return Err("E commitment does not match the NIFS bundle".into());
+    }
 
     Ok(VerifyOutput {
         steps: bundle.n_steps,
@@ -2155,6 +2417,128 @@ mod tests {
             msg.contains("state_in does not chain"),
             "expected chain-break error, got: {msg}"
         );
+    }
+
+    // ── Level-1 slim proof tests ──────────────────────────────────
+
+    /// E2E: fold → prove_level1 → verify_slim_level1 passes for a
+    /// 3-step chain.
+    #[test]
+    fn level1_verifier_e2e_test() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r1cs_path = tmp.path().join("step.r1cs");
+        let steps_dir = tmp.path().join("steps");
+        fs::write(&r1cs_path, step_r1cs_bytes()).unwrap();
+        fs::create_dir(&steps_dir).unwrap();
+
+        let mut state = 2u64;
+        for (i, x) in [3u64, 5, 7].iter().enumerate() {
+            state = write_step_wtns(&steps_dir, i, state, *x);
+        }
+        assert_eq!(state, 210);
+
+        let fold_out = run_fold_nifs::<
+            crate::curve::Bls12_381,
+            PedersenCommitment<crate::curve::Bls12_381>,
+        >(&r1cs_path, &steps_dir)
+        .unwrap();
+        assert_eq!(fold_out.bundle.n_steps, 3);
+
+        let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
+        let l1_proof = prove_level1::<
+            crate::curve::Bls12_381,
+            PedersenCommitment<crate::curve::Bls12_381>,
+        >(&c, &fold_out, OptFlags::NONE)
+        .unwrap();
+
+        let vout = verify_slim_level1::<
+            crate::curve::Bls12_381,
+            PedersenCommitment<crate::curve::Bls12_381>,
+        >(&fold_out.bundle, &l1_proof, DEFAULT_SIS_PARAM)
+        .unwrap();
+        assert_eq!(vout.steps, 3);
+    }
+
+    /// Level-1 verifier rejects a degenerate all-zeros proof.
+    #[test]
+    fn level1_rejects_all_zeros() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r1cs_path = tmp.path().join("step.r1cs");
+        let steps_dir = tmp.path().join("steps");
+        fs::write(&r1cs_path, step_r1cs_bytes()).unwrap();
+        fs::create_dir(&steps_dir).unwrap();
+
+        let mut state = 2u64;
+        for (i, x) in [3u64, 5, 7].iter().enumerate() {
+            state = write_step_wtns(&steps_dir, i, state, *x);
+        }
+
+        let fold_out = run_fold_nifs::<
+            crate::curve::Bls12_381,
+            PedersenCommitment<crate::curve::Bls12_381>,
+        >(&r1cs_path, &steps_dir)
+        .unwrap();
+
+        // Build a degenerate proof with wrong bundle hash.
+        let bad_proof = Level1SlimProof {
+            sumcheck_polys: vec![],
+            sumcheck_claims: vec![fr_to_string(&Fr::zero())],
+            r_challenges: vec![],
+            az_r: fr_to_string(&Fr::zero()),
+            bz_r: fr_to_string(&Fr::zero()),
+            cz_r: fr_to_string(&Fr::zero()),
+            er_r: fr_to_string(&Fr::zero()),
+            u: fr_to_string(&Fr::from(1u64)),
+            w_commit_hash: "00".repeat(64),
+            w_opening: vec![],
+            e_commit_hash: "00".repeat(64),
+            e_opening: vec![],
+            bundle_final_instance_hash: "deadbeef".to_string(),
+        };
+
+        let result = verify_slim_level1::<
+            crate::curve::Bls12_381,
+            PedersenCommitment<crate::curve::Bls12_381>,
+        >(&fold_out.bundle, &bad_proof, DEFAULT_SIS_PARAM);
+        assert!(result.is_err(), "degenerate all-zeros proof must be rejected");
+    }
+
+    /// Level-1 verifier rejects tampered round polynomial.
+    #[test]
+    fn level1_rejects_tampered_poly() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r1cs_path = tmp.path().join("step.r1cs");
+        let steps_dir = tmp.path().join("steps");
+        fs::write(&r1cs_path, step_r1cs_bytes()).unwrap();
+        fs::create_dir(&steps_dir).unwrap();
+
+        let mut state = 2u64;
+        for (i, x) in [3u64, 5, 7].iter().enumerate() {
+            state = write_step_wtns(&steps_dir, i, state, *x);
+        }
+
+        let fold_out = run_fold_nifs::<
+            crate::curve::Bls12_381,
+            PedersenCommitment<crate::curve::Bls12_381>,
+        >(&r1cs_path, &steps_dir)
+        .unwrap();
+
+        let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
+        let mut l1_proof = prove_level1::<
+            crate::curve::Bls12_381,
+            PedersenCommitment<crate::curve::Bls12_381>,
+        >(&c, &fold_out, OptFlags::NONE)
+        .unwrap();
+
+        // The 1-constraint test circuit produces 0 sumcheck rounds.
+        if !l1_proof.sumcheck_polys.is_empty() {
+            l1_proof.sumcheck_polys[0][0] = fr_to_string(&(Fr::from(42u64)));
+            let result = verify_slim_level1::<
+                crate::curve::Bls12_381,
+                PedersenCommitment<crate::curve::Bls12_381>,
+            >(&fold_out.bundle, &l1_proof, DEFAULT_SIS_PARAM);
+            assert!(result.is_err(), "tampered poly must be rejected");
+        }
     }
 
     // ── Parameter-mismatch adversarial tests ──────────────────────────

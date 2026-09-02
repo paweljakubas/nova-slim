@@ -31,7 +31,7 @@
 //! would provide information-theoretic opening proofs; this POC uses
 //! simplified opening verification.
 
-use ark_ff::{BigInteger, PrimeField, Zero};
+use ark_ff::{BigInteger, One, PrimeField, Zero};
 
 use crate::curve::{NovaCurve, ScalarField};
 use blake2::digest::consts::U32;
@@ -324,6 +324,346 @@ pub fn verify<C: NovaCurve>(
 
     let final_claim = proof.claims[num_rounds];
     (current_sum == final_claim, r_challenges, final_claim)
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Degree-2 sumcheck (additive / parallel path)
+// ────────────────────────────────────────────────────────────────────
+
+/// The degree-2 sumcheck proof.
+///
+/// Sums the raw relaxed-R1CS expression `Āz·B̄z − u·C̄z − Ē` over the
+/// constraint-index hypercube, keeping the four MLE components separate
+/// (degree-2 in each round variable).
+#[derive(Debug, Clone)]
+pub struct SumcheckProofDegree2<C: NovaCurve> {
+    /// `claims[0]` = claimed sum; `claims[1..=num_rounds]` = evaluations
+    /// at the round's random challenge.
+    pub claims: Vec<ScalarField<C>>,
+    /// Round polynomials `[g(0), g(1), g(2)]` (degree-2, three evaluations).
+    pub polys: Vec<[ScalarField<C>; 3]>,
+    /// Claimed MLE evaluations at the final random point `r`.
+    pub az_r: ScalarField<C>,
+    pub bz_r: ScalarField<C>,
+    pub cz_r: ScalarField<C>,
+    pub er_r: ScalarField<C>,
+}
+
+/// Output of degree-2 sumcheck verification.
+#[derive(Debug, Clone)]
+pub struct Degree2VerifyOutput<C: NovaCurve> {
+    pub ok: bool,
+    pub r_challenges: Vec<ScalarField<C>>,
+    pub az_r: ScalarField<C>,
+    pub bz_r: ScalarField<C>,
+    pub cz_r: ScalarField<C>,
+    pub er_r: ScalarField<C>,
+    pub final_claim: ScalarField<C>,
+}
+
+/// Evaluate a degree-2 polynomial given its values at `{0, 1, 2}` via
+/// Lagrange interpolation.
+///
+/// `g(x) = c0·L0(x) + c1·L1(x) + c2·L2(x)` where `L0, L1, L2` are the
+/// Lagrange basis polynomials on the nodes `{0, 1, 2}`.
+pub fn eval_poly_deg2<F: PrimeField>(c0: F, c1: F, c2: F, x: F) -> F {
+    let two_inv = F::from(2u64).inverse().expect("2 must have an inverse");
+    let one = F::one();
+    let two = one + one;
+    // L0(x) = (x-1)(x-2) / 2
+    let l0 = (x - one) * (x - two) * two_inv;
+    // L1(x) = -x(x-2)
+    let l1 = x * (x - two) * (-one);
+    // L2(x) = x(x-1) / 2
+    let l2 = x * (x - one) * two_inv;
+    c0 * l0 + c1 * l1 + c2 * l2
+}
+
+/// Run the degree-2 sumcheck prover (sequential).
+pub fn prove_degree2<C: NovaCurve>(
+    l: &[Vec<(u32, ScalarField<C>)>],
+    r_mat: &[Vec<(u32, ScalarField<C>)>],
+    o: &[Vec<(u32, ScalarField<C>)>],
+    z: &[ScalarField<C>],
+    u: ScalarField<C>,
+    e: &[ScalarField<C>],
+) -> (SumcheckProofDegree2<C>, Vec<ScalarField<C>>) {
+    prove_degree2_opts(l, r_mat, o, z, u, e, false)
+}
+
+/// Run the degree-2 sumcheck prover with optimization flags.
+///
+/// When `parallel` is true, per-row MLE evaluations and round sums use
+/// rayon for parallel iteration.
+pub fn prove_degree2_opts<C: NovaCurve>(
+    l: &[Vec<(u32, ScalarField<C>)>],
+    r_mat: &[Vec<(u32, ScalarField<C>)>],
+    o: &[Vec<(u32, ScalarField<C>)>],
+    z: &[ScalarField<C>],
+    u: ScalarField<C>,
+    e: &[ScalarField<C>],
+    parallel: bool,
+) -> (SumcheckProofDegree2<C>, Vec<ScalarField<C>>) {
+    let n = l.len();
+    assert_eq!(r_mat.len(), n);
+    assert_eq!(o.len(), n);
+    assert_eq!(e.len(), n);
+    let n_padded = next_power_of_two(n);
+    let num_rounds = log2ceil(n_padded);
+
+    let zero = ScalarField::<C>::zero();
+    let one = ScalarField::<C>::one();
+    let two = one + one;
+
+    if num_rounds == 0 {
+        let az = eval_row_mle(&l[0], z);
+        let bz = eval_row_mle(&r_mat[0], z);
+        let cz = eval_row_mle(&o[0], z);
+        let er = e[0];
+        let final_claim = az * bz - u * cz - er;
+        return (
+            SumcheckProofDegree2 {
+                claims: vec![final_claim],
+                polys: vec![],
+                az_r: az,
+                bz_r: bz,
+                cz_r: cz,
+                er_r: er,
+            },
+            vec![],
+        );
+    }
+
+    // Compute per-row MLEs for the four components.
+    let mut az_vec: Vec<ScalarField<C>> = if parallel {
+        (0..n)
+            .into_par_iter()
+            .map(|j| eval_row_mle(&l[j], z))
+            .collect()
+    } else {
+        (0..n).map(|j| eval_row_mle(&l[j], z)).collect()
+    };
+    az_vec.resize(n_padded, zero);
+
+    let mut bz_vec: Vec<ScalarField<C>> = if parallel {
+        (0..n)
+            .into_par_iter()
+            .map(|j| eval_row_mle(&r_mat[j], z))
+            .collect()
+    } else {
+        (0..n).map(|j| eval_row_mle(&r_mat[j], z)).collect()
+    };
+    bz_vec.resize(n_padded, zero);
+
+    let mut cz_vec: Vec<ScalarField<C>> = if parallel {
+        (0..n)
+            .into_par_iter()
+            .map(|j| eval_row_mle(&o[j], z))
+            .collect()
+    } else {
+        (0..n).map(|j| eval_row_mle(&o[j], z)).collect()
+    };
+    cz_vec.resize(n_padded, zero);
+
+    let mut e_vec: Vec<ScalarField<C>> = e.to_vec();
+    e_vec.resize(n_padded, zero);
+
+    let mut claims = Vec::with_capacity(num_rounds + 1);
+    let mut polys: Vec<[ScalarField<C>; 3]> = Vec::with_capacity(num_rounds);
+    let mut r_challenges: Vec<ScalarField<C>> = Vec::with_capacity(num_rounds);
+
+    for _round in 0..num_rounds {
+        let half = az_vec.len() / 2;
+
+        // Compute round polynomial evaluations g(0), g(1), g(2).
+        let (g0, g1, g2) = if parallel {
+            let (sg0, sg1, sg2) = (0..half)
+                .into_par_iter()
+                .fold(
+                    || (zero, zero, zero),
+                    |acc, j| {
+                        let az_e = az_vec[2 * j];
+                        let az_o = az_vec[2 * j + 1];
+                        let bz_e = bz_vec[2 * j];
+                        let bz_o = bz_vec[2 * j + 1];
+                        let cz_e = cz_vec[2 * j];
+                        let cz_o = cz_vec[2 * j + 1];
+                        let e_e = e_vec[2 * j];
+                        let e_o = e_vec[2 * j + 1];
+
+                        // g(0): X=0 → even siblings
+                        let gj0 = az_e * bz_e - u * cz_e - e_e;
+                        // g(1): X=1 → odd siblings
+                        let gj1 = az_o * bz_o - u * cz_o - e_o;
+                        // g(2): X=2 → multilinear extension at 2
+                        let az_2 = two * az_o - az_e;
+                        let bz_2 = two * bz_o - bz_e;
+                        let cz_2 = two * cz_o - cz_e;
+                        let er_2 = two * e_o - e_e;
+                        let gj2 = az_2 * bz_2 - u * cz_2 - er_2;
+
+                        (acc.0 + gj0, acc.1 + gj1, acc.2 + gj2)
+                    },
+                )
+                .reduce(
+                    || (zero, zero, zero),
+                    |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2),
+                );
+            (sg0, sg1, sg2)
+        } else {
+            let mut sg0 = zero;
+            let mut sg1 = zero;
+            let mut sg2 = zero;
+            for j in 0..half {
+                let az_e = az_vec[2 * j];
+                let az_o = az_vec[2 * j + 1];
+                let bz_e = bz_vec[2 * j];
+                let bz_o = bz_vec[2 * j + 1];
+                let cz_e = cz_vec[2 * j];
+                let cz_o = cz_vec[2 * j + 1];
+                let e_e = e_vec[2 * j];
+                let e_o = e_vec[2 * j + 1];
+
+                sg0 += az_e * bz_e - u * cz_e - e_e;
+                sg1 += az_o * bz_o - u * cz_o - e_o;
+                let az_2 = two * az_o - az_e;
+                let bz_2 = two * bz_o - bz_e;
+                let cz_2 = two * cz_o - cz_e;
+                let er_2 = two * e_o - e_e;
+                sg2 += az_2 * bz_2 - u * cz_2 - er_2;
+            }
+            (sg0, sg1, sg2)
+        };
+
+        // Claimed sum = g(0) + g(1) (sum over the sub-hypercube).
+        claims.push(g0 + g1);
+        polys.push([g0, g1, g2]);
+
+        // Fiat-Shamir: hash claims[..=round] ++ [g(0), g(1), g(2)].
+        let mut hash_input = claims.clone();
+        for c in polys.last().unwrap() {
+            hash_input.push(*c);
+        }
+        let h = hash_field_elements::<C>(&hash_input);
+        let ri = challenge_from_hash::<C>(&h);
+        r_challenges.push(ri);
+
+        // Fold all four vectors with challenge ri.
+        let fold = |vec: &[ScalarField<C>]| -> Vec<ScalarField<C>> {
+            (0..half)
+                .map(|j| (one - ri) * vec[2 * j] + ri * vec[2 * j + 1])
+                .collect()
+        };
+        az_vec = fold(&az_vec);
+        bz_vec = fold(&bz_vec);
+        cz_vec = fold(&cz_vec);
+        e_vec = fold(&e_vec);
+    }
+
+    // Final scalar values.
+    let az_f = az_vec[0];
+    let bz_f = bz_vec[0];
+    let cz_f = cz_vec[0];
+    let er_f = e_vec[0];
+    let final_claim = az_f * bz_f - u * cz_f - er_f;
+    claims.push(final_claim);
+
+    (
+        SumcheckProofDegree2 {
+            claims,
+            polys,
+            az_r: az_f,
+            bz_r: bz_f,
+            cz_r: cz_f,
+            er_r: er_f,
+        },
+        r_challenges,
+    )
+}
+
+/// Verify a degree-2 sumcheck proof.
+///
+/// Checks internal consistency (round polynomial sums, Fiat-Shamir
+/// challenges, final claim).  Returns the four scalar evaluations
+/// `az_r, bz_r, cz_r, er_r` and the `final_claim` so the caller can
+/// check the level-1 equation `az_r·bz_r − u·cz_r − er_r == final_claim`.
+pub fn verify_degree2<C: NovaCurve>(
+    proof: &SumcheckProofDegree2<C>,
+) -> Degree2VerifyOutput<C> {
+    let zero = ScalarField::<C>::zero();
+    let claimed_sum = proof.claims[0];
+    let num_rounds = proof.polys.len();
+
+    // Sanity: claims.len() == polys.len() + 1
+    if proof.claims.len() != num_rounds + 1 {
+        return Degree2VerifyOutput {
+            ok: false,
+            r_challenges: vec![],
+            az_r: zero,
+            bz_r: zero,
+            cz_r: zero,
+            er_r: zero,
+            final_claim: zero,
+        };
+    }
+
+    if num_rounds == 0 {
+        return Degree2VerifyOutput {
+            ok: true,
+            r_challenges: vec![],
+            az_r: proof.az_r,
+            bz_r: proof.bz_r,
+            cz_r: proof.cz_r,
+            er_r: proof.er_r,
+            final_claim: claimed_sum,
+        };
+    }
+
+    let mut current_sum = claimed_sum;
+    let mut r_challenges: Vec<ScalarField<C>> = Vec::with_capacity(num_rounds);
+
+    for round in 0..num_rounds {
+        let poly = &proof.polys[round];
+        let [g0, g1, g2] = *poly;
+
+        // Check: g(0) + g(1) == current_sum.
+        if g0 + g1 != current_sum {
+            return Degree2VerifyOutput {
+                ok: false,
+                r_challenges: vec![],
+                az_r: zero,
+                bz_r: zero,
+                cz_r: zero,
+                er_r: zero,
+                final_claim: zero,
+            };
+        }
+
+        // Fiat-Shamir (must match prover).
+        let mut hash_input = proof.claims[..=round].to_vec();
+        for c in poly {
+            hash_input.push(*c);
+        }
+        let h = hash_field_elements::<C>(&hash_input);
+        let ri = challenge_from_hash::<C>(&h);
+        r_challenges.push(ri);
+
+        // Next claimed sum = g(r_i) via Lagrange interpolation on {0,1,2}.
+        current_sum = eval_poly_deg2(g0, g1, g2, ri);
+    }
+
+    let final_claim = proof.claims[num_rounds];
+    let ok = current_sum == final_claim;
+
+    Degree2VerifyOutput {
+        ok,
+        r_challenges,
+        az_r: proof.az_r,
+        bz_r: proof.bz_r,
+        cz_r: proof.cz_r,
+        er_r: proof.er_r,
+        final_claim,
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -1031,6 +1371,223 @@ mod tests {
         let (ok, _, final_claim) = verify::<crate::curve::Bls12_381>(&proof);
         assert!(ok);
         assert_eq!(final_claim, Fr::zero());
+    }
+
+    // ── Degree-2 sumcheck tests ────────────────────────────────────
+
+    /// Degree-2 sumcheck final claim matches degree-1 for a satisfying witness.
+    ///
+    /// Both sumcheck protocols prove the same equation; for a satisfying
+    /// witness, both final claims must be zero (the R1CS equation holds
+    /// at any random point).
+    #[test]
+    fn degree2_matches_degree1_final_claim() {
+        let k = 4;
+        let n_wires = 1 + 3 * k;
+        let mut l = Vec::new();
+        let mut r_mat = Vec::new();
+        let mut o = Vec::new();
+        for i in 0..k {
+            l.push(vec![((1 + 3 * i) as u32, Fr::from(1u64))]);
+            r_mat.push(vec![((2 + 3 * i) as u32, Fr::from(1u64))]);
+            o.push(vec![((3 + 3 * i) as u32, Fr::from(1u64))]);
+        }
+        let mut z = vec![Fr::from(1u64)];
+        for i in 0..k {
+            let a = Fr::from((i + 2) as u64);
+            let b = Fr::from((i + 3) as u64);
+            z.push(a);
+            z.push(b);
+            z.push(a * b);
+        }
+        assert_eq!(z.len(), n_wires);
+        let u = Fr::from(1u64);
+        let e = vec![Fr::zero(); k];
+
+        // Degree-1
+        let (proof1, _r1) = prove::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e);
+        let (ok1, _, final1) = verify::<crate::curve::Bls12_381>(&proof1);
+        assert!(ok1, "degree-1 sumcheck must pass");
+        assert!(
+            final1.is_zero(),
+            "degree-1 final claim must be zero for satisfying witness"
+        );
+
+        // Degree-2
+        let (proof2, _r2) =
+            prove_degree2::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e);
+        let out2 = verify_degree2::<crate::curve::Bls12_381>(&proof2);
+        assert!(out2.ok, "degree-2 sumcheck must pass");
+
+        // Both have the same number of rounds.
+        assert_eq!(proof1.polys.len(), proof2.polys.len());
+
+        // The degree-2 final claim must satisfy the level-1 equation,
+        // binding the sum to the four MLE evaluations at r.
+        assert_eq!(
+            out2.az_r * out2.bz_r - u * out2.cz_r - out2.er_r,
+            out2.final_claim,
+            "degree-2 final claim must equal az_r*bz_r - u*cz_r - er_r"
+        );
+
+        // Both expose the same claimed initial sum: Σ_j P_j = 0.
+        assert_eq!(proof1.claims[0], proof2.claims[0]);
+    }
+
+    /// Degree-2 sumcheck rejects a tampered proof.
+    #[test]
+    fn degree2_rejects_bad() {
+        let k = 4;
+        let n_wires = 1 + 3 * k;
+        let mut l = Vec::new();
+        let mut r_mat = Vec::new();
+        let mut o = Vec::new();
+        for i in 0..k {
+            l.push(vec![((1 + 3 * i) as u32, Fr::from(1u64))]);
+            r_mat.push(vec![((2 + 3 * i) as u32, Fr::from(1u64))]);
+            o.push(vec![((3 + 3 * i) as u32, Fr::from(1u64))]);
+        }
+        let mut z = vec![Fr::from(1u64)];
+        for i in 0..k {
+            let a = Fr::from((i + 2) as u64);
+            let b = Fr::from((i + 3) as u64);
+            z.push(a);
+            z.push(b);
+            z.push(a * b);
+        }
+        let u = Fr::from(1u64);
+        let e = vec![Fr::zero(); k];
+
+        let (proof, _) =
+            prove_degree2::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e);
+
+        // Tamper initial claim.
+        let mut bad = proof.clone();
+        bad.claims[0] += Fr::from(42u64);
+        let out = verify_degree2::<crate::curve::Bls12_381>(&bad);
+        assert!(!out.ok, "tampered initial claim must be rejected");
+
+        // Tamper a poly coefficient.
+        let mut bad = proof.clone();
+        if !bad.polys.is_empty() {
+            bad.polys[0][0] += Fr::from(1u64);
+            let out = verify_degree2::<crate::curve::Bls12_381>(&bad);
+            assert!(!out.ok, "tampered poly coefficient must be rejected");
+        }
+    }
+
+    /// Degree-2 sumcheck handles the single-constraint edge case (k=0).
+    #[test]
+    fn degree2_single_constraint() {
+        let (l, r_mat, o) = simple_r1cs();
+        let z = vec![
+            Fr::from(1u64),
+            Fr::from(3u64),
+            Fr::from(5u64),
+            Fr::from(15u64),
+        ];
+        let u = Fr::from(1u64);
+        let e = vec![Fr::zero()];
+
+        let (proof, r_challenges) =
+            prove_degree2::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e);
+        assert!(proof.polys.is_empty(), "1 constraint must have 0 rounds");
+        assert!(r_challenges.is_empty());
+
+        let out = verify_degree2::<crate::curve::Bls12_381>(&proof);
+        assert!(out.ok);
+        assert!(out.r_challenges.is_empty());
+        assert_eq!(out.az_r, Fr::from(3u64));
+        assert_eq!(out.bz_r, Fr::from(5u64));
+        assert_eq!(out.cz_r, Fr::from(15u64));
+        assert_eq!(out.er_r, Fr::zero());
+        assert_eq!(out.final_claim, out.az_r * out.bz_r - u * out.cz_r - out.er_r);
+    }
+
+    /// Degree-2 sumcheck with two constraints (1 round).
+    #[test]
+    fn degree2_two_constraints() {
+        let l = vec![vec![(1u32, Fr::from(1u64))], vec![(4u32, Fr::from(1u64))]];
+        let r_mat = vec![vec![(2u32, Fr::from(1u64))], vec![(5u32, Fr::from(1u64))]];
+        let o = vec![vec![(3u32, Fr::from(1u64))], vec![(6u32, Fr::from(1u64))]];
+        let z = vec![
+            Fr::from(1u64),
+            Fr::from(3u64),
+            Fr::from(5u64),
+            Fr::from(15u64),
+            Fr::from(7u64),
+            Fr::from(11u64),
+            Fr::from(77u64),
+        ];
+        let u = Fr::from(1u64);
+        let e = vec![Fr::zero(); 2];
+
+        let (proof, r_challenges) =
+            prove_degree2::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e);
+        assert_eq!(proof.polys.len(), 1, "2 constraints → 1 round");
+        assert_eq!(r_challenges.len(), 1);
+
+        let out = verify_degree2::<crate::curve::Bls12_381>(&proof);
+        assert!(out.ok);
+        // The degree-2 final claim equals az_r*bz_r - u*cz_r - er_r (level-1).
+        assert_eq!(
+            out.az_r * out.bz_r - u * out.cz_r - out.er_r,
+            out.final_claim
+        );
+    }
+
+    /// Parallel degree-2 prover produces the same result as sequential.
+    #[test]
+    fn degree2_parallel_matches_sequential() {
+        let k = 4;
+        let n_wires = 1 + 3 * k;
+        let mut l = Vec::new();
+        let mut r_mat = Vec::new();
+        let mut o = Vec::new();
+        for i in 0..k {
+            l.push(vec![((1 + 3 * i) as u32, Fr::from(1u64))]);
+            r_mat.push(vec![((2 + 3 * i) as u32, Fr::from(1u64))]);
+            o.push(vec![((3 + 3 * i) as u32, Fr::from(1u64))]);
+        }
+        let mut z = vec![Fr::from(1u64)];
+        for i in 0..k {
+            let a = Fr::from((i + 2) as u64);
+            let b = Fr::from((i + 3) as u64);
+            z.push(a);
+            z.push(b);
+            z.push(a * b);
+        }
+        let u = Fr::from(1u64);
+        let e = vec![Fr::zero(); k];
+
+        let (seq_proof, seq_r) =
+            prove_degree2_opts::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e, false);
+        let (par_proof, par_r) =
+            prove_degree2_opts::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e, true);
+
+        // Both must verify.
+        let out_seq = verify_degree2::<crate::curve::Bls12_381>(&seq_proof);
+        let out_par = verify_degree2::<crate::curve::Bls12_381>(&par_proof);
+        assert!(out_seq.ok, "sequential degree-2 proof must verify");
+        assert!(out_par.ok, "parallel degree-2 proof must verify");
+
+        // Fiat-Shamir challenges must match.
+        assert_eq!(seq_r, par_r);
+        assert_eq!(out_seq.r_challenges, out_par.r_challenges);
+
+        // Final claims must match.
+        assert_eq!(out_seq.final_claim, out_par.final_claim);
+    }
+
+    /// eval_poly_deg2 correctness: evaluates to the correct values at 0, 1, 2.
+    #[test]
+    fn eval_poly_deg2_basic() {
+        let c0 = Fr::from(10u64);
+        let c1 = Fr::from(20u64);
+        let c2 = Fr::from(30u64);
+        assert_eq!(eval_poly_deg2(c0, c1, c2, Fr::from(0u64)), c0);
+        assert_eq!(eval_poly_deg2(c0, c1, c2, Fr::from(1u64)), c1);
+        assert_eq!(eval_poly_deg2(c0, c1, c2, Fr::from(2u64)), c2);
     }
 }
 
