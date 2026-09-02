@@ -14,7 +14,8 @@ use clap::Parser;
 use prover::{
     commitment::{HashCommitment, PedersenCommitment, SisCommitment},
     curve::{Bandersnatch, Bls12_381, Bn254, Grumpkin, NovaCurve, Pallas, ScalarField, Vesta},
-    run_compress_sumcheck_opt, NifsSumcheckProof, OptFlags, DEFAULT_SIS_PARAM,
+    run_compress_level1_opt, run_compress_sumcheck_opt, NifsSumcheckProof, OptFlags,
+    DEFAULT_SIS_PARAM,
 };
 use std::error::Error;
 use std::fs;
@@ -44,6 +45,14 @@ pub struct Args {
     /// trail.
     #[arg(long)]
     pub slim: bool,
+
+    /// Produce a Level-1 proof (degree-2 sumcheck + W/E opening proofs +
+    /// final-claim-zero check).  Carries the commitment openings and the
+    /// explicit `az_r/bz_r/cz_r/er_r` evaluations so the verifier can close
+    /// the "free E" / all-zeros soundness gap; larger than the plain slim
+    /// proof but auditable.  Conflicts with `--slim`.
+    #[arg(long, conflicts_with = "slim")]
+    pub level1: bool,
 
     /// Elliptic curve to use.
     #[arg(long, value_enum, default_value = "bls12-381")]
@@ -106,6 +115,18 @@ fn strip_and_write<C: NovaCurve>(
 /// Run the `compress` subcommand.
 pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
     let opts = parse_opt_flags(&args.opt)?;
+    if args.level1 {
+        dispatch!(args.curve, args.commitment, {
+            run_compress_level1_opt::<C, CS>(
+                &args.circuit,
+                &args.steps,
+                &args.out,
+                opts,
+                args.sis_param,
+            )
+        })?;
+        return Ok(());
+    }
     if args.slim {
         let tmp = args.out.with_extension("full.cbor");
         dispatch!(args.curve, args.commitment, {

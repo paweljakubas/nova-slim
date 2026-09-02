@@ -423,6 +423,88 @@ pub mod codec {
         })
     }
 
+    #[derive(Serialize, Deserialize)]
+    struct Level1ProofCbor {
+        v: u8,
+        polys: Vec<Vec<FrCbor>>,
+        claims: Vec<FrCbor>,
+        r_challenges: Vec<FrCbor>,
+        az_r: FrCbor,
+        bz_r: FrCbor,
+        cz_r: FrCbor,
+        er_r: FrCbor,
+        u: FrCbor,
+        w_hash: ByteBuf,
+        e_hash: ByteBuf,
+        w_opening: Vec<FrCbor>,
+        e_opening: Vec<FrCbor>,
+        bundle_instance_hash: ByteBuf,
+    }
+
+    pub fn level1_proof_encode<F: PrimeField>(
+        p: &super::Level1SlimProof,
+    ) -> Result<Vec<u8>, Box<dyn Error>> {
+        let dto = Level1ProofCbor {
+            v: FORMAT_VERSION,
+            polys: p
+                .sumcheck_polys
+                .iter()
+                .map(|row| frs_enc::<F>(row))
+                .collect::<Result<_, _>>()?,
+            claims: frs_enc::<F>(&p.sumcheck_claims)?,
+            r_challenges: frs_enc::<F>(&p.r_challenges)?,
+            az_r: fr_enc(&fr_parse::<F>(&p.az_r)?),
+            bz_r: fr_enc(&fr_parse::<F>(&p.bz_r)?),
+            cz_r: fr_enc(&fr_parse::<F>(&p.cz_r)?),
+            er_r: fr_enc(&fr_parse::<F>(&p.er_r)?),
+            u: fr_enc(&fr_parse::<F>(&p.u)?),
+            w_hash: hash_enc(&p.w_commit_hash)?,
+            e_hash: hash_enc(&p.e_commit_hash)?,
+            w_opening: frs_enc::<F>(&p.w_opening)?,
+            e_opening: frs_enc::<F>(&p.e_opening)?,
+            bundle_instance_hash: hash_enc(&p.bundle_final_instance_hash)?,
+        };
+        write(&dto)
+    }
+
+    pub fn level1_proof_decode<F: PrimeField>(
+        bytes: &[u8],
+    ) -> Result<super::Level1SlimProof, Box<dyn Error>> {
+        let d: Level1ProofCbor =
+            ciborium::from_reader(bytes).map_err(|e| format!("invalid CBOR level-1 proof: {e}"))?;
+        check_version(d.v)?;
+        Ok(super::Level1SlimProof {
+            sumcheck_polys: d
+                .polys
+                .iter()
+                .map(|row| frs_dec::<F>(row))
+                .collect::<Result<Vec<_>, _>>()?,
+            sumcheck_claims: frs_dec::<F>(&d.claims)?,
+            r_challenges: frs_dec::<F>(&d.r_challenges)?,
+            az_r: super::fr_to_string(&fr_dec::<F>(&d.az_r)?),
+            bz_r: super::fr_to_string(&fr_dec::<F>(&d.bz_r)?),
+            cz_r: super::fr_to_string(&fr_dec::<F>(&d.cz_r)?),
+            er_r: super::fr_to_string(&fr_dec::<F>(&d.er_r)?),
+            u: super::fr_to_string(&fr_dec::<F>(&d.u)?),
+            w_commit_hash: hex::encode(&d.w_hash),
+            e_commit_hash: hex::encode(&d.e_hash),
+            w_opening: frs_dec::<F>(&d.w_opening)?,
+            e_opening: frs_dec::<F>(&d.e_opening)?,
+            bundle_final_instance_hash: hex::encode(&d.bundle_instance_hash),
+        })
+    }
+
+    impl super::Level1SlimProof {
+        /// Compact binary encoding (CBOR).
+        pub fn to_cbor<F: PrimeField>(&self) -> Result<Vec<u8>, Box<dyn Error>> {
+            level1_proof_encode::<F>(self)
+        }
+        /// Decode a compact binary (CBOR) level-1 proof.
+        pub fn from_cbor<F: PrimeField>(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
+            level1_proof_decode::<F>(bytes)
+        }
+    }
+
     impl NifsBundle {
         /// Compact binary encoding (CBOR).
         pub fn to_cbor<F: PrimeField>(&self) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -1597,6 +1679,66 @@ pub fn run_verify_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C
         .map_err(|e| format!("failed to parse slim proof: {e}"))?;
 
     verify_slim::<C, CS>(&bundle, &sp)
+}
+
+/// Verify a Level-1 slim proof against a NIFS bundle (CLI path).
+///
+/// Loads the NIFS bundle and the compact CBOR level-1 proof, then runs
+/// [`verify_slim_level1`].  Unlike the plain slim path, this verifier
+/// additionally checks the final claim is zero, verifies the W/E HashPC
+/// opening proofs, and checks Pedersen commitment consistency with the
+/// bundle — closing the "free E" / all-zeros soundness gap.
+pub fn run_verify_slim_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
+    ivc: &Path,
+    level1_proof: &Path,
+    sis_param: usize,
+) -> Result<VerifyOutput, Box<dyn Error>> {
+    let bundle_bytes =
+        fs::read(ivc).map_err(|e| format!("failed to read IVC bundle {}: {e}", ivc.display()))?;
+    let bundle: NifsBundle = codec::bundle_decode::<ScalarField<C>>(&bundle_bytes)
+        .map_err(|e| format!("failed to parse IVC bundle as NIFS bundle: {e}"))?;
+
+    let proof_bytes = fs::read(level1_proof).map_err(|e| {
+        format!(
+            "failed to read level-1 proof {}: {e}",
+            level1_proof.display()
+        )
+    })?;
+    let l1: Level1SlimProof = codec::level1_proof_decode::<ScalarField<C>>(&proof_bytes)
+        .map_err(|e| format!("failed to parse level-1 proof: {e}"))?;
+
+    verify_slim_level1::<C, CS>(&bundle, &l1, sis_param)
+}
+
+/// Compress a NIFS bundle into a Level-1 proof (degree-2 sumcheck + W/E
+/// opening proofs + final-claim-zero check) and write it as CBOR.
+pub fn run_compress_level1_opt<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
+    circuit: &Path,
+    steps: &Path,
+    out: &Path,
+    opts: OptFlags,
+    sis_param: usize,
+) -> Result<CompressOutput, Box<dyn Error>> {
+    let c = load_circuit::<C>(circuit)?;
+    check_step_circuit::<C>(&c)?;
+
+    let folded = fold_nifs::<C, CS>(circuit, steps, opts, sis_param)?;
+    let l1 = prove_level1::<C, CS>(&c, &folded, opts)?;
+
+    let cbor = codec::level1_proof_encode::<ScalarField<C>>(&l1)
+        .map_err(|e| format!("failed to serialize level-1 proof: {e}"))?;
+    fs::write(out, &cbor)
+        .map_err(|e| format!("failed to write level-1 proof to {}: {e}", out.display()))?;
+    eprintln!(
+        "Level-1 proof written to {} ({} bytes, u = {})",
+        out.display(),
+        cbor.len(),
+        fr_to_string(&folded.final_instance.u)
+    );
+    Ok(CompressOutput {
+        bytes: cbor.len(),
+        bundle: folded.bundle,
+    })
 }
 
 // ────────────────────────────────────────────────────────────────────

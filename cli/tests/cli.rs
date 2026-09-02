@@ -1331,3 +1331,180 @@ fn cip197_e2e_ways_are_equivalent_and_interchangeable() {
     assert_slim_rejected("bn254", bundle_bn.path(), proof_bn_ped.path());
     assert_slim_rejected("bn254", bundle_bn_ped.path(), proof_bn.path());
 }
+
+// ------------------------------------------------------------------
+// Level-1 proof (degree-2 sumcheck + W/E openings + final-claim-zero)
+// ------------------------------------------------------------------
+
+/// Full Level-1 flow at the CLI level on a synthetic step circuit:
+///   fold → compress --level1 → verify --level1-proof.
+#[test]
+fn nifs_level1_compress_verify_end_to_end() {
+    let r1cs = NamedTempFile::new().unwrap();
+    fs::write(r1cs.path(), build_synthetic_step_r1cs()).unwrap();
+
+    let steps_dir = tempfile::tempdir().unwrap();
+    let mut state = 2u64;
+    for (i, x) in [3u64, 5, 7].iter().enumerate() {
+        state = write_step_wtns(steps_dir.path(), i, state, *x);
+    }
+
+    // 1. fold -> bundle
+    let bundle_file = NamedTempFile::new().unwrap();
+    let mut fold = Command::cargo_bin("nova-slim").unwrap();
+    fold.arg("fold")
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(bundle_file.path());
+    fold.assert().success();
+
+    // 2. compress --level1 -> level-1 proof
+    let proof_file = NamedTempFile::new().unwrap();
+    let mut compress = Command::cargo_bin("nova-slim").unwrap();
+    compress
+        .arg("compress")
+        .arg("--level1")
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(proof_file.path());
+    compress
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Level-1 proof written"));
+
+    // 3. verify the bundle with the level-1 proof
+    let mut verify = Command::cargo_bin("nova-slim").unwrap();
+    verify
+        .arg("verify")
+        .arg("--ivc")
+        .arg(bundle_file.path())
+        .arg("--level1-proof")
+        .arg(proof_file.path());
+    verify
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Level-1 degree-2 sumcheck proof OK"));
+
+    // 4. tampering the bundle's instance must fail verification
+    let mut tampered: prover::NifsBundle =
+        prover::NifsBundle::from_cbor::<ark_bls12_381::Fr>(&fs::read(bundle_file.path()).unwrap())
+            .unwrap();
+    tampered.final_instance.x[0] = (state + 1).to_string();
+    let tampered_file = tempfile::NamedTempFile::new().unwrap();
+    fs::write(
+        tampered_file.path(),
+        tampered.to_cbor::<ark_bls12_381::Fr>().unwrap(),
+    )
+    .unwrap();
+    let mut verify2 = Command::cargo_bin("nova-slim").unwrap();
+    verify2
+        .arg("verify")
+        .arg("--ivc")
+        .arg(tampered_file.path())
+        .arg("--level1-proof")
+        .arg(proof_file.path());
+    verify2.assert().failure();
+}
+
+/// `--level1` and `--slim` conflict at the CLI level.
+#[test]
+fn level1_conflicts_with_slim() {
+    let r1cs = NamedTempFile::new().unwrap();
+    fs::write(r1cs.path(), build_synthetic_step_r1cs()).unwrap();
+    let steps_dir = tempfile::tempdir().unwrap();
+    let mut state = 2u64;
+    for (i, x) in [3u64, 5, 7].iter().enumerate() {
+        state = write_step_wtns(steps_dir.path(), i, state, *x);
+    }
+
+    let proof_file = NamedTempFile::new().unwrap();
+    let mut compress = Command::cargo_bin("nova-slim").unwrap();
+    compress
+        .arg("compress")
+        .arg("--level1")
+        .arg("--slim")
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(proof_file.path());
+    compress.assert().failure();
+}
+
+/// BN254 Level-1 flow across curves and commitment schemes.
+#[test]
+fn bn254_level1_compress_verify_end_to_end() {
+    let r1cs = NamedTempFile::new().unwrap();
+    fs::write(r1cs.path(), build_synthetic_step_r1cs()).unwrap();
+
+    let steps_dir = tempfile::tempdir().unwrap();
+    let mut state = 2u64;
+    for (i, x) in [3u64, 5, 7].iter().enumerate() {
+        state = write_step_wtns(steps_dir.path(), i, state, *x);
+    }
+
+    let bundle_file = NamedTempFile::new().unwrap();
+    let mut fold = Command::cargo_bin("nova-slim").unwrap();
+    fold.arg("fold")
+        .arg("--curve")
+        .arg("bn254")
+        .arg("--commitment")
+        .arg("sis")
+        .arg("--sis-param")
+        .arg("128")
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(bundle_file.path());
+    fold.assert().success();
+
+    let proof_file = NamedTempFile::new().unwrap();
+    let mut compress = Command::cargo_bin("nova-slim").unwrap();
+    compress
+        .arg("compress")
+        .arg("--level1")
+        .arg("--curve")
+        .arg("bn254")
+        .arg("--commitment")
+        .arg("sis")
+        .arg("--sis-param")
+        .arg("128")
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(proof_file.path());
+    compress
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Level-1 proof written"));
+
+    let mut verify = Command::cargo_bin("nova-slim").unwrap();
+    verify
+        .arg("verify")
+        .arg("--curve")
+        .arg("bn254")
+        .arg("--commitment")
+        .arg("sis")
+        .arg("--sis-param")
+        .arg("128")
+        .arg("--ivc")
+        .arg(bundle_file.path())
+        .arg("--level1-proof")
+        .arg(proof_file.path());
+    verify
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Level-1 degree-2 sumcheck proof OK"));
+}
+
