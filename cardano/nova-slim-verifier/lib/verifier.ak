@@ -12,6 +12,8 @@ use aiken/collection/list
 use aiken/crypto.{blake2b_256}
 use aiken/primitive/bytearray
 
+use norm.{NormRecord, verify_norm}
+
 /// BLS12-381 scalar field prime.
 const field_prime =
   52435875175126190479447740508185965837690552500527637822603658699938581184513
@@ -102,6 +104,18 @@ pub fn verify_slim(_bundle: NifsBundle, proof: SlimProof) -> Bool {
   let final_ok = verify_final(proof)
 
   counts_ok && rounds_ok && final_ok
+}
+
+/// Verify a level-1 proof that additionally carries a norm record: the base
+/// sumcheck/final-eval check *and* the on-chain norm-certificate consistency
+/// check.  The ground-truth re-fold audit stays off-chain (Rust
+/// `verify_level1_norm`).
+pub fn verify_slim_with_norm(
+  bundle: NifsBundle,
+  proof: SlimProof,
+  norm: NormRecord,
+) -> Bool {
+  verify_slim(bundle, proof) && verify_norm(norm)
 }
 
 /// Verify all rounds using list folding.
