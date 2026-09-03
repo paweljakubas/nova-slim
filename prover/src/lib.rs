@@ -1041,7 +1041,7 @@ pub fn run_verify_sumcheck_opt<C: NovaCurve, CS: CommitmentScheme<Scalar = Scala
     let sc_proof: NifsSumcheckProof = codec::sumcheck_proof_decode::<ScalarField<C>>(&proof_bytes)
         .map_err(|e| format!("failed to parse sumcheck proof: {e}"))?;
 
-    verify_sumcheck_compression_inner::<C, CS>(&bundle, &sc_proof, sis_param)
+    verify_sumcheck_compression_inner::<C, CS>(&bundle, &sc_proof, sis_param, None)
 }
 
 fn circuit_path_display<C: NovaCurve>(_c: &SparseCircuit<ScalarField<C>>) -> String {
@@ -1173,10 +1173,15 @@ pub fn verify_sumcheck_compression<C: NovaCurve, CS: CommitmentScheme<Scalar = S
     bundle: &NifsBundle,
     proof: &NifsSumcheckProof,
 ) -> Result<VerifyOutput, Box<dyn Error>> {
-    verify_sumcheck_compression_inner::<C, CS>(bundle, proof, DEFAULT_SIS_PARAM)
+    verify_sumcheck_compression_inner::<C, CS>(bundle, proof, DEFAULT_SIS_PARAM, None)
 }
 
 /// Like [`verify_sumcheck_compression`] but with configurable SIS output dimension.
+///
+/// When a public `circuit` is supplied, additionally runs the circuit-backed
+/// PCS opening `(OP)` check (recomputing the MLEs of `AZ⊙BZ`, `CZ`, `E` at
+/// the random point from the opened witness/error truth tables and asserting
+/// the residual vanishes) — same as the level-1 complete-verifier check.
 pub fn verify_sumcheck_compression_opt<
     C: NovaCurve,
     CS: CommitmentScheme<Scalar = ScalarField<C>>,
@@ -1184,8 +1189,9 @@ pub fn verify_sumcheck_compression_opt<
     bundle: &NifsBundle,
     proof: &NifsSumcheckProof,
     sis_param: usize,
+    circuit: Option<&SparseCircuit<ScalarField<C>>>,
 ) -> Result<VerifyOutput, Box<dyn Error>> {
-    verify_sumcheck_compression_inner::<C, CS>(bundle, proof, sis_param)
+    verify_sumcheck_compression_inner::<C, CS>(bundle, proof, sis_param, circuit)
 }
 
 fn verify_sumcheck_compression_inner<
@@ -1195,6 +1201,7 @@ fn verify_sumcheck_compression_inner<
     bundle: &NifsBundle,
     proof: &NifsSumcheckProof,
     sis_param: usize,
+    circuit: Option<&SparseCircuit<ScalarField<C>>>,
 ) -> Result<VerifyOutput, Box<dyn Error>> {
     if proof.final_instance != bundle.final_instance {
         return Err("sumcheck proof was not created for this NIFS bundle".into());
@@ -1300,6 +1307,45 @@ fn verify_sumcheck_compression_inner<
     let expected_e_commit: CS::Commitment = commitment_parse(&bundle.final_instance.e_commit)?;
     if CS::commit_error(&params, e_vec) != expected_e_commit {
         return Err("E commitment does not match the NIFS bundle".into());
+    }
+
+    // 6. Circuit-backed PCS opening `(OP)`, when a public circuit is supplied.
+    //    Recompute `AZ⊙BZ`, `CZ`, `E` MLEs at `r` from the opened witness/
+    //    error truth tables via the public circuit and assert the *residual*
+    //    `fr − u·cz − e` recomputed this way equals the sumcheck final claim
+    //    (zero).  This binds the evaluation to the committed witness without
+    //    trusting the prover's claimed evaluations.
+    if let Some(circuit) = circuit {
+        let r = &verifier_r;
+        let n_constraints = circuit.n_constraints as usize;
+        let rec = sumcheck::recompute_circuit_evals::<C>(
+            &circuit.l,
+            &circuit.r,
+            &circuit.o,
+            &w_opening.table,
+            n_constraints,
+            r,
+        );
+        let (_, _, cz_rec, fr_rec) = rec;
+        let e_rec = if n_constraints > 0 {
+            sumcheck::eval_dense_mle(&e_opening.table, r)
+        } else {
+            ScalarField::<C>::zero()
+        };
+        let u_val = bundle
+            .final_instance
+            .u
+            .parse::<ScalarField<C>>()
+            .map_err(|_| "invalid u in bundle final instance")?;
+        let residual_rec = fr_rec - u_val * cz_rec - e_rec;
+        // The sumcheck proved `MLE(AZ⊙BZ − u·CZ − E)(r) == 0`; the OP-recomputed
+        // residual must therefore also vanish.
+        if !residual_rec.is_zero() {
+            return Err(
+                "PCS opening: recomputed residual MLE at r is non-zero (evaluation not bound to opened witness)"
+                    .into(),
+            );
+        }
     }
 
     Ok(VerifyOutput {
@@ -1678,6 +1724,7 @@ pub fn verify_slim_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarFiel
     bundle: &NifsBundle,
     proof: &Level1SlimProof,
     sis_param: usize,
+    circuit: Option<&SparseCircuit<ScalarField<C>>>,
 ) -> Result<VerifyOutput, Box<dyn Error>> {
     // 0. Bundle binding.
     {
@@ -1838,6 +1885,52 @@ pub fn verify_slim_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarFiel
         return Err("E commitment does not match the NIFS bundle".into());
     }
 
+    // 8. Circuit-backed PCS opening (the paper's `(OP)` predicate).  When a
+    //    public circuit is supplied, bind every claimed evaluation
+    //    (`az_r, bz_r, cz_r, fr_r, er_r`) to the *opened* witness/error truth
+    //    tables:
+    //      • `er_r` must equal `MLE(tt_E)(r)` — E is committed directly.
+    //      • `az_r, bz_r, cz_r, fr_r` must equal the MLEs at `r` of `AZ=L·W`,
+    //        `BZ=R·W`, `CZ=O·W`, `AZ⊙BZ` recomputed from the opened `tt_W`
+    //        using the public circuit rows.  This closes the gap where a
+    //        malicious prover could claim evaluations inconsistent with the
+    //        committed witness.
+    if let Some(circuit) = circuit {
+        let r = &claimed_r;
+        let n_constraints = circuit.n_constraints as usize;
+
+        // E opening: MLE(tt_E)(r) == er_r.
+        if n_constraints > 0 {
+            let e_eval = sumcheck::eval_dense_mle(&e_opening.table, r);
+            if e_eval != er_r {
+                return Err("PCS opening: MLE(tt_E)(r) does not match claimed er_r".into());
+            }
+        }
+
+        // W opening: recompute AZ/BZ/CZ/fr from the opened witness and check
+        // against the claimed az_r/bz_r/cz_r/fr_r.
+        let (az_rec, bz_rec, cz_rec, fr_rec) = sumcheck::recompute_circuit_evals::<C>(
+            &circuit.l,
+            &circuit.r,
+            &circuit.o,
+            &w_opening.table,
+            n_constraints,
+            r,
+        );
+        if az_rec != az_r {
+            return Err("PCS opening: recomputed AZ MLE at r != claimed az_r".into());
+        }
+        if bz_rec != bz_r {
+            return Err("PCS opening: recomputed BZ MLE at r != claimed bz_r".into());
+        }
+        if cz_rec != cz_r {
+            return Err("PCS opening: recomputed CZ MLE at r != claimed cz_r".into());
+        }
+        if fr_rec != fr_r {
+            return Err("PCS opening: recomputed (AZ⊙BZ) MLE at r != claimed fr_r".into());
+        }
+    }
+
     Ok(VerifyOutput {
         steps: bundle.n_steps,
         transcript_final: bundle.transcript_final.clone(),
@@ -1975,7 +2068,13 @@ pub fn run_verify_slim_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = Scalar
     let l1: Level1SlimProof = codec::level1_proof_decode::<ScalarField<C>>(&proof_bytes)
         .map_err(|e| format!("failed to parse level-1 proof: {e}"))?;
 
-    let out = verify_slim_level1::<C, CS>(&bundle, &l1, sis_param)?;
+    // Load the public circuit (if supplied) so the verifier can run the
+    // circuit-backed PCS opening check `(OP)`.
+    let circuit_opt = match circuit {
+        Some(p) => Some(load_circuit::<C>(p)?),
+        None => None,
+    };
+    let out = verify_slim_level1::<C, CS>(&bundle, &l1, sis_param, circuit_opt.as_ref())?;
 
     if norm_mode != norm::NormMode::None {
         let circuit = circuit.ok_or_else(|| {
@@ -2211,6 +2310,27 @@ mod tests {
             .is_err(),
             "wrong bundle instance must fail verification"
         );
+
+        // 6. Circuit-backed PCS opening `(OP)`: with the public circuit the
+        //    honest proof still passes, but a tampered witness truth table is
+        //    rejected because the recomputed residual no longer vanishes.
+        verify_sumcheck_compression_opt::<
+            crate::curve::Bls12_381,
+            PedersenCommitment<crate::curve::Bls12_381>,
+        >(&fold_out.bundle, &sc_proof, DEFAULT_SIS_PARAM, Some(&c))
+        .unwrap();
+        let mut tampered = sc_proof.clone();
+        if !tampered.w_opening.is_empty() {
+            tampered.w_opening[0] = fr_to_string(&(Fr::from(0u64) - Fr::from(9u64)));
+            assert!(
+                verify_sumcheck_compression_opt::<
+                    crate::curve::Bls12_381,
+                    PedersenCommitment<crate::curve::Bls12_381>,
+                >(&fold_out.bundle, &tampered, DEFAULT_SIS_PARAM, Some(&c))
+                .is_err(),
+                "tampered W opening must be rejected by the circuit-backed PCS opening"
+            );
+        }
     }
 
     /// E2E: serialization roundtrip — the JSON-serialized NifsSumcheckProof
@@ -2909,7 +3029,7 @@ mod tests {
         let vout = verify_slim_level1::<
             crate::curve::Bls12_381,
             PedersenCommitment<crate::curve::Bls12_381>,
-        >(&fold_out.bundle, &l1_proof, DEFAULT_SIS_PARAM)
+        >(&fold_out.bundle, &l1_proof, DEFAULT_SIS_PARAM, Some(&c))
         .unwrap();
         assert_eq!(vout.steps, 3);
     }
@@ -2956,7 +3076,7 @@ mod tests {
         let result = verify_slim_level1::<
             crate::curve::Bls12_381,
             PedersenCommitment<crate::curve::Bls12_381>,
-        >(&fold_out.bundle, &bad_proof, DEFAULT_SIS_PARAM);
+        >(&fold_out.bundle, &bad_proof, DEFAULT_SIS_PARAM, None);
         assert!(
             result.is_err(),
             "degenerate all-zeros proof must be rejected"
@@ -2996,9 +3116,72 @@ mod tests {
             let result = verify_slim_level1::<
                 crate::curve::Bls12_381,
                 PedersenCommitment<crate::curve::Bls12_381>,
-            >(&fold_out.bundle, &l1_proof, DEFAULT_SIS_PARAM);
+            >(&fold_out.bundle, &l1_proof, DEFAULT_SIS_PARAM, Some(&c));
             assert!(result.is_err(), "tampered poly must be rejected");
         }
+    }
+
+    /// Level-1 verifier rejects a claimed evaluation inconsistent with the
+    /// opened witness (the PCS-opening `(OP)` binding check).
+    #[test]
+    fn level1_rejects_tampered_claimed_eval() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r1cs_path = tmp.path().join("step.r1cs");
+        let steps_dir = tmp.path().join("steps");
+        fs::write(&r1cs_path, step_r1cs_bytes()).unwrap();
+        fs::create_dir(&steps_dir).unwrap();
+
+        let mut state = 2u64;
+        for (i, x) in [3u64, 5, 7].iter().enumerate() {
+            state = write_step_wtns(&steps_dir, i, state, *x);
+        }
+
+        let fold_out = run_fold_nifs::<
+            crate::curve::Bls12_381,
+            PedersenCommitment<crate::curve::Bls12_381>,
+        >(&r1cs_path, &steps_dir)
+        .unwrap();
+
+        let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
+        let mut l1_proof = prove_level1::<
+            crate::curve::Bls12_381,
+            PedersenCommitment<crate::curve::Bls12_381>,
+        >(&c, &fold_out, OptFlags::NONE, norm::NormMode::None, 64)
+        .unwrap();
+
+        // Tamp er_r so it disagrees with MLE(tt_E)(r): this must be caught by
+        // the PCS-opening check when a circuit is supplied.
+        let tampered = Fr::from(0u64) - Fr::from(1u64);
+        let orig_er = l1_proof.er_r.clone();
+        l1_proof.er_r = fr_to_string(&tampered);
+        let result = verify_slim_level1::<
+            crate::curve::Bls12_381,
+            PedersenCommitment<crate::curve::Bls12_381>,
+        >(&fold_out.bundle, &l1_proof, DEFAULT_SIS_PARAM, Some(&c));
+        assert!(
+            result.is_err(),
+            "tampered er_r must be rejected by the PCS-opening check"
+        );
+
+        // Without a circuit the same (unchanged-hash) proof is not OP-checked:
+        // restore er_r and verify the plain path still accepts it.
+        l1_proof.er_r = orig_er;
+        let result_ok = verify_slim_level1::<
+            crate::curve::Bls12_381,
+            PedersenCommitment<crate::curve::Bls12_381>,
+        >(&fold_out.bundle, &l1_proof, DEFAULT_SIS_PARAM, None);
+        assert!(result_ok.is_ok(), "honest proof must pass with no circuit");
+
+        // Now tamper az_r and expect rejection via the circuit-backed check.
+        l1_proof.az_r = fr_to_string(&(Fr::from(0u64) - Fr::from(7u64)));
+        let result2 = verify_slim_level1::<
+            crate::curve::Bls12_381,
+            PedersenCommitment<crate::curve::Bls12_381>,
+        >(&fold_out.bundle, &l1_proof, DEFAULT_SIS_PARAM, Some(&c));
+        assert!(
+            result2.is_err(),
+            "tampered az_r must be rejected by the circuit-backed PCS opening"
+        );
     }
 
     /// Helper: fold a 3-step chain into a bundle + level-1 proof proving

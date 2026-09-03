@@ -342,7 +342,7 @@ fn benchmark_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     );
 
     let t = Instant::now();
-    verify_slim_level1::<C, CS>(&folded.bundle, &l1, sis_param)
+    verify_slim_level1::<C, CS>(&folded.bundle, &l1, sis_param, Some(circuit))
         .unwrap_or_else(|e| panic!("Level-1 verification failed: {e}"));
     let verify_level1_s = t.elapsed().as_secs_f64();
     println!(
@@ -363,7 +363,7 @@ fn benchmark_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
             .unwrap_or_else(|e| panic!("failed to build norm-{label} Level-1 proof: {e}"));
         let norm_compress_s = t.elapsed().as_secs_f64();
         let t = Instant::now();
-        verify_slim_level1::<C, CS>(&folded.bundle, &l1n, sis_param)
+        verify_slim_level1::<C, CS>(&folded.bundle, &l1n, sis_param, Some(circuit))
             .unwrap_or_else(|e| panic!("norm-{label} Level-1 base verification failed: {e}"));
         let step_w: Vec<(Vec<ScalarField<C>>, Vec<ScalarField<C>>)> = folded
             .step_witnesses

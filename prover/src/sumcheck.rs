@@ -778,6 +778,71 @@ pub fn verify_opening<C: NovaCurve>(
     eval == *claimed_eval
 }
 
+/// Recompute the claimed circuit-derived MLE evaluations `az_r`, `bz_r`,
+/// `cz_r`, `fr_r` at the random point `r` from the *opened* witness truth
+/// table `tt_w`.
+///
+/// This is the circuit-backed PCS opening (the `(OP)` predicate of the
+/// paper's complete verifier): the HashPC opening exposes `MLE(W)` (the
+/// witness itself, padded), and the verifier re-derives `AZ = L·W`,
+/// `BZ = R·W`, `CZ = O·W` and `fr = AZ ⊙ BZ` using the **public** circuit,
+/// then evaluates each MLE at `r`.  Matching these against the prover's
+/// claimed `az_r, bz_r, cz_r, fr_r` binds the claimed evaluations to the
+/// opened witness for every wire and constraint.
+///
+/// `tt_w` is the opened witness truth table (`MLE(W)` with `W[0..n_wires]`
+/// at the low indices, zero-padded).  `l`, `r_mat`, `o` are the public
+/// sparse row representations of the circuit; `n_constraints` is the number
+/// of (un-padded) constraints.  `r` is the final random challenge point
+/// (length `k = log2ceil(next_power_of_two(n_constraints))`).
+pub fn recompute_circuit_evals<C: NovaCurve>(
+    l: &[Vec<(u32, ScalarField<C>)>],
+    r_mat: &[Vec<(u32, ScalarField<C>)>],
+    o: &[Vec<(u32, ScalarField<C>)>],
+    tt_w: &[ScalarField<C>],
+    n_constraints: usize,
+    r: &[ScalarField<C>],
+) -> (
+    ScalarField<C>,
+    ScalarField<C>,
+    ScalarField<C>,
+    ScalarField<C>,
+) {
+    let n_padded = next_power_of_two(n_constraints);
+    assert_eq!(
+        n_padded,
+        1usize << r.len(),
+        "r length must equal log2(n_padded)"
+    );
+
+    // The truth table of MLE(W) has W[0..n_wires] at its low indices; rows
+    // index wires via eval_row_mle, i.e. they read tt_w[w].  Build per-row
+    // MLEs AZ, BZ, CZ (zero-padded) and the componentwise product fr.
+    let mut azv: Vec<ScalarField<C>> = (0..n_constraints)
+        .map(|j| eval_row_mle(&l[j], tt_w))
+        .collect();
+    azv.resize(n_padded, ScalarField::<C>::zero());
+
+    let mut bzv: Vec<ScalarField<C>> = (0..n_constraints)
+        .map(|j| eval_row_mle(&r_mat[j], tt_w))
+        .collect();
+    bzv.resize(n_padded, ScalarField::<C>::zero());
+
+    let mut czv: Vec<ScalarField<C>> = (0..n_constraints)
+        .map(|j| eval_row_mle(&o[j], tt_w))
+        .collect();
+    czv.resize(n_padded, ScalarField::<C>::zero());
+
+    let fv: Vec<ScalarField<C>> = azv.iter().zip(bzv.iter()).map(|(a, b)| *a * *b).collect();
+
+    let az = eval_dense_mle(&azv, r);
+    let bz = eval_dense_mle(&bzv, r);
+    let cz = eval_dense_mle(&czv, r);
+    let fr = eval_dense_mle(&fv, r);
+
+    (az, bz, cz, fr)
+}
+
 /// Hash a `SumcheckProof` to produce a deterministic digest for tests.
 pub fn proof_hash<C: NovaCurve>(p: &SumcheckProof<C>) -> Vec<u8> {
     let mut h = Blake2b512::new();

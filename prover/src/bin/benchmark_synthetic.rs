@@ -243,7 +243,7 @@ fn benchmark<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     println!("sumcheck compress: {:.3} s", compress_s);
 
     let t = Instant::now();
-    verify_sumcheck_compression_opt::<C, CS>(&folded.bundle, &sc_proof, sis_param)
+    verify_sumcheck_compression_opt::<C, CS>(&folded.bundle, &sc_proof, sis_param, Some(&circuit))
         .unwrap_or_else(|e| panic!("full verification failed: {e}"));
     println!("verify (full): {:.4} s", t.elapsed().as_secs_f64());
 
