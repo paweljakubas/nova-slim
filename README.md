@@ -5,8 +5,8 @@ NIFS-fold a chain of identical step circuits into one accumulator, compress
 with a sumcheck argument, and verify a **~0.4–2.5 KiB** proof with **no pairing,
 no trusted setup, and sub-millisecond verification**.
 
-📄 **[Technical specification / whitepaper](whitepaper.pdf)** — formal
-description of the protocol, security proofs, and benchmark analysis.
+📄 **Technical specification/whitepaper** — formal
+description of the protocol, security proofs, and benchmark analysis coming soon.
 
 Supports **BLS12-381** (Cardano), **BN254** (Ethereum), **Pallas** (Zcash), **Vesta**, **Grumpkin**, and **Bandersnatch**. Three commitment schemes — **Pedersen** (fast, classical), **SIS** (faster folding, quantum-ready), and **Hash** (Blake2b-derived matrix entries, zero-param storage) — are selectable at runtime via `--commitment {pedersen,sis,hash}`.  **Hash is operationally SIS/Ajtai in disguise** ($c = A \cdot v$ with Blake2b-derived matrix entries), not a separate hash-based binding mechanism; it inherits the same missing-norm-enforcement caveat as SIS.
 
