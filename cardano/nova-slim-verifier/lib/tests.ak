@@ -266,10 +266,7 @@ test tampered_final_value_fails(
 /// A well-formed Option A (range) certificate: two coordinates of 4 and 6 bits
 /// under a 8-bit bound.
 fn good_range_cert() -> RangeCertificate {
-  RangeCertificate {
-    per_coord_bits: [4, 6],
-    bound_bits: 8,
-  }
+  RangeCertificate { per_coord_bits: [4, 6], bound_bits: 8 }
 }
 
 /// A well-formed Option B (JL) certificate.
@@ -288,29 +285,17 @@ test range_cert_valid_accepts() {
 
 test range_cert_coord_invalid_rejected() {
   // A per-coordinate bit-length above the bound must fail.
-  let cert =
-    RangeCertificate {
-      per_coord_bits: [4, 12],
-      bound_bits: 8,
-    }
+  let cert = RangeCertificate { per_coord_bits: [4, 12], bound_bits: 8 }
   !verify_range_cert(cert)
 }
 
 test range_cert_empty_rejected() {
-  let cert =
-    RangeCertificate {
-      per_coord_bits: [],
-      bound_bits: 8,
-    }
+  let cert = RangeCertificate { per_coord_bits: [], bound_bits: 8 }
   !verify_range_cert(cert)
 }
 
 test range_cert_bound_zero_rejected() {
-  let cert =
-    RangeCertificate {
-      per_coord_bits: [4, 6],
-      bound_bits: 0,
-    }
+  let cert = RangeCertificate { per_coord_bits: [4, 6], bound_bits: 0 }
   !verify_range_cert(cert)
 }
 
@@ -319,13 +304,7 @@ test jl_cert_valid_accepts() {
 }
 
 test jl_cert_empty_sketch_rejected() {
-  let cert =
-    JlCertificate {
-      y: #"",
-      bound_bits: 16,
-      len: 4,
-      coord_bits: 8,
-    }
+  let cert = JlCertificate { y: #"", bound_bits: 16, len: 4, coord_bits: 8 }
   !verify_jl_cert(cert)
 }
 
@@ -341,8 +320,9 @@ test jl_cert_bad_coord_bits_rejected() {
 }
 
 test cert_enum_both_flavours_verify() {
-  verify_cert(NormCertificate.RangeCert(good_range_cert()))
-    && verify_cert(NormCertificate.JlCert(good_jl_cert()))
+  verify_cert(NormCertificate.RangeCert(good_range_cert())) && verify_cert(
+    NormCertificate.JlCert(good_jl_cert()),
+  )
 }
 
 test norm_record_audit_accepts() {
@@ -352,11 +332,7 @@ test norm_record_audit_accepts() {
       cert_e: NormCertificate.RangeCert(good_range_cert()),
     }
   let rec =
-    NormRecord {
-      mode: NormMode.NormRange,
-      bound_bits: 8,
-      steps: [step],
-    }
+    NormRecord { mode: NormMode.NormRange, bound_bits: 8, steps: [step] }
   verify_norm(rec) && verify_step_norm(step)
 }
 
@@ -366,22 +342,12 @@ test norm_record_none_mode_rejected() {
       cert_w: NormCertificate.RangeCert(good_range_cert()),
       cert_e: NormCertificate.RangeCert(good_range_cert()),
     }
-  let rec =
-    NormRecord {
-      mode: NormMode.NormNone,
-      bound_bits: 8,
-      steps: [step],
-    }
+  let rec = NormRecord { mode: NormMode.NormNone, bound_bits: 8, steps: [step] }
   !verify_norm(rec)
 }
 
 test norm_record_empty_steps_rejected() {
-  let rec =
-    NormRecord {
-      mode: NormMode.NormJl,
-      bound_bits: 8,
-      steps: [],
-    }
+  let rec = NormRecord { mode: NormMode.NormJl, bound_bits: 8, steps: [] }
   !verify_norm(rec)
 }
 
@@ -394,11 +360,7 @@ test norm_record_bad_step_rejected() {
       ),
     }
   let rec =
-    NormRecord {
-      mode: NormMode.NormRange,
-      bound_bits: 4,
-      steps: [bad_step],
-    }
+    NormRecord { mode: NormMode.NormRange, bound_bits: 4, steps: [bad_step] }
   !verify_norm(rec)
 }
 
@@ -410,22 +372,13 @@ test verify_slim_with_norm_accepts() {
       cert_e: NormCertificate.RangeCert(good_range_cert()),
     }
   let rec =
-    NormRecord {
-      mode: NormMode.NormRange,
-      bound_bits: 8,
-      steps: [step],
-    }
+    NormRecord { mode: NormMode.NormRange, bound_bits: 8, steps: [step] }
   verify_slim_with_norm(test_bundle(), proof, rec)
 }
 
 test verify_slim_with_norm_rejects_bad_norm() {
   // A valid slim proof but a malformed norm record must be rejected.
   let proof = well_formed_proof(3, 5, 2)
-  let rec =
-    NormRecord {
-      mode: NormMode.NormNone,
-      bound_bits: 8,
-      steps: [],
-    }
+  let rec = NormRecord { mode: NormMode.NormNone, bound_bits: 8, steps: [] }
   !verify_slim_with_norm(test_bundle(), proof, rec)
 }

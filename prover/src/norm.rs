@@ -136,11 +136,7 @@ pub fn norm_ok<F: PrimeField>(v: &[F], bound: &NormBound) -> bool {
 /// Derive a deterministic JL projection vector `g ∈ [1, 2^{seed_bits})` of
 /// length `n` from a BLAKE2b seed.  Both prover and verifier can reproduce it
 /// without storing it, so the certificate need only carry the sketch value.
-pub fn jl_sketch_vector<F: PrimeField>(
-    seed: &[u8],
-    n: usize,
-    coord_bits: u32,
-) -> Vec<F> {
+pub fn jl_sketch_vector<F: PrimeField>(seed: &[u8], n: usize, coord_bits: u32) -> Vec<F> {
     let mut hash = Blake2b512::new();
     hash.update(seed);
     let mut out = vec![F::zero(); n];
@@ -240,7 +236,11 @@ pub struct JlCertificate {
 }
 
 /// Build an Option-B certificate for `v` against `bound`.
-pub fn make_jl<F: PrimeField>(v: &[F], bound: &NormBound, coord_bits: u32) -> Option<JlCertificate> {
+pub fn make_jl<F: PrimeField>(
+    v: &[F],
+    bound: &NormBound,
+    coord_bits: u32,
+) -> Option<JlCertificate> {
     if !norm_ok(v, bound) {
         return None;
     }
@@ -346,7 +346,11 @@ impl NormCertificate {
         match mode {
             NormMode::None => Some(NormCertificate::Range(make_range(truth_table, bound)?)),
             NormMode::Range => Some(NormCertificate::Range(make_range(truth_table, bound)?)),
-            NormMode::Jl => Some(NormCertificate::Jl(make_jl(truth_table, bound, coord_bits)?)),
+            NormMode::Jl => Some(NormCertificate::Jl(make_jl(
+                truth_table,
+                bound,
+                coord_bits,
+            )?)),
         }
     }
 
@@ -578,7 +582,10 @@ mod tests {
         for (gi, vi) in g.iter().zip(tt.iter()) {
             y += *gi * *vi;
         }
-        assert_eq!(y.into_bigint().to_bytes_le(), make_jl(&tt, &b, 8).unwrap().y);
+        assert_eq!(
+            y.into_bigint().to_bytes_le(),
+            make_jl(&tt, &b, 8).unwrap().y
+        );
     }
 
     #[test]
@@ -662,8 +669,14 @@ mod tests {
     fn step_norm_roundtrip_both_modes() {
         // Step 0 and step 1 have genuinely small pre-fold witnesses.
         let steps = vec![
-            (vec![Fr::from(2u64), Fr::from(3u64), Fr::from(6u64)], vec![Fr::from(0u64)]),
-            (vec![Fr::from(6u64), Fr::from(5u64), Fr::from(30u64)], vec![Fr::from(0u64)]),
+            (
+                vec![Fr::from(2u64), Fr::from(3u64), Fr::from(6u64)],
+                vec![Fr::from(0u64)],
+            ),
+            (
+                vec![Fr::from(6u64), Fr::from(5u64), Fr::from(30u64)],
+                vec![Fr::from(0u64)],
+            ),
         ];
         for mode in [NormMode::Range, NormMode::Jl] {
             let b = 16u32;
@@ -687,7 +700,10 @@ mod tests {
         // certify it under the same bound, so the audit rejects it.
         let tampered = vec![
             (vec![Fr::from(2u64), Fr::from(3u64)], vec![Fr::from(0u64)]),
-            (vec![Fr::from(1u64 << 63), Fr::from(5u64)], vec![Fr::from(0u64)]),
+            (
+                vec![Fr::from(1u64 << 63), Fr::from(5u64)],
+                vec![Fr::from(0u64)],
+            ),
         ];
         assert!(
             StepNormRecord::recompute(NormMode::Jl, &tampered, b, 24).is_none(),

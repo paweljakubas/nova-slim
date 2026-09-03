@@ -608,9 +608,7 @@ pub fn prove_degree2_opts<C: NovaCurve>(
 /// `fr_r − u·cz_r − er_r == final_claim` and `final_claim == 0` (residual
 /// vanishes) — closing the all-zeros / "free E" gap.  Note `fr_r` is what the
 /// sumcheck bounds; `az_r·bz_r` does NOT equal `fr_r` for relaxed witnesses.
-pub fn verify_degree2<C: NovaCurve>(
-    proof: &SumcheckProofDegree2<C>,
-) -> Degree2VerifyOutput<C> {
+pub fn verify_degree2<C: NovaCurve>(proof: &SumcheckProofDegree2<C>) -> Degree2VerifyOutput<C> {
     let zero = ScalarField::<C>::zero();
     let claimed_sum = proof.claims[0];
     let num_rounds = proof.polys.len();
@@ -1439,8 +1437,7 @@ mod tests {
         );
 
         // Degree-2
-        let (proof2, _r2) =
-            prove_degree2::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e);
+        let (proof2, _r2) = prove_degree2::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e);
         let out2 = verify_degree2::<crate::curve::Bls12_381>(&proof2);
         assert!(out2.ok, "degree-2 sumcheck must pass");
 
@@ -1501,15 +1498,14 @@ mod tests {
             e.push(az * bz - u * cz);
         }
 
-        let (proof2, _r2) =
-            prove_degree2::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e);
+        let (proof2, _r2) = prove_degree2::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e);
         let out2 = verify_degree2::<crate::curve::Bls12_381>(&proof2);
-        assert!(out2.ok, "degree-2 sumcheck must pass for honest relaxed witness");
-        // MLE-of-product sumcheck: level-1 equation + residual vanishes.
-        assert_eq!(
-            out2.final_claim,
-            out2.fr_r - u * out2.cz_r - out2.er_r
+        assert!(
+            out2.ok,
+            "degree-2 sumcheck must pass for honest relaxed witness"
         );
+        // MLE-of-product sumcheck: level-1 equation + residual vanishes.
+        assert_eq!(out2.final_claim, out2.fr_r - u * out2.cz_r - out2.er_r);
         assert!(
             out2.final_claim.is_zero(),
             "level-1 final claim must be zero for an honest relaxed witness"
@@ -1540,8 +1536,7 @@ mod tests {
         let u = Fr::from(1u64);
         let e = vec![Fr::zero(); k];
 
-        let (proof, _) =
-            prove_degree2::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e);
+        let (proof, _) = prove_degree2::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e);
 
         // Tamper initial claim.
         let mut bad = proof.clone();

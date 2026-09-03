@@ -25,9 +25,8 @@ use prover::norm;
 use prover::{
     curve::{NovaCurve, ScalarField},
     fr_to_string, frs_from_strings, prove_level1, prove_sumcheck_compression_opt, verify_slim,
-    verify_slim_level1, verify_sumcheck_compression,
-    NifsBundle, NifsFinalInstance, NifsFoldOutput, OptFlags, DEFAULT_SIS_PARAM, NIFS_PARAMS_SEED,
-    NIFS_TRANSCRIPT_PREFIX,
+    verify_slim_level1, verify_sumcheck_compression, NifsBundle, NifsFinalInstance, NifsFoldOutput,
+    OptFlags, DEFAULT_SIS_PARAM, NIFS_PARAMS_SEED, NIFS_TRANSCRIPT_PREFIX,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -353,10 +352,7 @@ fn benchmark_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     // 4b. Norm-enforced level-1, both Option A (range) and Option B (JL).
     let mut range_level1_bytes = 0usize;
     let mut jl_level1_bytes = 0usize;
-    for (mode, label) in [
-        (norm::NormMode::Range, "range"),
-        (norm::NormMode::Jl, "jl"),
-    ] {
+    for (mode, label) in [(norm::NormMode::Range, "range"), (norm::NormMode::Jl, "jl")] {
         // Ensure the honest witness actually fits B, else pick a larger bound.
         let mut b = bound_bits;
         while prove_level1::<C, CS>(circuit, &folded, opts, mode, b).is_err() {
@@ -391,7 +387,8 @@ fn benchmark_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
             panic!("norm-{label} audit mismatch");
         }
         let norm_verify_s = t.elapsed().as_secs_f64();
-        let bytes = l1n.to_cbor::<ScalarField<C>>()
+        let bytes = l1n
+            .to_cbor::<ScalarField<C>>()
             .map(|c| c.len())
             .unwrap_or(0);
         if mode == norm::NormMode::Range {
@@ -422,8 +419,8 @@ fn benchmark_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     let level1_cbor = l1
         .to_cbor::<ScalarField<C>>()
         .expect("level-1 proof serialization should not fail");
-    let level1_json = serde_json::to_string_pretty(&l1)
-        .expect("level-1 proof serialization should not fail");
+    let level1_json =
+        serde_json::to_string_pretty(&l1).expect("level-1 proof serialization should not fail");
     println!(
         "nifs bundle: {} B ({:.1} KiB cbor / {:.1} KiB json), O(1) in the step count",
         bundle_cbor.len(),
@@ -455,10 +452,7 @@ fn benchmark_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
         "level1 proof (+norm jl): {jl_level1_bytes} B — per-step Option-B JL/sketch certificates"
     );
     println!("verify (slim): {verify_slim_s:.4} s");
-    println!(
-        "verify (level-1): {:.4} s",
-        verify_level1_s
-    );
+    println!("verify (level-1): {:.4} s", verify_level1_s);
     println!("all verifications OK");
 }
 

@@ -11,7 +11,6 @@ use aiken/builtin
 use aiken/collection/list
 use aiken/crypto.{blake2b_256}
 use aiken/primitive/bytearray
-
 use norm.{NormRecord, verify_norm}
 
 /// BLS12-381 scalar field prime.

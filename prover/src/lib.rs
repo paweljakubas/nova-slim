@@ -1688,8 +1688,7 @@ pub fn verify_slim_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarFiel
             bundle.final_instance.w_commit,
             bundle.final_instance.e_commit,
         );
-        let expected_hash =
-            hex::encode(&blake2::Blake2b512::digest(instance_str.as_bytes())[..32]);
+        let expected_hash = hex::encode(&blake2::Blake2b512::digest(instance_str.as_bytes())[..32]);
         if proof.bundle_final_instance_hash != expected_hash {
             return Err(
                 "level-1 proof is not bound to this NIFS bundle (final instance hash mismatch)"
@@ -1736,10 +1735,7 @@ pub fn verify_slim_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarFiel
         .er_r
         .parse::<ScalarField<C>>()
         .map_err(|_| "invalid er_r")?;
-    let u_val = proof
-        .u
-        .parse::<ScalarField<C>>()
-        .map_err(|_| "invalid u")?;
+    let u_val = proof.u.parse::<ScalarField<C>>().map_err(|_| "invalid u")?;
 
     let sc_proof = sumcheck::SumcheckProofDegree2 {
         claims,
@@ -1866,10 +1862,7 @@ pub fn verify_slim_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarFiel
 /// assurance that every pre-fold witness was short — closing the "conjectured
 /// PQ" gap in [`norm::NormMode::Jl`] (SIS-style) and the range decomposition
 /// in [`norm::NormMode::Range`].
-pub fn verify_level1_norm<
-    C: NovaCurve,
-    CS: CommitmentScheme<Scalar = ScalarField<C>>,
->(
+pub fn verify_level1_norm<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     circuit: &Path,
     steps: &Path,
     opts: OptFlags,
@@ -1905,18 +1898,14 @@ pub fn verify_level1_norm<
         })
         .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
 
-    let recomputed = norm::StepNormRecord::recompute(
-        norm_mode,
-        &step_w,
-        bound_bits,
-        bound_bits.min(128),
-    )
-    .ok_or_else(|| {
-        format!(
-            "recomputed per-step norms exceed public bound B = 2^{bound_bits} (mode = {})",
-            norm_mode.as_str()
-        )
-    })?;
+    let recomputed =
+        norm::StepNormRecord::recompute(norm_mode, &step_w, bound_bits, bound_bits.min(128))
+            .ok_or_else(|| {
+                format!(
+                    "recomputed per-step norms exceed public bound B = 2^{bound_bits} (mode = {})",
+                    norm_mode.as_str()
+                )
+            })?;
 
     if !carried.verify_against(&recomputed, bound_bits) {
         return Err(format!(
@@ -1992,17 +1981,11 @@ pub fn run_verify_slim_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = Scalar
         let circuit = circuit.ok_or_else(|| {
             "norm audit requires --circuit (needed to re-fold step witnesses)".to_string()
         })?;
-        let steps = steps
-            .ok_or_else(|| "norm audit requires --steps (needed to re-fold step witnesses)".to_string())?;
+        let steps = steps.ok_or_else(|| {
+            "norm audit requires --steps (needed to re-fold step witnesses)".to_string()
+        })?;
         let record = verify_level1_norm::<C, CS>(
-            circuit,
-            steps,
-            opts,
-            sis_param,
-            &bundle,
-            &l1,
-            norm_mode,
-            bound_bits,
+            circuit, steps, opts, sis_param, &bundle, &l1, norm_mode, bound_bits,
         )?;
         eprintln!(
             "Per-step norm audit passed (mode = {}, B = 2^{}, {} steps, {} bytes of certs)",
@@ -2974,7 +2957,10 @@ mod tests {
             crate::curve::Bls12_381,
             PedersenCommitment<crate::curve::Bls12_381>,
         >(&fold_out.bundle, &bad_proof, DEFAULT_SIS_PARAM);
-        assert!(result.is_err(), "degenerate all-zeros proof must be rejected");
+        assert!(
+            result.is_err(),
+            "degenerate all-zeros proof must be rejected"
+        );
     }
 
     /// Level-1 verifier rejects tampered round polynomial.
@@ -3048,11 +3034,15 @@ mod tests {
     #[test]
     fn level1_norm_range_e2e() {
         let (_tmp, r1cs_path, steps_dir, fold_out, c) = norm_setup();
-        let l1 = prove_level1::<
-            crate::curve::Bls12_381,
-            PedersenCommitment<crate::curve::Bls12_381>,
-        >(&c, &fold_out, OptFlags::NONE, norm::NormMode::Range, 64)
-        .unwrap();
+        let l1 =
+            prove_level1::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(
+                &c,
+                &fold_out,
+                OptFlags::NONE,
+                norm::NormMode::Range,
+                64,
+            )
+            .unwrap();
         let rec = verify_level1_norm::<
             crate::curve::Bls12_381,
             PedersenCommitment<crate::curve::Bls12_381>,
@@ -3076,15 +3066,16 @@ mod tests {
     #[test]
     fn level1_norm_jl_e2e() {
         let (_tmp, r1cs_path, steps_dir, fold_out, c) = norm_setup();
-        let l1 = prove_level1::<
-            crate::curve::Bls12_381,
-            PedersenCommitment<crate::curve::Bls12_381>,
-        >(&c, &fold_out, OptFlags::NONE, norm::NormMode::Jl, 64)
-        .unwrap();
-        verify_level1_norm::<
-            crate::curve::Bls12_381,
-            PedersenCommitment<crate::curve::Bls12_381>,
-        >(
+        let l1 =
+            prove_level1::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(
+                &c,
+                &fold_out,
+                OptFlags::NONE,
+                norm::NormMode::Jl,
+                64,
+            )
+            .unwrap();
+        verify_level1_norm::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(
             &r1cs_path,
             &steps_dir,
             OptFlags::NONE,
@@ -3132,11 +3123,15 @@ mod tests {
     #[test]
     fn level1_norm_requires_certificate_in_proof() {
         let (_tmp, r1cs_path, steps_dir, fold_out, c) = norm_setup();
-        let l1 = prove_level1::<
-            crate::curve::Bls12_381,
-            PedersenCommitment<crate::curve::Bls12_381>,
-        >(&c, &fold_out, OptFlags::NONE, norm::NormMode::None, 64)
-        .unwrap();
+        let l1 =
+            prove_level1::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(
+                &c,
+                &fold_out,
+                OptFlags::NONE,
+                norm::NormMode::None,
+                64,
+            )
+            .unwrap();
         let result = verify_level1_norm::<
             crate::curve::Bls12_381,
             PedersenCommitment<crate::curve::Bls12_381>,
@@ -3163,7 +3158,10 @@ mod tests {
             crate::curve::Bls12_381,
             PedersenCommitment<crate::curve::Bls12_381>,
         >(&c, &fold_out, OptFlags::NONE, norm::NormMode::Range, 1);
-        assert!(result.is_err(), "bound too tight must be rejected at prove time");
+        assert!(
+            result.is_err(),
+            "bound too tight must be rejected at prove time"
+        );
     }
 
     /// E2E: CBOR round-trip preserves the norm record, and a round-tripped
@@ -3171,18 +3169,19 @@ mod tests {
     #[test]
     fn level1_norm_cbor_roundtrip() {
         let (_tmp, r1cs_path, steps_dir, fold_out, c) = norm_setup();
-        let l1 = prove_level1::<
-            crate::curve::Bls12_381,
-            PedersenCommitment<crate::curve::Bls12_381>,
-        >(&c, &fold_out, OptFlags::NONE, norm::NormMode::Jl, 64)
-        .unwrap();
+        let l1 =
+            prove_level1::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(
+                &c,
+                &fold_out,
+                OptFlags::NONE,
+                norm::NormMode::Jl,
+                64,
+            )
+            .unwrap();
         let bytes = l1.to_cbor::<Fr>().unwrap();
         let decoded = Level1SlimProof::from_cbor::<Fr>(&bytes).unwrap();
         assert_eq!(decoded.norm, l1.norm);
-        verify_level1_norm::<
-            crate::curve::Bls12_381,
-            PedersenCommitment<crate::curve::Bls12_381>,
-        >(
+        verify_level1_norm::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(
             &r1cs_path,
             &steps_dir,
             OptFlags::NONE,

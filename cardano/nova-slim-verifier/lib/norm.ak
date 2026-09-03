@@ -32,7 +32,6 @@ const max_coord_bits = 255
 /// ---------------------------------------------------------------------------
 /// Types (mirror `prover/src/norm.rs`)
 /// ---------------------------------------------------------------------------
-
 /// The norm-enforcement mode.  Constructor names are prefixed to avoid clashes
 /// in the module namespace.
 pub type NormMode {
@@ -82,7 +81,6 @@ pub type NormRecord {
 /// ---------------------------------------------------------------------------
 /// Verification
 /// ---------------------------------------------------------------------------
-
 /// A valid public bound bit-length: at least 1 and within the protocol cap.
 fn valid_bound(bound_bits: Int) -> Bool {
   bound_bits >= 1 && bound_bits <= max_bound_bits
@@ -107,25 +105,18 @@ fn valid_coord_bits(bits: Int, bound_bits: Int) -> Bool {
 /// one coordinate, every claimed per-coordinate bit-length must be within the
 /// recorded bound, and the bound itself must be protocol-valid.
 pub fn verify_range_cert(cert: RangeCertificate) -> Bool {
-  valid_bound(cert.bound_bits)
-    && !list.is_empty(cert.per_coord_bits)
-    && list.all(
-      cert.per_coord_bits,
-      fn(bits) {
-        valid_coord_bits(bits, cert.bound_bits)
-      },
-    )
+  valid_bound(cert.bound_bits) && !list.is_empty(cert.per_coord_bits) && list.all(
+    cert.per_coord_bits,
+    fn(bits) { valid_coord_bits(bits, cert.bound_bits) },
+  )
 }
 
 /// Verify an Option B (JL) certificate structure: a non-empty sketch, a
 /// positive vector length, and protocol-valid bound/coordinate bit-widths.
 pub fn verify_jl_cert(cert: JlCertificate) -> Bool {
-  valid_bound(cert.bound_bits)
-    && cert.coord_bits >= 1
-    && cert.coord_bits <= max_coord_bits
-    && cert.len >= 1
-    && bytearray.length(cert.y) > 0
-    && bytearray.length(cert.y) <= 64
+  valid_bound(cert.bound_bits) && cert.coord_bits >= 1 && cert.coord_bits <= max_coord_bits && cert.len >= 1 && bytearray.length(
+    cert.y,
+  ) > 0 && bytearray.length(cert.y) <= 64
 }
 
 /// Verify a single certificate of either flavour.
@@ -144,10 +135,9 @@ pub fn verify_step_norm(step: StepNormCert) -> Bool {
 /// Verify the whole carried norm record: a real audit mode, a valid public
 /// bound, at least one step, and every step's certificates structurally sound.
 pub fn verify_norm(norm: NormRecord) -> Bool {
-  valid_mode(norm.mode)
-    && valid_bound(norm.bound_bits)
-    && !list.is_empty(norm.steps)
-    && list.all(norm.steps, verify_step_norm)
+  valid_mode(norm.mode) && valid_bound(norm.bound_bits) && !list.is_empty(
+    norm.steps,
+  ) && list.all(norm.steps, verify_step_norm)
 }
 
 /// True when the record carries a real (audit) enforcement mode with at least

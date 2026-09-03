@@ -1386,10 +1386,9 @@ fn nifs_level1_compress_verify_end_to_end() {
         .arg(bundle_file.path())
         .arg("--level1-proof")
         .arg(proof_file.path());
-    verify
-        .assert()
-        .success()
-        .stderr(predicate::str::contains("Level-1 degree-2 sumcheck proof OK"));
+    verify.assert().success().stderr(predicate::str::contains(
+        "Level-1 degree-2 sumcheck proof OK",
+    ));
 
     // 4. tampering the bundle's instance must fail verification
     let mut tampered: prover::NifsBundle =
@@ -1582,9 +1581,7 @@ fn bn254_level1_compress_verify_end_to_end() {
         .arg(bundle_file.path())
         .arg("--level1-proof")
         .arg(proof_file.path());
-    verify
-        .assert()
-        .success()
-        .stderr(predicate::str::contains("Level-1 degree-2 sumcheck proof OK"));
+    verify.assert().success().stderr(predicate::str::contains(
+        "Level-1 degree-2 sumcheck proof OK",
+    ));
 }
-

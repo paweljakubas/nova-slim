@@ -5,7 +5,7 @@ use clap::Parser;
 use prover::{
     commitment::{HashCommitment, PedersenCommitment, SisCommitment},
     curve::{Bandersnatch, Bls12_381, Bn254, Grumpkin, Pallas, Vesta},
-    run_verify_slim, run_verify_slim_level1, run_verify_sumcheck_opt, DEFAULT_SIS_PARAM, OptFlags,
+    run_verify_slim, run_verify_slim_level1, run_verify_sumcheck_opt, OptFlags, DEFAULT_SIS_PARAM,
 };
 use std::error::Error;
 use std::path::PathBuf;
@@ -84,14 +84,13 @@ pub struct Args {
 /// Run the `verify` subcommand.
 pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
     if let Some(ref l1) = args.level1_proof {
-        let norm_mode =
-            if args.norm_range {
-                prover::norm::NormMode::Range
-            } else if args.norm_jl {
-                prover::norm::NormMode::Jl
-            } else {
-                prover::norm::NormMode::None
-            };
+        let norm_mode = if args.norm_range {
+            prover::norm::NormMode::Range
+        } else if args.norm_jl {
+            prover::norm::NormMode::Jl
+        } else {
+            prover::norm::NormMode::None
+        };
         let out = dispatch!(args.curve, args.commitment, {
             run_verify_slim_level1::<C, CS>(
                 &args.ivc,
