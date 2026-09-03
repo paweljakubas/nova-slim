@@ -432,6 +432,7 @@ pub mod codec {
         r_challenges: Vec<FrCbor>,
         az_r: FrCbor,
         bz_r: FrCbor,
+        fr_r: FrCbor,
         cz_r: FrCbor,
         er_r: FrCbor,
         u: FrCbor,
@@ -568,6 +569,7 @@ pub mod codec {
             r_challenges: frs_enc::<F>(&p.r_challenges)?,
             az_r: fr_enc(&fr_parse::<F>(&p.az_r)?),
             bz_r: fr_enc(&fr_parse::<F>(&p.bz_r)?),
+            fr_r: fr_enc(&fr_parse::<F>(&p.fr_r)?),
             cz_r: fr_enc(&fr_parse::<F>(&p.cz_r)?),
             er_r: fr_enc(&fr_parse::<F>(&p.er_r)?),
             u: fr_enc(&fr_parse::<F>(&p.u)?),
@@ -597,6 +599,7 @@ pub mod codec {
             r_challenges: frs_dec::<F>(&d.r_challenges)?,
             az_r: super::fr_to_string(&fr_dec::<F>(&d.az_r)?),
             bz_r: super::fr_to_string(&fr_dec::<F>(&d.bz_r)?),
+            fr_r: super::fr_to_string(&fr_dec::<F>(&d.fr_r)?),
             cz_r: super::fr_to_string(&fr_dec::<F>(&d.cz_r)?),
             er_r: super::fr_to_string(&fr_dec::<F>(&d.er_r)?),
             u: super::fr_to_string(&fr_dec::<F>(&d.u)?),
@@ -1386,6 +1389,7 @@ pub struct Level1SlimProof {
     /// Claimed MLE evaluations at random point r.
     pub az_r: String,
     pub bz_r: String,
+    pub fr_r: String,
     pub cz_r: String,
     pub er_r: String,
     /// Slack scalar u.
@@ -1641,6 +1645,7 @@ pub fn prove_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>
         r_challenges: r_challenges.iter().map(fr_to_string).collect(),
         az_r: fr_to_string(&sc_proof.az_r),
         bz_r: fr_to_string(&sc_proof.bz_r),
+        fr_r: fr_to_string(&sc_proof.fr_r),
         cz_r: fr_to_string(&sc_proof.cz_r),
         er_r: fr_to_string(&sc_proof.er_r),
         u: fr_to_string(&u),
@@ -1658,7 +1663,7 @@ pub fn prove_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>
 /// Checks:
 /// 1. Bundle binding (final_instance hash).
 /// 2. Degree-2 sumcheck validity (round polys, Fiat-Shamir).
-/// 3. Level-1 equation: `az_r·bz_r − u·cz_r − er_r == final_claim`.
+/// 3. Level-1 equation: `fr_r − u·cz_r − er_r == final_claim`.
 /// 4. Final claim is zero (residual vanishes at the random point ⇒ relaxed
 ///    R1CS holds), closing the all-zeros / "free E" tautology.
 /// 5. HashPC opening proofs for W and E (binds az_r/bz_r/cz_r/er_r to the
@@ -1719,6 +1724,10 @@ pub fn verify_slim_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarFiel
         .bz_r
         .parse::<ScalarField<C>>()
         .map_err(|_| "invalid bz_r")?;
+    let fr_r = proof
+        .fr_r
+        .parse::<ScalarField<C>>()
+        .map_err(|_| "invalid fr_r")?;
     let cz_r = proof
         .cz_r
         .parse::<ScalarField<C>>()
@@ -1737,6 +1746,7 @@ pub fn verify_slim_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarFiel
         polys,
         az_r,
         bz_r,
+        fr_r,
         cz_r,
         er_r,
     };
@@ -1752,28 +1762,28 @@ pub fn verify_slim_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarFiel
         return Err("degree-2 sumcheck Fiat-Shamir challenges do not match".into());
     }
 
-    // 4. Check the level-1 equation: az_r * bz_r - u * cz_r - er_r == final_claim.
-    let expected = az_r * bz_r - u_val * cz_r - er_r;
+    // 4. Check the level-1 equation: fr_r - u * cz_r - er_r == final_claim,
+    //    where `fr_r` is the MLE of the *product* `AZ⊙BZ` at r (sumchecked
+    //    as a single MLE), NOT `az_r * bz_r`.
+    let expected = fr_r - u_val * cz_r - er_r;
     if expected != v_out.final_claim {
         return Err(format!(
-            "level-1 final equation check failed: az*bz - u*cz - er = {} != final_claim = {}",
+            "level-1 final equation check failed: fr - u*cz - er = {} != final_claim = {}",
             fr_to_string(&expected),
             fr_to_string(&v_out.final_claim)
         )
         .into());
     }
 
-    // 5. Assert the final claim vanishes.  The so-called "level-1 equation"
-    //    (az_r * bz_r - u * cz_r - er_r == final_claim) is a tautology for any
-    //    (az_r, bz_r, cz_r, er_r): it always holds by definition.  Without an
-    //    additional zero-check it would NOT assert that the relaxed R1CS
-    //    constraints are satisfied -- a prover could pick arbitrary values and
-    //    set er_r = az_r * bz_r - u * cz_r.  Requiring final_claim == 0 forces
-    //    the residual polynomial (AZ)∘(BZ) - u·(CZ) - E to vanish at the random
-    //    point r; together with the commitment binding below (which fixes
-    //    az_r/bz_r/cz_r/er_r to the committed Z, E) and Schwartz-Zippel, this
-    //    implies the residual is identically zero, i.e. every constraint is
-    //    satisfied.
+    // 5. Assert the final claim vanishes.  `final_claim == MLE(residual)@r`
+    //    where `residual = AZ⊙BZ − u·CZ − E`.  Requiring `final_claim == 0`
+    //    forces the residual polynomial to vanish at the random point r; by
+    //    Schwartz–Zippel it is then identically zero, i.e. the relaxed R1CS
+    //    equation holds for the committed Z, E (via the HashPC/Pedersen
+    //    binding in steps 6–7).  Sumchecking the MLE-of-product (see
+    //    `prove_degree2_opts`) is what makes this hold for *honest* relaxed
+    //    witnesses — the older `az_r·bz_r` reconstruction is NOT equal to
+    //    `MLE(az⊙bz)@r` and rejected every honest fold with `u != 1, e != 0`.
     if !v_out.final_claim.is_zero() {
         return Err(format!(
             "level-1 final claim is non-zero ({}) — the relaxed R1CS equation does not hold at the random point",
@@ -2948,6 +2958,7 @@ mod tests {
             r_challenges: vec![],
             az_r: fr_to_string(&Fr::zero()),
             bz_r: fr_to_string(&Fr::zero()),
+            fr_r: fr_to_string(&Fr::zero()),
             cz_r: fr_to_string(&Fr::zero()),
             er_r: fr_to_string(&Fr::zero()),
             u: fr_to_string(&Fr::from(1u64)),

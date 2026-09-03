@@ -343,8 +343,12 @@ pub struct SumcheckProofDegree2<C: NovaCurve> {
     /// Round polynomials `[g(0), g(1), g(2)]` (degree-2, three evaluations).
     pub polys: Vec<[ScalarField<C>; 3]>,
     /// Claimed MLE evaluations at the final random point `r`.
+    /// `az_r`, `bz_r` are the MLEs of `AZ`/`BZ` at `r`; `fr_r` is the MLE of
+    /// the *product* `AZ⊙BZ` at `r` (used by `verify_slim_level1` instead of
+    /// `az_r·bz_r`, which is NOT the MLE-of-product).
     pub az_r: ScalarField<C>,
     pub bz_r: ScalarField<C>,
+    pub fr_r: ScalarField<C>,
     pub cz_r: ScalarField<C>,
     pub er_r: ScalarField<C>,
 }
@@ -356,6 +360,7 @@ pub struct Degree2VerifyOutput<C: NovaCurve> {
     pub r_challenges: Vec<ScalarField<C>>,
     pub az_r: ScalarField<C>,
     pub bz_r: ScalarField<C>,
+    pub fr_r: ScalarField<C>,
     pub cz_r: ScalarField<C>,
     pub er_r: ScalarField<C>,
     pub final_claim: ScalarField<C>,
@@ -420,7 +425,9 @@ pub fn prove_degree2_opts<C: NovaCurve>(
         let bz = eval_row_mle(&r_mat[0], z);
         let cz = eval_row_mle(&o[0], z);
         let er = e[0];
-        let final_claim = az * bz - u * cz - er;
+        let fr = az * bz;
+        // final_claim is the *residual* at the (empty) point: MLE(az⊙bz) − u·MLE(cz) − MLE(e).
+        let final_claim = fr - u * cz - er;
         return (
             SumcheckProofDegree2 {
                 claims: vec![final_claim],
@@ -429,6 +436,7 @@ pub fn prove_degree2_opts<C: NovaCurve>(
                 bz_r: bz,
                 cz_r: cz,
                 er_r: er,
+                fr_r: fr,
             },
             vec![],
         );
@@ -468,6 +476,17 @@ pub fn prove_degree2_opts<C: NovaCurve>(
     let mut e_vec: Vec<ScalarField<C>> = e.to_vec();
     e_vec.resize(n_padded, zero);
 
+    // `f = az ⊙ bz` (componentwise product).  The residual vector is
+    // `r = az⊙bz − u·cz − e`; its MLE is folded as a single entity so the
+    // round polynomial g(2) equals MLE(r)@2.  (Sumchecking the *product* via
+    // the separately-folded MLEs would make `final_claim` the product-of-MLEs,
+    // which is non-zero even for honest relaxed witnesses — see level-1 bug.)
+    let mut f_vec: Vec<ScalarField<C>> = az_vec
+        .iter()
+        .zip(bz_vec.iter())
+        .map(|(a, b)| *a * *b)
+        .collect();
+
     let mut claims = Vec::with_capacity(num_rounds + 1);
     let mut polys: Vec<[ScalarField<C>; 3]> = Vec::with_capacity(num_rounds);
     let mut r_challenges: Vec<ScalarField<C>> = Vec::with_capacity(num_rounds);
@@ -482,25 +501,22 @@ pub fn prove_degree2_opts<C: NovaCurve>(
                 .fold(
                     || (zero, zero, zero),
                     |acc, j| {
-                        let az_e = az_vec[2 * j];
-                        let az_o = az_vec[2 * j + 1];
-                        let bz_e = bz_vec[2 * j];
-                        let bz_o = bz_vec[2 * j + 1];
+                        let f_e = f_vec[2 * j];
+                        let f_o = f_vec[2 * j + 1];
                         let cz_e = cz_vec[2 * j];
                         let cz_o = cz_vec[2 * j + 1];
                         let e_e = e_vec[2 * j];
                         let e_o = e_vec[2 * j + 1];
 
-                        // g(0): X=0 → even siblings
-                        let gj0 = az_e * bz_e - u * cz_e - e_e;
+                        // g(0): X=0 → even siblings (leftmost = az_e·bz_e)
+                        let gj0 = f_e - u * cz_e - e_e;
                         // g(1): X=1 → odd siblings
-                        let gj1 = az_o * bz_o - u * cz_o - e_o;
-                        // g(2): X=2 → multilinear extension at 2
-                        let az_2 = two * az_o - az_e;
-                        let bz_2 = two * bz_o - bz_e;
+                        let gj1 = f_o - u * cz_o - e_o;
+                        // g(2): X=2 → MLE of the *product* f at 2 (2·f_o − f_e)
+                        let f_2 = two * f_o - f_e;
                         let cz_2 = two * cz_o - cz_e;
                         let er_2 = two * e_o - e_e;
-                        let gj2 = az_2 * bz_2 - u * cz_2 - er_2;
+                        let gj2 = f_2 - u * cz_2 - er_2;
 
                         (acc.0 + gj0, acc.1 + gj1, acc.2 + gj2)
                     },
@@ -515,22 +531,19 @@ pub fn prove_degree2_opts<C: NovaCurve>(
             let mut sg1 = zero;
             let mut sg2 = zero;
             for j in 0..half {
-                let az_e = az_vec[2 * j];
-                let az_o = az_vec[2 * j + 1];
-                let bz_e = bz_vec[2 * j];
-                let bz_o = bz_vec[2 * j + 1];
+                let f_e = f_vec[2 * j];
+                let f_o = f_vec[2 * j + 1];
                 let cz_e = cz_vec[2 * j];
                 let cz_o = cz_vec[2 * j + 1];
                 let e_e = e_vec[2 * j];
                 let e_o = e_vec[2 * j + 1];
 
-                sg0 += az_e * bz_e - u * cz_e - e_e;
-                sg1 += az_o * bz_o - u * cz_o - e_o;
-                let az_2 = two * az_o - az_e;
-                let bz_2 = two * bz_o - bz_e;
+                sg0 += f_e - u * cz_e - e_e;
+                sg1 += f_o - u * cz_o - e_o;
+                let f_2 = two * f_o - f_e;
                 let cz_2 = two * cz_o - cz_e;
                 let er_2 = two * e_o - e_e;
-                sg2 += az_2 * bz_2 - u * cz_2 - er_2;
+                sg2 += f_2 - u * cz_2 - er_2;
             }
             (sg0, sg1, sg2)
         };
@@ -548,7 +561,7 @@ pub fn prove_degree2_opts<C: NovaCurve>(
         let ri = challenge_from_hash::<C>(&h);
         r_challenges.push(ri);
 
-        // Fold all four vectors with challenge ri.
+        // Fold all vectors with challenge ri (MLE folding).
         let fold = |vec: &[ScalarField<C>]| -> Vec<ScalarField<C>> {
             (0..half)
                 .map(|j| (one - ri) * vec[2 * j] + ri * vec[2 * j + 1])
@@ -558,14 +571,18 @@ pub fn prove_degree2_opts<C: NovaCurve>(
         bz_vec = fold(&bz_vec);
         cz_vec = fold(&cz_vec);
         e_vec = fold(&e_vec);
+        f_vec = fold(&f_vec);
     }
 
-    // Final scalar values.
+    // Final scalar values. `fr_r` is the MLE of `az⊙bz` at the folded point r;
+    // `final_claim = MLE(residual)@r = fr_r − u·cz_r − er_r` vanishes for an
+    // honest relaxed witness (residual ≡ 0 componentwise ⇒ MLE(residual) ≡ 0).
     let az_f = az_vec[0];
     let bz_f = bz_vec[0];
     let cz_f = cz_vec[0];
     let er_f = e_vec[0];
-    let final_claim = az_f * bz_f - u * cz_f - er_f;
+    let fr_f = f_vec[0];
+    let final_claim = fr_f - u * cz_f - er_f;
     claims.push(final_claim);
 
     (
@@ -576,6 +593,7 @@ pub fn prove_degree2_opts<C: NovaCurve>(
             bz_r: bz_f,
             cz_r: cz_f,
             er_r: er_f,
+            fr_r: fr_f,
         },
         r_challenges,
     )
@@ -584,9 +602,12 @@ pub fn prove_degree2_opts<C: NovaCurve>(
 /// Verify a degree-2 sumcheck proof.
 ///
 /// Checks internal consistency (round polynomial sums, Fiat-Shamir
-/// challenges, final claim).  Returns the four scalar evaluations
-/// `az_r, bz_r, cz_r, er_r` and the `final_claim` so the caller can
-/// check the level-1 equation `az_r·bz_r − u·cz_r − er_r == final_claim`.
+/// challenges, final claim).  Returns the scalar evaluations
+/// `az_r, bz_r, fr_r, cz_r, er_r` and the `final_claim`, where `fr_r` is the
+/// MLE of the product `AZ⊙BZ` at `r`.  The caller checks
+/// `fr_r − u·cz_r − er_r == final_claim` and `final_claim == 0` (residual
+/// vanishes) — closing the all-zeros / "free E" gap.  Note `fr_r` is what the
+/// sumcheck bounds; `az_r·bz_r` does NOT equal `fr_r` for relaxed witnesses.
 pub fn verify_degree2<C: NovaCurve>(
     proof: &SumcheckProofDegree2<C>,
 ) -> Degree2VerifyOutput<C> {
@@ -601,6 +622,7 @@ pub fn verify_degree2<C: NovaCurve>(
             r_challenges: vec![],
             az_r: zero,
             bz_r: zero,
+            fr_r: zero,
             cz_r: zero,
             er_r: zero,
             final_claim: zero,
@@ -613,6 +635,7 @@ pub fn verify_degree2<C: NovaCurve>(
             r_challenges: vec![],
             az_r: proof.az_r,
             bz_r: proof.bz_r,
+            fr_r: proof.fr_r,
             cz_r: proof.cz_r,
             er_r: proof.er_r,
             final_claim: claimed_sum,
@@ -633,6 +656,7 @@ pub fn verify_degree2<C: NovaCurve>(
                 r_challenges: vec![],
                 az_r: zero,
                 bz_r: zero,
+                fr_r: zero,
                 cz_r: zero,
                 er_r: zero,
                 final_claim: zero,
@@ -660,6 +684,7 @@ pub fn verify_degree2<C: NovaCurve>(
         r_challenges,
         az_r: proof.az_r,
         bz_r: proof.bz_r,
+        fr_r: proof.fr_r,
         cz_r: proof.cz_r,
         er_r: proof.er_r,
         final_claim,
@@ -1422,16 +1447,73 @@ mod tests {
         // Both have the same number of rounds.
         assert_eq!(proof1.polys.len(), proof2.polys.len());
 
-        // The degree-2 final claim must satisfy the level-1 equation,
-        // binding the sum to the four MLE evaluations at r.
+        // The degree-2 final claim equals the residual MLE at r:
+        //   final_claim == fr_r − u·cz_r − er_r == MLE(residual)@r.
         assert_eq!(
-            out2.az_r * out2.bz_r - u * out2.cz_r - out2.er_r,
+            out2.fr_r - u * out2.cz_r - out2.er_r,
             out2.final_claim,
-            "degree-2 final claim must equal az_r*bz_r - u*cz_r - er_r"
+            "degree-2 final claim must equal fr_r - u*cz_r - er_r"
+        );
+
+        // For this perfectly-satisfied (`u=1, e=0`) witness the residual is
+        // identically zero, so the level-1 final claim vanishes.
+        assert!(
+            out2.final_claim.is_zero(),
+            "degree-2 final claim must be zero for satisfying witness"
         );
 
         // Both expose the same claimed initial sum: Σ_j P_j = 0.
         assert_eq!(proof1.claims[0], proof2.claims[0]);
+    }
+
+    /// REGRESSION (level-1): an *honest relaxed* witness (`u != 1`, `e != 0`)
+    /// with componentwise residual exactly zero must yield a zero level-1
+    /// final claim.  The old degree-2 sumcheck folded `AZ`/`BZ` separately and
+    /// set the final claim to `az_r·bz_r − u·cz_r − er_r`, which is non-zero
+    /// for relaxed witnesses and wrongly rejected every honest fold.
+    #[test]
+    fn degree2_relaxed_honest_final_claim_zero() {
+        let k = 4;
+        let n_wires = 1 + 3 * k;
+        let mut l = Vec::new();
+        let mut r_mat = Vec::new();
+        let mut o = Vec::new();
+        for i in 0..k {
+            l.push(vec![((1 + 3 * i) as u32, Fr::from(1u64))]);
+            r_mat.push(vec![((2 + 3 * i) as u32, Fr::from(1u64))]);
+            o.push(vec![((3 + 3 * i) as u32, Fr::from(1u64))]);
+        }
+        let mut z = vec![Fr::from(1u64)];
+        for i in 0..k {
+            let a = Fr::from((i + 2) as u64);
+            let b = Fr::from((i + 3) as u64);
+            z.push(a);
+            z.push(b);
+            z.push(a * b);
+        }
+        // Relaxed: u != 1, e set so the componentwise residual is exactly zero.
+        let u = Fr::from(2u64);
+        let mut e = Vec::new();
+        for i in 0..k {
+            let az = Fr::from((i + 2) as u64);
+            let bz = Fr::from((i + 3) as u64);
+            let cz = az * bz;
+            e.push(az * bz - u * cz);
+        }
+
+        let (proof2, _r2) =
+            prove_degree2::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e);
+        let out2 = verify_degree2::<crate::curve::Bls12_381>(&proof2);
+        assert!(out2.ok, "degree-2 sumcheck must pass for honest relaxed witness");
+        // MLE-of-product sumcheck: level-1 equation + residual vanishes.
+        assert_eq!(
+            out2.final_claim,
+            out2.fr_r - u * out2.cz_r - out2.er_r
+        );
+        assert!(
+            out2.final_claim.is_zero(),
+            "level-1 final claim must be zero for an honest relaxed witness"
+        );
     }
 
     /// Degree-2 sumcheck rejects a tampered proof.
@@ -1501,7 +1583,9 @@ mod tests {
         assert_eq!(out.bz_r, Fr::from(5u64));
         assert_eq!(out.cz_r, Fr::from(15u64));
         assert_eq!(out.er_r, Fr::zero());
-        assert_eq!(out.final_claim, out.az_r * out.bz_r - u * out.cz_r - out.er_r);
+        assert_eq!(out.fr_r, out.az_r * out.bz_r);
+        assert_eq!(out.final_claim, out.fr_r - u * out.cz_r - out.er_r);
+        assert!(out.final_claim.is_zero());
     }
 
     /// Degree-2 sumcheck with two constraints (1 round).
@@ -1529,11 +1613,9 @@ mod tests {
 
         let out = verify_degree2::<crate::curve::Bls12_381>(&proof);
         assert!(out.ok);
-        // The degree-2 final claim equals az_r*bz_r - u*cz_r - er_r (level-1).
-        assert_eq!(
-            out.az_r * out.bz_r - u * out.cz_r - out.er_r,
-            out.final_claim
-        );
+        // The degree-2 final claim equals fr_r - u*cz_r - er_r (level-1).
+        assert_eq!(out.final_claim, out.fr_r - u * out.cz_r - out.er_r);
+        assert!(out.final_claim.is_zero());
     }
 
     /// Parallel degree-2 prover produces the same result as sequential.

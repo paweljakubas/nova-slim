@@ -120,8 +120,14 @@ nova-slim/
 | Scheme | Speed | Size | PQ? |
 |---|---|---|---|
 | **Pedersen** | Baseline | ~0.4 KiB | ❌ Classical |
-| **SIS (m=128)** | **14× faster** than Pedersen | ~10–12 KiB | ⚠️ Conjectured |
-| **Hash** | **7× faster** than Pedersen | ~0.4 KiB | ⚠️ Conjectured |
+| **SIS (m=4)** | **~8× faster** than Pedersen | ~0.4 KiB | ⚠️ Conjectured |
+| **SIS (m=128)** | ~1.2× faster than Pedersen | larger | ⚠️ Conjectured |
+| **Hash** | ~1× Pedersen (no faster) | ~0.4 KiB | ⚠️ Conjectured |
+
+Freshly measured on this box (4-core; bls12-381, 254 steps):
+Pedersen 4.1, SIS m=4 0.53, Hash 4.8, SIS m=128 3.3 ms/step fold. The
+previously-published "14×  / 7× faster" figures came from the old 16-core
+machine and are not reproduced — Hash is *not* faster than Pedersen here.
 
 ## How to navigate
 

@@ -62,8 +62,8 @@ nova-slim verify   → check bundle + proof (slim: ~0.2 ms)
 | **Aiken eUTXO verifier** | ✅ 0.2.0 | On-chain Plutus-compatible verifier (`cardano/nova-slim-verifier/`) |
 | **Cross-system comparison** (Sonobe, STARK, LatticeFold) | ✅ 0.2.0 | Benchmarked against Nova+CycleFold and theoretical baselines |
 | **Formal security proof** | ✅ 0.2.0 | 4-game knowledge-soundness proof; generic over commitment scheme **(batch-proving model only)** |
-| **Level 1 — Algebraic consistency check** | 🔜 0.3.0 | Add `az_r`, `bz_r`, `cz_r`, `er_r` to the Rust slim proof and verify `az_r·bz_r - u·cz_r - er_r == final_claim`. Prevents the trivial all-zero transcript attack. Already implemented in the Aiken verifier. |
-| **Level 2 — Sumcheck-based matrix evaluation** | 🔜 0.4.0 | Three extra sumchecks proving `az_r`, `bz_r`, `cz_r` are the *correct* evaluations of the matrix-vector products at the random point. Restores knowledge soundness under an untrusted prover. Estimated honest proof size: ~3–5 KiB for Ed25519 (k=13). |
+| **Level 1 — Algebraic consistency check** | 🔜 0.3.0 | Add `fr_r` (MLE of `AZ⊙BZ`), `cz_r`, `er_r` to the Rust slim proof and verify `fr_r - u·cz_r - er_r == final_claim`, requiring `final_claim == 0` (Level-1 residual check, `verify_slim_level1`). Sumchecks the MLE-of-product so the residual vanishes for honest relaxed witnesses (fixes the earlier `az_r·bz_r` reconstruction that rejected every honest fold). Implemented off-chain; **not** part of the deployed on-chain verifier. |
+| **Level 2 — Sumcheck-based matrix evaluation** | 🔜 0.4.0 | Three extra sumchecks proving `az_r`, `bz_r`, `cz_r` are the *correct* evaluations of the matrix-vector products at the random point. Restores knowledge soundness under an untrusted prover and is what actually closes the all-zero/free-`E` transcript gap (the Level-1 `final_claim == 0` check is honest-consistent but does not, by itself, bind the sumcheck to the committed witness). Estimated honest proof size: ~3–5 KiB for Ed25519 (k=13). |
 | **Toward quantum proofs** | 🔜 Research | Close gaps (i) and (ii) for a complete post-quantum argument: (i) QROM Fiat–Shamir soundness via multi-round measure-and-reprogram (`thm:qrom-fs`); (ii) quantum extraction via commitment collapsing (`thm:qrom-2`). These layer on top of a classically sound verifier (Level 2). |
 | In-circuit recursive folding (full IVC security) | 🔜 Future | Each step proves correctness of all previous steps; requires curve cycle (e.g. BLS12-381 + Bandersnatch) |
 | Fixed-base MSM optimization (Pedersen only) | 🔜 Future | ~2× speedup by precomputing doubling ladder |
@@ -328,8 +328,9 @@ Open the **draft** release in GitHub → inspect it → click **Publish release*
 <details>
 <summary><b>Measured numbers and how to reproduce them</b></summary>
 
-All numbers below come from a single machine (16-core CPU, 64 GiB RAM) with
-release builds. Two harnesses are provided:
+Unless a figure is explicitly labelled **prior reference**, the numbers below
+were freshly measured on this machine (4 logical cores, Intel i7-7500U @ 2.7 GHz,
+31 GiB RAM) with release builds.  Two harnesses are provided:
 
 1. **`benchmark_nova`** — real circom step circuits (`.r1cs` compiled from
    `circom/`, chained witnesses via snarkjs). Supports BLS12-381, BN254,
@@ -369,77 +370,98 @@ release builds. Two harnesses are provided:
 
 ### Measured results
 
-**1. Proof sizes.** The slim proof depends only on `k = log2 n_constraints` —
-not on step count nor step width:
+**0. All verifications OK.** Every run — full sumcheck, slim, **Level-1
+(final-claim-zero residual)**, and both norm certificates (Option A range /
+Option B JL) — reports `all verifications OK`.  This includes the real `VRF`
+circuit, the smallest possible step circuit (9 constraints), which exercises
+the full Level-1 + norm path end to end.
 
-| Circuit | Constr. | NIFS bundle | Full sumcheck | Slim proof | Slim ver. |
+**1. Proof sizes.** The slim/on-chain proof depends only on
+`k = log2 n_constraints` — not on step count nor step width:
+
+| Circuit | Constr. | NIFS bundle | Slim proof | Level-1 proof | Slim ver. |
 |---|---|---|---|---|---|
-| `vrf_verify_nova` | 9 | 0.7 KiB | ~1.6 KiB | **~0.4 KiB** | **0.2 ms** |
-| `poseidon_sponge_nova` | 633 | 0.4 KiB | ~31 KiB | **~0.6 KiB** | **0.4 ms** |
-| `poseidon_merkle_nova` | 639 | 0.4 KiB | ~31 KiB | **~0.6 KiB** | **0.5 ms** |
-| `ed25519_verify_nova` | 7,724 | 2.2 KiB | ~240 KiB | **~1.0 KiB** | **0.7 ms** |
-| `sha256_step_small_nova` | 31,584 | 2.5 KiB | ~1.2 MiB | **~0.8 KiB** | **0.6 ms** |
-| `sha256_step_big_nova` | 58,973 | 2.5 KiB | ~2.3 MiB | **~1.0 KiB** | **~1.0 ms** |
+| `vrf_verify_nova` (bls12-381) | 9 | 0.7 KiB | **0.4 KiB** (388 B) | 1.4 KiB | **0.1 ms** |
+| synthetic (state-width 24) | — | 1.9 KiB | **0.4 KiB** (425 B) | — | **~0.2 ms** |
 
-- 160–600× smaller than the full sumcheck proof; no opening proofs on-chain.
 - The bundle is O(1) in step count and circuit size (≤ 2.5 KiB everywhere).
+- Level-1 adds the commitment openings + final-claim-zero residual check
+  (1.4 KiB for VRF), keeping the proof well within on-chain budgets.
 
-**2. End-to-end timing.** Header circuits, across curves:
+**2. End-to-end timing — real `VRF` circuit** (bls12-381, Pedersen, 254 steps):
 
-| Circuit | Curve | Constr. | Steps | Fold total | Fold/step | Compress | Ver. full | Ver. slim |
-|---|---|---|---|---|---|---|---|---|
-| `vrf_verify_nova` | BLS12-381 | 9 | 254 | 3.5 s | 14 ms | 0.04 s | 0.05 s | **0.2 ms** |
-| `vrf_verify_nova` | BN254 | 9 | 254 | 2.2 s | 9 ms | 0.03 s | 0.02 s | **0.1 ms** |
-| `poseidon_sponge_nova` | BLS12-381 | 633 | 255 | 46.2 s | 181 ms | 1.86 s | 1.85 s | **0.4 ms** |
-| `poseidon_merkle_nova` | BLS12-381 | 639 | 32 | 10.0 s | 314 ms | 3.13 s | 2.69 s | **0.5 ms** |
-| `ed25519_verify_nova` | BLS12-381 | 7,724 | 255 | 138.5 s | 543 ms | 25.44 s | 28.59 s | **0.7 ms** |
+| Metric | baseline | `--opt-parallel` |
+|---|---|---|
+| NIFS fold | 4.7 s (18 ms/step) | 5.0 s (20 ms/step) |
+| Sumcheck compress | 0.07 s | 0.07 s |
+| Verify (full) | 0.06 s | 0.05 s |
+| Verify (slim) | **0.1 ms** | **0.1 ms** |
+| Level-1 compress / verify | 0.06 s / 57 ms | 0.06 s / 57 ms |
+| Norm A (range) L1 verify / size | 0.18 s / 33.2 KiB | — |
+| Norm B (JL) L1 verify / size | 0.24 s / 41.4 KiB | — |
 
-- Verification scales logarithmically with `n_constraints` and is independent
-  of step count: 0.1–0.2 ms (VRF), 0.4–0.5 ms (Poseidon), 0.7 ms (Ed25519).
-- Pasta curves (Pallas/Vesta) are the fastest fold (2.3–2.8 ms/step); the
-  ultra-light `vrf_verify_nova` (9 constraints) isolates protocol overhead.
-- The slim proof size is identical across curves for the same circuit —
-  the sumcheck protocol is field-agnostic.
+- The 9-constraint VRF circuit isolates protocol overhead; it shows the slim
+  verifier is sub-millisecond and independent of step count.
+- Norm certificates carry one entry per fold step (254 here), so their proofs
+  (33–41 KiB) grow with step count — they are an off-chain/audit payload, not
+  the on-chain slim proof.
 
-**3. Commitment-scheme modularity** (VRF, BLS12-381, 254 steps). The
-commitment scheme is swappable at runtime without changing the proof format:
+**3. Commitment-scheme modularity** (synthetic, bls12-381, 254 steps,
+state-width 24). The commitment scheme is swappable at runtime without
+changing the proof format:
 
-- **Pedersen** — 14 ms/step fold, 0.2 ms slim verification.
-- **SIS (m=4)** — **1 ms/step fold (14× faster)**: MSM is replaced by
-  matrix–vector products over the scalar field.
-- **Hash** — 2 ms/step fold (7× faster; Blake2b coefficients derived on the
-  fly), simplest to audit.
+- **Pedersen** — 4.1 ms/step fold, slim **0.4 KiB** (0.2 ms verify).
+- **SIS (m=4)** — **0.53 ms/step fold (~8× faster than Pedersen)**: MSM is
+  replaced by matrix–vector products over the scalar field.
+- **Hash** — 4.8 ms/step fold (Blake2b coefficients derived on the fly),
+  simplest to audit.
+- **SIS (m=128)** — 3.3 ms/step fold (cryptographic parameters).
 - Slim proof is **~0.4 KiB for all three** — independent of the scheme.
-- At cryptographic parameters (SIS m=128) fold rises to 5.4 ms/step but the
-  slim proof stays ~0.4 KiB.
 
-**4. SHA-256 scaling (small/medium/big)** — state_out = SHA256(state_in),
-BLS12-381, Pedersen). Per-step costs from shorter runs after setup overhead
-stabilises:
+**4. Curve comparison** (synthetic, Pedersen, state-width 24, 254 steps.
+Fold ms/step):
 
-- small (~29K cstr): ~3,100 ms/step fold, **0.6 ms** slim ver., **~0.8 KiB**.
-- medium (~31K cstr): ~3,200 ms/step fold, **0.7 ms** slim ver., **~0.8 KiB**.
-- big (~59K cstr): ~5,600 ms/step fold, **1.0 ms** slim ver., **~1.0 KiB**.
-- A full 32-step fold of SHA-256 big takes ~30 min (~3 min with 16-core
-  parallel compression — the biggest parallel gain here, ~3–5×).
+| Curve | Fold/step | Slim proof |
+|---|---|---|
+| Pallas | **2.06 ms** | 0.4 KiB |
+| Vesta | 2.17 ms | 0.4 KiB |
+| Grumpkin | 2.34 ms | 0.4 KiB |
+| BN254 | 2.47 ms | 0.4 KiB |
+| Bandersnatch | 2.66 ms | 0.4 KiB |
+| BLS12-381 | 4.11 ms | 0.4 KiB |
+
+- The slim proof size is identical across curves — the sumcheck protocol is
+  field-agnostic.
 
 **5. Parallel speedup.** Visible mainly in the compress step (sumcheck
 processes `n_constraints` rows in parallel). At small sizes (≤7K constraints)
-thread overhead dominates and parallel mode is neutral to slightly slower.
+thread overhead dominates and parallel mode is neutral to slightly slower;
+for state-width-24 synthetic circuits the fold scales with available cores.
 
 **6. Memory.** Prover memory is **O(1) in step count** — only the current
-witness is kept in memory; R1CS matrices are loaded once (well under 100 MiB
-even for 59K-constraint circuits). This is the key advantage over monolithic
-SNARKs, which materialise the full N×C system.
+witness is kept in memory; R1CS matrices are loaded once (synthetic runs peak
+~5 MiB; well under 100 MiB even for 59K-constraint circuits).
 
-**7. Versus Sonobe** (Nova + CycleFold + Groth16 decider) on PoseidonSponge,
-633 constraints, 32 steps:
+---
 
-- Fold: **7.6 s vs 111.5 s — 14.7× faster** (off-circuit NIFS vs in-circuit
-  Spartan verification).
-- Verify: **0.7 ms (slim) vs 5.4 s (Groth16) — ~7,700× faster**.
-- Proof: 1.6 KiB transparent (slim) vs 192 B (Groth16, needs 2 ceremonies +
-  a curve cycle + EVM precompiles).
-- NovaSlim has **no preprocessing and no keygen** (0 s vs 7.7 s / 7.6 s).
+**Prior reference — original 16-core / 64 GiB machine.** These heavier
+circuits were **not** re-measured on this box (they take tens of minutes to
+hours on 4 cores); the figures below are retained from the original 16-core
+machine for continuity and should not be read as current:
+
+| Circuit | Curve | Constr. | Steps | Fold/step | Slim proof | Slim ver. |
+|---|---|---|---|---|---|---|
+| `vrf_verify_nova` | BN254 | 9 | 254 | 9 ms | 0.4 KiB | 0.1 ms |
+| `poseidon_sponge_nova` | BLS12-381 | 633 | 255 | 181 ms | 0.6 KiB | 0.4 ms |
+| `poseidon_merkle_nova` | BLS12-381 | 639 | 32 | 314 ms | 0.6 KiB | 0.5 ms |
+| `ed25519_verify_nova` | BLS12-381 | 7,724 | 255 | 543 ms | 1.0 KiB | 0.7 ms |
+| `sha256_step_small_nova` | BLS12-381 | 31,584 | — | ~3,100 ms | 0.8 KiB | 0.6 ms |
+| `sha256_step_big_nova` | BLS12-381 | 58,973 | — | ~5,600 ms | 1.0 KiB | 1.0 ms |
+
+- Versus Sonobe (PoseidonSponge, 633 cstr, 32 steps, prior reference): fold
+  **~14.7× faster** than Nova+CycleFold+Groth16, verify **~7,700× faster**
+  (0.7 ms slim vs 5.4 s), with no preprocessing / no keygen.
+- A full 32-step SHA-256-big fold was ~30 min on the 16-core machine (~3 min
+  with parallel compression).
 
 </details>
