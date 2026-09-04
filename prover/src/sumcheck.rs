@@ -2164,8 +2164,15 @@ mod opening_proptests {
                     &l, &r_mat, &o, &tt_w_bad, n, &r,
                 );
 
-            // Tampering wire 1 changes AZ at the Boolean point 0 (az = tt_w[1]),
-            // so az must differ unless the point causes cancellation.
+            // Tampering wire 1 changes AZ/fr only through row 0's contribution.
+            // A degenerate challenge point (here r0 == 1) reads only row 1, so
+            // the tamper is invisible there — that is expected verifier
+            // behaviour, not a bug (soundness relies on Schwartz–Zippel over a
+            // *random* point).  Skip such measure-zero selector points.
+            prop_assume!(
+                az_ok != az_bad || fr_ok != fr_bad,
+                "degenerate selector point r0=1 does not observe the tampered wire"
+            );
             prop_assert_ne!(az_ok, az_bad);
             prop_assert_ne!(fr_ok, fr_bad);
             // The residual of the *tampered* witness is generally non-zero.

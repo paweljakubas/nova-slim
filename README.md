@@ -191,6 +191,72 @@ Step circuits are bundled in `circom/`:
 
 </details>
 
+## Proof modes and their guarantees
+
+<details>
+<summary><b>Slim vs full vs level-1 vs norm modes: what each proves, adversary
+risk, and PQ status</b></summary>
+
+All proof modes are produced by `nova-slim compress` and consumed by
+`nova-slim verify`. The guarantees they carry differ substantially.
+
+| Mode | `compress` | `verify` | Proof content | Size (254 steps) |
+|---|---|---|---|---|
+| **slim** | `--slim` | `--slim-proof` | sumcheck transcript only (no openings) | ~0.4 KiB (on-chain) |
+| **full sumcheck** | default | `--sumcheck-proof` | sumcheck + W/E HashPC openings + commitments | ~1.6 KiB |
+| **level-1** | `--level1` | `--level1-proof` | degree-2 sumcheck + openings + final-claim-zero (+ OP with `--circuit`) | ~1.4 KiB |
+| **level-1 + norm-range** | `--level1 --norm-range` | `--level1-proof --norm-range --circuit --steps` | level-1 + per-step range certs | ~34 KiB |
+| **level-1 + norm-jl** | `--level1 --norm-jl` | `--level1-proof --norm-jl --circuit --steps` | level-1 + per-step JL certs | ~42 KiB |
+
+**What each proves (and does not):**
+
+- **slim (level-0, on-chain).** Checks the sumcheck transcript over the relaxed
+  R1CS; it does **not** open the committed witness/error, evaluate the MLEs at
+  the random point, or verify the fold. An all-zero polynomial transcript passes
+  against any bundle, because relaxed R1CS has a free error vector `E`.
+  Accepting a slim proof therefore attests *honest pipeline execution*, not
+  knowledge of a valid witness against an untrusted prover.
+  **Adversary risk:** a malicious prover can pick a free `E` and pass trivially;
+  sound only in the batch-proving model (verifier trusts the prover during
+  folding). **PQ:** commitment scheme may be Pedersen (classical, DLP-based),
+  SIS/Ajtai, or Hash.
+
+- **full sumcheck (off-chain audit).** Adds the HashPC opening proofs and
+  commitment checks, so it binds the transcript to a witness. It is the legacy
+  `verify_sumcheck_compression` path that relies on `claimed_product_at_r`
+  alone; it is auditable but not the preferred sound verifier.
+
+- **level-1 — the sound verifier.** Runs the complete verifier: the degree-2
+  sumcheck, the **final-claim-zero** check on the MLE-of-product residual
+  (`fr_r − u·cz_r − er_r == 0`), commitment consistency, and — when a circuit
+  is supplied — the **circuit-backed PCS opening** predicate (recompute
+  `AZ/BZ/CZ/fr` from the opened truth table and check `MLE(tt_E)(r) == er_r`).
+  This **closes the free-E attack** that breaks slim at level-0.
+  **Adversary risk:** without `--circuit`, the OP (opening) check is skipped;
+  pass `--circuit` on verify (or use `verify_full` with a circuit) for the full
+  OP-backed guarantees. **PQ:** as with slim; commitment scheme dependent.
+
+- **level-1 + norm-range / norm-jl.** Adds an **audit-only norm certificate**
+  that each fold step's *pre-fold* witness satisfies `∥Z_j∥_∞, ∥E_j∥_∞ ≤ 2^B`.
+  Verification re-folds `--circuit --steps` and cross-checks the carried record.
+  **PQ:** this is what moves the SIS/Hash instantiations toward a *fully sound*
+  post-quantum guarantee, at 34–42 KiB. It is *audit-only*: it does not change
+  the on-chain verifier.
+
+**PQ note.** None of the modes changes the fundamental status:
+- **Protocol-level QROM security** is **proven** (Fiat–Shamir under a quantum
+  random oracle, `thm:qrom-fs`; quantum extraction via commitment collapsing,
+  `thm:qrom-2`), conditional on flagged ideal-primitive and norm-enforcement
+  assumptions.
+- **Concrete bit-security** for the post-quantum (SIS/Hash) instantiations is
+  **conjectured**: it composes (SIS/Hash hardness) × (heuristic BKZ/sieving cost
+  model) × (non-tight reduction margin `Δκ ≈ 2k·log₂q`). Norm enforcement
+  narrows but does not fully close this conjectured label.
+- **Pedersen (classical)** is secure against classical adversaries under the
+  DLP assumption; it is **not** post-quantum.
+
+</details>
+
 ## Layout
 
 <details>
