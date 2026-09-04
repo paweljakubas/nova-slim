@@ -10,13 +10,15 @@ use ark_ff::Zero;
 use ark_serialize::CanonicalSerialize;
 use blake2::Digest;
 use prover::circuit::{r1cs_to_bytes_sparse, SparseCircuit};
+use prover::codec;
 use prover::commitment::{CommitmentScheme, HashCommitment, PedersenCommitment, SisCommitment};
 use prover::nifs;
+use prover::norm;
 use prover::{
     curve::{NovaCurve, ScalarField},
-    fr_to_string, prove_sumcheck_compression_opt, verify_slim, verify_sumcheck_compression_opt,
-    NifsBundle, NifsFinalInstance, NifsFoldOutput, OptFlags, DEFAULT_SIS_PARAM, NIFS_PARAMS_SEED,
-    NIFS_TRANSCRIPT_PREFIX,
+    fr_to_string, prove_level1, prove_sumcheck_compression_opt, verify_full, verify_slim,
+    verify_slim_level1, verify_sumcheck_compression_opt, NifsBundle, NifsFinalInstance,
+    NifsFoldOutput, OptFlags, DEFAULT_SIS_PARAM, NIFS_PARAMS_SEED, NIFS_TRANSCRIPT_PREFIX,
 };
 use std::time::Instant;
 
@@ -252,6 +254,41 @@ fn benchmark<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     verify_slim::<C, CS>(&folded.bundle, &slim)
         .unwrap_or_else(|e| panic!("slim verification failed: {e}"));
     println!("verify (slim): {:.4} s", t.elapsed().as_secs_f64());
+
+    // ── Level-1 proof: generate, serialize, verify_full ──────────────
+    let t = Instant::now();
+    let l1_proof = prove_level1::<C, CS>(&circuit, &folded, opt, norm::NormMode::None, 64)
+        .unwrap_or_else(|e| panic!("failed to build level-1 proof: {e}"));
+    let l1_prove_s = t.elapsed().as_secs_f64();
+    println!("prove (level-1): {:.3} s", l1_prove_s);
+
+    let l1_cbor = codec::level1_proof_encode::<ScalarField<C>>(&l1_proof).unwrap();
+    let l1_cbor_len = l1_cbor.len();
+    println!(
+        "level-1 proof: {} B ({:.1} KiB cbor)",
+        l1_cbor_len,
+        l1_cbor_len as f64 / 1024.0
+    );
+
+    let t = Instant::now();
+    verify_slim_level1::<C, CS>(&folded.bundle, &l1_proof, sis_param, Some(&circuit))
+        .unwrap_or_else(|e| panic!("level-1 verification failed: {e}"));
+    println!("verify (level-1): {:.4} s", t.elapsed().as_secs_f64());
+
+    let t = Instant::now();
+    verify_full::<C, CS>(
+        &folded.bundle,
+        &l1_proof,
+        sis_param,
+        Some(&circuit),
+        norm::NormMode::None,
+        None,
+        None,
+        64,
+        opt,
+    )
+    .unwrap_or_else(|e| panic!("verify_full failed: {e}"));
+    println!("verify (full): {:.4} s", t.elapsed().as_secs_f64());
 
     let bundle_cbor = folded.bundle.to_cbor::<ScalarField<C>>().unwrap();
     let slim_cbor = slim.to_cbor::<ScalarField<C>>().unwrap();

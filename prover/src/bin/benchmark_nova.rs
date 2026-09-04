@@ -24,9 +24,9 @@ use prover::nifs;
 use prover::norm;
 use prover::{
     curve::{NovaCurve, ScalarField},
-    fr_to_string, frs_from_strings, prove_level1, prove_sumcheck_compression_opt, verify_slim,
-    verify_slim_level1, verify_sumcheck_compression, NifsBundle, NifsFinalInstance, NifsFoldOutput,
-    OptFlags, DEFAULT_SIS_PARAM, NIFS_PARAMS_SEED, NIFS_TRANSCRIPT_PREFIX,
+    fr_to_string, frs_from_strings, prove_level1, prove_sumcheck_compression_opt, verify_full,
+    verify_slim, verify_slim_level1, verify_sumcheck_compression, NifsBundle, NifsFinalInstance,
+    NifsFoldOutput, OptFlags, DEFAULT_SIS_PARAM, NIFS_PARAMS_SEED, NIFS_TRANSCRIPT_PREFIX,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -347,6 +347,24 @@ fn benchmark_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     let verify_level1_s = t.elapsed().as_secs_f64();
     println!(
         "verify (level-1): {verify_level1_s:.4} s (degree-2 sumcheck + openings + final-claim-zero)"
+    );
+
+    let t = Instant::now();
+    verify_full::<C, CS>(
+        &folded.bundle,
+        &l1,
+        sis_param,
+        Some(circuit),
+        norm::NormMode::None,
+        None,
+        None,
+        bound_bits,
+        opts,
+    )
+    .unwrap_or_else(|e| panic!("verify_full failed: {e}"));
+    println!(
+        "verify (full): {:.4} s (SC + L1 + OP + norm=None)",
+        t.elapsed().as_secs_f64()
     );
 
     // 4b. Norm-enforced level-1, both Option A (range) and Option B (JL).
