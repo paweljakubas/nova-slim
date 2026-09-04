@@ -3619,6 +3619,49 @@ mod tests {
         (fold_out.bundle, slim, tmp)
     }
 
+    /// Fold a 3-step chain, then build a Level-1 proof.  Returns the bundle,
+    /// the level-1 proof, and the public circuit (needed for the circuit-backed
+    /// PCS-opening `(OP)` check).
+    fn setup_level1(
+        x1: u64,
+        x2: u64,
+        x3: u64,
+    ) -> (
+        NifsBundle,
+        Level1SlimProof,
+        SparseCircuit<ScalarField<crate::curve::Bls12_381>>,
+        tempfile::TempDir,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let r1cs_path = tmp.path().join("step.r1cs");
+        let steps_dir = tmp.path().join("steps");
+        fs::write(&r1cs_path, step_r1cs_bytes()).unwrap();
+        fs::create_dir(&steps_dir).unwrap();
+
+        let mut state = 2u64;
+        for (i, x) in [x1, x2, x3].iter().enumerate() {
+            state = write_step_wtns(&steps_dir, i, state, *x);
+        }
+
+        let fold_out = run_fold_nifs::<
+            crate::curve::Bls12_381,
+            PedersenCommitment<crate::curve::Bls12_381>,
+        >(&r1cs_path, &steps_dir)
+        .unwrap();
+        let c = load_circuit::<crate::curve::Bls12_381>(&r1cs_path).unwrap();
+        let l1 =
+            prove_level1::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(
+                &c,
+                &fold_out,
+                OptFlags::NONE,
+                norm::NormMode::None,
+                64,
+            )
+            .unwrap();
+
+        (fold_out.bundle, l1, c, tmp)
+    }
+
     proptest! {
         /// Property: a valid slim proof always verifies against its own bundle.
         #[test]
@@ -3633,6 +3676,56 @@ mod tests {
             let v = v.unwrap();
             prop_assert_eq!(v.steps, 3);
             prop_assert!(!v.transcript_final.is_empty());
+        }
+
+        /// Property: the circuit-backed PCS opening `(OP)` accepts an honest
+        /// level-1 proof — the recomputed `AZ/BZ/CZ/fr` and `MLE(tt_E)(r)` agree
+        /// with the prover's claimed evaluations for arbitrary random witnesses.
+        #[test]
+        fn prop_level1_complete_opening_accepts(
+            x1 in 2u64..20,
+            x2 in 2u64..20,
+            x3 in 2u64..20,
+        ) {
+            let (bundle, l1, c, _tmp) = setup_level1(x1, x2, x3);
+            let v = verify_slim_level1::<
+                crate::curve::Bls12_381,
+                PedersenCommitment<crate::curve::Bls12_381>,
+            >(&bundle, &l1, DEFAULT_SIS_PARAM, Some(&c));
+            prop_assert!(v.is_ok(), "level-1 OP check rejected honest proof: {:?}", v.err());
+            let v = v.unwrap();
+            prop_assert_eq!(v.steps, 3);
+        }
+
+        /// Property: tampering any of the level-1 claimed evaluations is
+        /// rejected by the circuit-backed PCS opening `(OP)`, for arbitrary
+        /// random witnesses.  `which` selects which of `az/bz/cz/fr/er` to flip.
+        #[test]
+        fn prop_level1_tampered_eval_rejected_op(
+            x1 in 2u64..20,
+            x2 in 2u64..20,
+            x3 in 2u64..20,
+            which in 0usize..5,
+        ) {
+            let (bundle, l1, c, _tmp) = setup_level1(x1, x2, x3);
+            let mut bad = l1.clone();
+            let one_more = Fr::from(1u64) + Fr::from(1u64);
+            match which {
+                0 => bad.az_r = fr_to_string(&one_more),
+                1 => bad.bz_r = fr_to_string(&one_more),
+                2 => bad.cz_r = fr_to_string(&one_more),
+                3 => bad.fr_r = fr_to_string(&one_more),
+                _ => bad.er_r = fr_to_string(&one_more),
+            }
+            let v = verify_slim_level1::<
+                crate::curve::Bls12_381,
+                PedersenCommitment<crate::curve::Bls12_381>,
+            >(&bundle, &bad, DEFAULT_SIS_PARAM, Some(&c));
+            // NOTE: tampering fr_r may fail the level-1 equation (step 4)
+            // before reaching the OP check (step 8); either way it must be
+            // rejected.  The az/bz/cz/er tampering is caught specifically by
+            // the OP check.
+            prop_assert!(v.is_err(), "tampered level-1 evaluation must be rejected");
         }
 
         /// Property: a slim proof for bundle A must NOT verify against a

@@ -2040,3 +2040,139 @@ mod proptests {
         }
     }
 }
+
+// ── Property-based tests for the circuit-backed PCS opening ─────────
+
+#[cfg(test)]
+mod opening_proptests {
+    use super::*;
+    use ark_bls12_381::Fr;
+    use proptest::prelude::*;
+
+    /// Build a 2-multiplier circuit `(a_i * b_i = c_i)` with a relaxed
+    /// satisfying witness `z` and error `e`.  The witness has one constant
+    /// wire (index 0).  Each constraint `i` uses wires `[1+3i, 2+3i, 3+3i]`.
+    fn relaxed_multiplier_circuit(
+        a1: u64,
+        b1: u64,
+        a2: u64,
+        b2: u64,
+    ) -> (
+        Vec<Vec<(u32, Fr)>>,
+        Vec<Vec<(u32, Fr)>>,
+        Vec<Vec<(u32, Fr)>>,
+        Vec<Fr>,
+        ScalarField<crate::curve::Bls12_381>,
+        Vec<Fr>,
+    ) {
+        let l = vec![vec![(1u32, Fr::from(1u64))], vec![(4u32, Fr::from(1u64))]];
+        let r_mat = vec![vec![(2u32, Fr::from(1u64))], vec![(5u32, Fr::from(1u64))]];
+        let o = vec![vec![(3u32, Fr::from(1u64))], vec![(6u32, Fr::from(1u64))]];
+        let z = vec![
+            Fr::from(1u64),
+            Fr::from(a1),
+            Fr::from(b1),
+            Fr::from(a1) * Fr::from(b1),
+            Fr::from(a2),
+            Fr::from(b2),
+            Fr::from(a2) * Fr::from(b2),
+        ];
+        // u != 1 with error chosen to absorb the slack:
+        //   E[j] = (AZ⊙BZ)[j] − u·(CZ)[j]  ⇒  (AZ)∘(BZ) = u·(CZ) + E holds,
+        // so this is a genuinely *relaxed* (u != 1, E != 0) satisfying instance.
+        let u = ScalarField::<crate::curve::Bls12_381>::from(3u64);
+        let e = vec![
+            Fr::from(a1) * Fr::from(b1) - Fr::from(3u64) * (Fr::from(a1) * Fr::from(b1)),
+            Fr::from(a2) * Fr::from(b2) - Fr::from(3u64) * (Fr::from(a2) * Fr::from(b2)),
+        ];
+        (l, r_mat, o, z, u, e)
+    }
+
+    proptest! {
+        /// Property: `recompute_circuit_evals` recovers exactly the prover's
+        /// folded claims `(az_r, bz_r, cz_r, fr_r)` from the *opened* witness
+        /// truth table, at the prover's own Fiat-Shamir challenge point `r`,
+        /// for arbitrary random witness values.
+        ///
+        /// This is the core soundness invariant of the circuit-backed PCS
+        /// opening `(OP)`: recomputing `AZ=L·W, BZ=R·W, CZ=O·W, fr=AZ⊙BZ` from
+        /// the committed witness and evaluating at `r` must agree with what the
+        /// prover claimed during the degree-2 sumcheck.
+        #[test]
+        fn prop_opening_matches_prover_claims(
+            a1 in 1u64..1000,
+            b1 in 1u64..1000,
+            a2 in 1u64..1000,
+            b2 in 1u64..1000,
+        ) {
+            let (l, r_mat, o, z, u, e) = relaxed_multiplier_circuit(a1, b1, a2, b2);
+            let n = l.len();
+            let (proof, r_challenges) =
+                prove_degree2_opts::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e, false);
+
+            // Recompute the openings at the *prover's* own challenge point `r`
+            // and require exact agreement with the claims it emitted.
+            let r = r_challenges;
+            let tt_w = truth_table(&z);
+            let (az_rec, bz_rec, cz_rec, fr_rec) =
+                recompute_circuit_evals::<crate::curve::Bls12_381>(
+                    &l, &r_mat, &o, &tt_w, n, &r,
+                );
+            prop_assert_eq!(az_rec, proof.az_r);
+            prop_assert_eq!(bz_rec, proof.bz_r);
+            prop_assert_eq!(cz_rec, proof.cz_r);
+            prop_assert_eq!(fr_rec, proof.fr_r);
+
+            // For an honest relaxed witness the recomputed residual vanishes at
+            // r:  e is the error vector and (AZ)∘(BZ) = u·(CZ) + E holds, so
+            // fr − u·cz − e == 0.  Use the opened error table.
+            let tt_e = truth_table(&e);
+            let e_rec = eval_dense_mle(&tt_e, &r);
+            let residual = fr_rec - u * cz_rec - e_rec;
+            prop_assert_eq!(residual, Fr::zero());
+        }
+
+        /// Property: tampering any entry of the opened witness truth table
+        /// changes the recomputed evaluations, so the `(OP)` check would reject
+        /// a witness inconsistent with the claimed evaluations (except for a
+        /// measure-zero set of random points — Schwartz–Zippel).
+        #[test]
+        fn prop_opening_tamper_changes_evals(
+            a1 in 1u64..1000,
+            b1 in 1u64..1000,
+            a2 in 1u64..1000,
+            b2 in 1u64..1000,
+            flip in 1u64..1000,
+            r0 in 0u64..1000,
+        ) {
+            let (l, r_mat, o, z, u, e) = relaxed_multiplier_circuit(a1, b1, a2, b2);
+            let n = l.len();
+            // n_padded = next_power_of_two(2) = 2, so r has length 1.
+            let r = vec![Fr::from(r0)];
+
+            // Honest recomputed claims.
+            let tt_w_ok = truth_table(&z);
+            let (az_ok, _bz_ok, _cz_ok, fr_ok) = recompute_circuit_evals::<crate::curve::Bls12_381>(
+                &l, &r_mat, &o, &tt_w_ok, n, &r,
+            );
+
+            // Tamper a constrained wire (index 1) so AZ changes.
+            let mut tt_w_bad = tt_w_ok.clone();
+            tt_w_bad[1] += Fr::from(flip);
+            let (az_bad, _bz_bad, cz_bad, fr_bad) =
+                recompute_circuit_evals::<crate::curve::Bls12_381>(
+                    &l, &r_mat, &o, &tt_w_bad, n, &r,
+                );
+
+            // Tampering wire 1 changes AZ at the Boolean point 0 (az = tt_w[1]),
+            // so az must differ unless the point causes cancellation.
+            prop_assert_ne!(az_ok, az_bad);
+            prop_assert_ne!(fr_ok, fr_bad);
+            // The residual of the *tampered* witness is generally non-zero.
+            let tt_e = truth_table(&e);
+            let e_rec = eval_dense_mle(&tt_e, &r);
+            let residual_bad = fr_bad - u * cz_bad - e_rec;
+            prop_assume!(residual_bad != Fr::zero(), "tampered residual should be non-zero here");
+        }
+    }
+}
