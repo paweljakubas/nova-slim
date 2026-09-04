@@ -714,6 +714,18 @@ pub struct VerifyOutput {
     pub transcript_final: String,
 }
 
+/// Summary of a successful verification by the complete (level-1) verifier.
+///
+/// Beyond the [`VerifyOutput`] summary, this exposes the per-step norm record
+/// carried in the proof when a norm audit was requested (`Some`), so callers
+/// can inspect the certificate without re-running the audit.
+#[derive(Debug, Clone)]
+pub struct FullVerifyOutput {
+    pub steps: usize,
+    pub transcript_final: String,
+    pub norm: Option<norm::StepNormRecord>,
+}
+
 /// Load a step circuit from a `.r1cs` file.
 pub fn load_circuit<C: NovaCurve>(
     path: &Path,
@@ -2009,6 +2021,65 @@ pub fn verify_level1_norm<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarFiel
         .into());
     }
     Ok(carried.clone())
+}
+
+/// The complete verifier: a single entry point running every check in
+/// `def:full-verifier` over a NIFS bundle and a Level-1 proof.
+///
+/// Runs, in order:
+///   1. **L1** — the degree-2 sumcheck proof, the final-claim-zero check
+///      (`fr_r − u·cz_r − er_r == 0`), the state-chain, and commitment
+///      consistency (closes the "free E" / all-zeros soundness gap);
+///   2. **OP** — when `circuit` is `Some`, the circuit-backed PCS opening
+///      predicate: recompute `AZ/BZ/CZ/fr` from the opened truth table `tt_W`
+///      at the challenge point and require `MLE(tt_E)(r) == er_r`;
+///   3. **OPTIONAL norm** — when `norm_mode ≠ None` and `norm_circuit` /
+///      `norm_steps` are supplied, re-fold the public step witnesses and
+///      cross-check the per-step norm certificate carried in the proof
+///      (`∥Z_j∥_∞, ∥E_j∥_∞ ≤ 2^bound_bits`).
+///
+/// Unlike the lightweight on-chain [`verify_slim`], this verifier enforces
+/// commitment binding and PCS openings off-chain.  Fold re-verification (FV,
+/// README `#29`) is intentionally out of scope here.
+pub fn verify_full<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
+    bundle: &NifsBundle,
+    proof: &Level1SlimProof,
+    sis_param: usize,
+    circuit: Option<&SparseCircuit<ScalarField<C>>>,
+    norm_mode: norm::NormMode,
+    norm_circuit: Option<&Path>,
+    norm_steps: Option<&Path>,
+    norm_bound_bits: u32,
+    opts: OptFlags,
+) -> Result<FullVerifyOutput, Box<dyn Error>> {
+    let out = verify_slim_level1::<C, CS>(bundle, proof, sis_param, circuit)?;
+
+    let norm = if norm_mode != norm::NormMode::None {
+        let c = norm_circuit.ok_or_else(|| {
+            "complete verifier: norm audit requires the public circuit".to_string()
+        })?;
+        let s = norm_steps.ok_or_else(|| {
+            "complete verifier: norm audit requires the step witnesses directory".to_string()
+        })?;
+        Some(verify_level1_norm::<C, CS>(
+            c,
+            s,
+            opts,
+            sis_param,
+            bundle,
+            proof,
+            norm_mode,
+            norm_bound_bits,
+        )?)
+    } else {
+        None
+    };
+
+    Ok(FullVerifyOutput {
+        steps: out.steps,
+        transcript_final: out.transcript_final,
+        norm,
+    })
 }
 
 /// Verify a slim sumcheck compression proof against a NIFS bundle (CLI path).
@@ -3728,6 +3799,100 @@ mod tests {
             prop_assert!(v.is_err(), "tampered level-1 evaluation must be rejected");
         }
 
+        /// Property: the complete verifier `verify_full` accepts an honest
+        /// Level-1 proof (SC + L1 + OP) with the norm audit disabled, and
+        /// reports no norm record.
+        #[test]
+        fn prop_verify_full_accepts_valid(
+            x1 in 2u64..20,
+            x2 in 2u64..20,
+            x3 in 2u64..20,
+        ) {
+            let (bundle, l1, c, _tmp) = setup_level1(x1, x2, x3);
+            let v = verify_full::<
+                crate::curve::Bls12_381,
+                PedersenCommitment<crate::curve::Bls12_381>,
+            >(
+                &bundle,
+                &l1,
+                DEFAULT_SIS_PARAM,
+                Some(&c),
+                norm::NormMode::None,
+                None,
+                None,
+                64,
+                OptFlags::NONE,
+            );
+            prop_assert!(v.is_ok(), "complete verifier rejected honest proof: {:?}", v.err());
+            let v = v.unwrap();
+            prop_assert_eq!(v.steps, 3);
+            prop_assert!(!v.transcript_final.is_empty());
+            prop_assert!(v.norm.is_none(), "no norm record expected when norm audit off");
+        }
+
+        /// Property: `verify_full` rejects a level-1 proof whose committed
+        /// witness hash is tampered (would be caught by the L1/commitment
+        /// check even before the circuit-backed OP check).
+        #[test]
+        fn prop_verify_full_rejects_tampered_w_commit(
+            x1 in 2u64..20,
+            x2 in 2u64..20,
+            x3 in 2u64..20,
+        ) {
+            let (bundle, l1, c, _tmp) = setup_level1(x1, x2, x3);
+            let mut bad = l1.clone();
+            bad.w_commit_hash = "0".to_string();
+            let v = verify_full::<
+                crate::curve::Bls12_381,
+                PedersenCommitment<crate::curve::Bls12_381>,
+            >(
+                &bundle,
+                &bad,
+                DEFAULT_SIS_PARAM,
+                Some(&c),
+                norm::NormMode::None,
+                None,
+                None,
+                64,
+                OptFlags::NONE,
+            );
+            prop_assert!(v.is_err(), "tampered w_commit_hash must be rejected");
+        }
+
+        /// Property: `verify_full` rejects a level-1 proof whose
+        /// `bundle_final_instance_hash` does not bind to this bundle.
+        #[test]
+        fn prop_verify_full_rejects_unbound_bundle(
+            x1 in 2u64..20,
+            x2 in 2u64..20,
+            x3 in 2u64..20,
+            y1 in 2u64..20,
+            y2 in 2u64..20,
+            y3 in 2u64..20,
+        ) {
+            let (bundle_a, l1_a, c_a, _tmp_a) = setup_level1(x1, x2, x3);
+            let (bundle_b, _l1_b, _c_b, _tmp_b) = setup_level1(y1, y2, y3);
+            if bundle_a.final_instance == bundle_b.final_instance {
+                return Ok(());
+            }
+            // Attach bundle A's proof to bundle B (unbound).
+            let v = verify_full::<
+                crate::curve::Bls12_381,
+                PedersenCommitment<crate::curve::Bls12_381>,
+            >(
+                &bundle_b,
+                &l1_a,
+                DEFAULT_SIS_PARAM,
+                Some(&c_a),
+                norm::NormMode::None,
+                None,
+                None,
+                64,
+                OptFlags::NONE,
+            );
+            prop_assert!(v.is_err(), "proof for bundle A must not verify against bundle B");
+        }
+
         /// Property: a slim proof for bundle A must NOT verify against a
         /// different (but valid) bundle B.
         #[test]
@@ -3884,6 +4049,100 @@ mod tests {
             let expected = hex::encode(&hash[..32]);
             prop_assert_eq!(slim.bundle_final_instance_hash, expected);
         }
+    }
+
+    // ── verify_full E2E + golden tests ─────────────────────────────
+
+    /// E2E: verify_full with norm (Range) accepts a proof carrying a valid
+    /// certificate and returns the record.
+    #[test]
+    fn verify_full_with_norm_range_e2e() {
+        let (_tmp, r1cs_path, steps_dir, fold_out, c) = norm_setup();
+        let l1 =
+            prove_level1::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(
+                &c,
+                &fold_out,
+                OptFlags::NONE,
+                norm::NormMode::Range,
+                64,
+            )
+            .unwrap();
+        assert!(l1.norm.is_some());
+        let v =
+            verify_full::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(
+                &fold_out.bundle,
+                &l1,
+                DEFAULT_SIS_PARAM,
+                Some(&c),
+                norm::NormMode::Range,
+                Some(&r1cs_path),
+                Some(&steps_dir),
+                64,
+                OptFlags::NONE,
+            )
+            .unwrap();
+        assert_eq!(v.steps, 3);
+        assert!(v.norm.is_some());
+        let rec = v.norm.unwrap();
+        assert_eq!(rec.steps.len(), 3);
+        assert!(rec.size_bytes() > 0);
+    }
+
+    /// E2E: verify_full with norm (JL) accepts and returns the JL certificate.
+    #[test]
+    fn verify_full_with_norm_jl_e2e() {
+        let (_tmp, r1cs_path, steps_dir, fold_out, c) = norm_setup();
+        let l1 =
+            prove_level1::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(
+                &c,
+                &fold_out,
+                OptFlags::NONE,
+                norm::NormMode::Jl,
+                64,
+            )
+            .unwrap();
+        let v =
+            verify_full::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(
+                &fold_out.bundle,
+                &l1,
+                DEFAULT_SIS_PARAM,
+                Some(&c),
+                norm::NormMode::Jl,
+                Some(&r1cs_path),
+                Some(&steps_dir),
+                64,
+                OptFlags::NONE,
+            )
+            .unwrap();
+        assert!(v.norm.is_some());
+        assert_eq!(v.norm.unwrap().steps.len(), 3);
+    }
+
+    /// E2E golden: verify_full produces deterministic output for a fixed
+    /// witness.  We lock the transcript_final to guard against regressions.
+    #[test]
+    fn verify_full_golden_transcript() {
+        let (bundle, l1, c, _tmp) = setup_level1(3, 5, 7);
+        let v =
+            verify_full::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(
+                &bundle,
+                &l1,
+                DEFAULT_SIS_PARAM,
+                Some(&c),
+                norm::NormMode::None,
+                None,
+                None,
+                64,
+                OptFlags::NONE,
+            )
+            .unwrap();
+        assert_eq!(v.steps, 3);
+        // Golden: the transcript is a hex-encoded SHA-256/BLAKE2b hash
+        // of the final transcript state. Lock it to detect regressions.
+        assert_eq!(
+            v.transcript_final,
+            "94b9b7e49cf324631dbf26c62b17f3babaeec7ac7fba9c692e8c2dc72f8b5a5e5637ccb645da1fdfc1b39be96017c542afdd2af621a3d537722c39e0973c8340"
+        );
     }
 
     // ── HashCommitment E2E tests ───────────────────────────────────
