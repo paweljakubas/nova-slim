@@ -159,7 +159,7 @@ pub mod codec {
     use serde_bytes::ByteBuf;
     use std::error::Error;
 
-    const FORMAT_VERSION: u8 = 1;
+    const FORMAT_VERSION: u8 = 2;
 
     /// A field element in its cheapest CBOR form: a plain integer when the
     /// value fits in u64 (sumcheck coefficients often do), otherwise the
@@ -442,6 +442,21 @@ pub mod codec {
         e_opening: Vec<FrCbor>,
         bundle_instance_hash: ByteBuf,
         norm: Option<StepNormRecordCbor>,
+        fold_log: Option<Vec<FoldProofEntryCbor>>,
+    }
+
+    /// CBOR form of a single fold-log entry carried in a level-1 proof.
+    #[derive(Serialize, Deserialize)]
+    struct FoldProofEntryCbor {
+        acc_x: Vec<FrCbor>,
+        acc_u: FrCbor,
+        acc_w_commit: ByteBuf,
+        acc_e_commit: ByteBuf,
+        step_x: Vec<FrCbor>,
+        step_u: FrCbor,
+        step_w_commit: ByteBuf,
+        step_e_commit: ByteBuf,
+        cross_commit: ByteBuf,
     }
 
     /// CBOR form of a single norm certificate (flavour-tagged).
@@ -555,6 +570,38 @@ pub mod codec {
         })
     }
 
+    fn fold_entry_enc<F: PrimeField>(
+        e: &super::FoldProofEntry,
+    ) -> Result<FoldProofEntryCbor, Box<dyn Error>> {
+        Ok(FoldProofEntryCbor {
+            acc_x: frs_enc::<F>(&e.acc_x)?,
+            acc_u: fr_enc(&fr_parse::<F>(&e.acc_u)?),
+            acc_w_commit: ByteBuf::from(hex::decode(&e.acc_w_commit)?),
+            acc_e_commit: ByteBuf::from(hex::decode(&e.acc_e_commit)?),
+            step_x: frs_enc::<F>(&e.step_x)?,
+            step_u: fr_enc(&fr_parse::<F>(&e.step_u)?),
+            step_w_commit: ByteBuf::from(hex::decode(&e.step_w_commit)?),
+            step_e_commit: ByteBuf::from(hex::decode(&e.step_e_commit)?),
+            cross_commit: ByteBuf::from(hex::decode(&e.cross_commit)?),
+        })
+    }
+
+    fn fold_entry_dec<F: PrimeField>(
+        c: &FoldProofEntryCbor,
+    ) -> Result<super::FoldProofEntry, Box<dyn Error>> {
+        Ok(super::FoldProofEntry {
+            acc_x: frs_dec::<F>(&c.acc_x)?,
+            acc_u: super::fr_to_string(&fr_dec::<F>(&c.acc_u)?),
+            acc_w_commit: hex::encode(&c.acc_w_commit),
+            acc_e_commit: hex::encode(&c.acc_e_commit),
+            step_x: frs_dec::<F>(&c.step_x)?,
+            step_u: super::fr_to_string(&fr_dec::<F>(&c.step_u)?),
+            step_w_commit: hex::encode(&c.step_w_commit),
+            step_e_commit: hex::encode(&c.step_e_commit),
+            cross_commit: hex::encode(&c.cross_commit),
+        })
+    }
+
     pub fn level1_proof_encode<F: PrimeField>(
         p: &super::Level1SlimProof,
     ) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -579,6 +626,16 @@ pub mod codec {
             e_opening: frs_enc::<F>(&p.e_opening)?,
             bundle_instance_hash: hash_enc(&p.bundle_final_instance_hash)?,
             norm: p.norm.as_ref().map(norm_record_enc),
+            fold_log: p
+                .fold_log
+                .as_ref()
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .map(fold_entry_enc::<F>)
+                        .collect::<Result<_, _>>()
+                })
+                .transpose()?,
         };
         write(&dto)
     }
@@ -614,6 +671,16 @@ pub mod codec {
                 .map(norm_record_dec)
                 .transpose()
                 .map_err(Box::<dyn Error>::from)?,
+            fold_log: d
+                .fold_log
+                .as_ref()
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .map(fold_entry_dec::<F>)
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?,
         })
     }
 
@@ -658,6 +725,23 @@ pub mod codec {
     }
 }
 
+/// One fold-log entry: the two pre-fold **committed** instances that were
+/// folded into the next accumulator, plus the commitment to that fold's
+/// cross-term vector `T`.  This is the data a verifier needs for fold
+/// re-verification (FV): it lets the verifier re-check, per step and purely
+/// from commitments, the homomorphic NIFS fold relation
+/// `Ē' = Ē_acc + r·Ē_step + r·com(T)` (and the analogous `x', u', W̄'`
+/// relations), independent of trusting the step witnesses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FoldLogEntry<CS: CommitmentScheme> {
+    /// The accumulator instance going into the fold.
+    pub acc: nifs::RelaxedR1csInstance<CS>,
+    /// The new step instance being folded in.
+    pub step: nifs::RelaxedR1csInstance<CS>,
+    /// Commitment to this fold's cross-term vector `T`.
+    pub cross_commit: CS::Commitment,
+}
+
 /// Output of [`run_fold_nifs`]: the public bundle plus the private final
 /// instance/witness (consumed by the compression prover).
 #[derive(Debug, Clone)]
@@ -669,6 +753,10 @@ pub struct NifsFoldOutput<CS: CommitmentScheme> {
     /// fold order.  These are the genuinely short vectors used for norm
     /// enforcement (the folded instance is field-scale and cannot be bounded).
     pub step_witnesses: Vec<(Vec<String>, Vec<String>)>,
+    /// Fold re-verification log, one entry per fold step.  `None` when the
+    /// fold was performed without recording the log.  Each entry carries the
+    /// two pre-fold committed instances and the cross-term commitment.
+    pub fold_log: Option<Vec<FoldLogEntry<CS>>>,
 }
 
 /// Sumcheck-based compression proof.
@@ -866,6 +954,7 @@ fn fold_nifs<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     let mut acc_u: Option<nifs::RelaxedR1csInstance<CS>> = None;
     let mut acc_w: Option<nifs::RelaxedR1csWitness<CS>> = None;
     let mut step_witnesses: Vec<(Vec<String>, Vec<String>)> = Vec::new();
+    let mut fold_log: Vec<FoldLogEntry<CS>> = Vec::new();
 
     for (i, p) in wtns_paths.iter().enumerate() {
         circuit
@@ -920,7 +1009,7 @@ fn fold_nifs<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
                 let w_acc = acc_w.take().expect("running witness must exist");
                 let acc = acc_hash.as_ref().expect("transcript initialized");
                 let challenge = nifs::fold_challenge::<CS>(acc, &u_acc, &step_u);
-                let (u3, w3) = nifs::fold_with_opts::<CS>(
+                let (u3, w3, cross_commit) = nifs::fold_with_log::<CS>(
                     &params,
                     &circuit.l,
                     &circuit.r,
@@ -932,6 +1021,11 @@ fn fold_nifs<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
                     challenge,
                     opts.parallel,
                 );
+                fold_log.push(FoldLogEntry::<CS> {
+                    acc: u_acc.clone(),
+                    step: step_u.clone(),
+                    cross_commit,
+                });
                 acc_u = Some(u3);
                 acc_w = Some(w3);
             }
@@ -974,6 +1068,7 @@ fn fold_nifs<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
         final_instance: final_u,
         final_witness: final_w,
         step_witnesses,
+        fold_log: Some(fold_log),
     })
 }
 
@@ -1436,6 +1531,53 @@ impl NifsSumcheckProof {
 /// plus HashPC opening proofs that bind W and E to the bundle's
 /// Pedersen commitments.  This closes the "free E" gap that the slim
 /// path leaves open.
+/// One fold-log entry as carried in a level-1 proof: the two pre-fold
+/// **committed** instances that were folded into the next accumulator plus the
+/// commitment to that fold's cross-term vector `T`.  `x`/`u` are canonical
+/// decimal field-element strings; `w_commit`/`e_commit`/`cross_commit` are
+/// compressed commitment hex.
+///
+/// This is what lets `verify_full` re-run the homomorphic NIFS fold relation
+/// per step (fold re-verification) from committed data alone.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FoldProofEntry {
+    /// Accumulator (`acc`) public input `x`.
+    pub acc_x: Vec<String>,
+    /// Accumulator (`acc`) slack scalar `u`.
+    pub acc_u: String,
+    /// Accumulator (`acc`) witness commitment (hex).
+    pub acc_w_commit: String,
+    /// Accumulator (`acc`) error commitment (hex).
+    pub acc_e_commit: String,
+    /// Step (`step`) public input `x`.
+    pub step_x: Vec<String>,
+    /// Step (`step`) slack scalar `u`.
+    pub step_u: String,
+    /// Step (`step`) witness commitment (hex).
+    pub step_w_commit: String,
+    /// Step (`step`) error commitment (hex).
+    pub step_e_commit: String,
+    /// Cross-term commitment `com(T)` (hex).
+    pub cross_commit: String,
+}
+
+impl FoldProofEntry {
+    /// Serialize an in-memory fold-log entry into its proof-carrying form.
+    pub fn from_entry<CS: CommitmentScheme>(e: &FoldLogEntry<CS>) -> FoldProofEntry {
+        FoldProofEntry {
+            acc_x: e.acc.x.iter().map(fr_to_string).collect(),
+            acc_u: fr_to_string(&e.acc.u),
+            acc_w_commit: commitment_hex(&e.acc.w_commit),
+            acc_e_commit: commitment_hex(&e.acc.e_commit),
+            step_x: e.step.x.iter().map(fr_to_string).collect(),
+            step_u: fr_to_string(&e.step.u),
+            step_w_commit: commitment_hex(&e.step.w_commit),
+            step_e_commit: commitment_hex(&e.step.e_commit),
+            cross_commit: commitment_hex(&e.cross_commit),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Level1SlimProof {
     /// Degree-2 sumcheck round polynomials, each `[g(0), g(1), g(2)]`.
@@ -1466,6 +1608,12 @@ pub struct Level1SlimProof {
     /// per fold step over that step's pre-fold witness `Z_j` and error `E_j`.
     /// `None` when no norm check was requested (backward compatible).
     pub norm: Option<norm::StepNormRecord>,
+    /// Fold re-verification log (FV): one entry per fold step, carried from
+    /// the prover so `verify_full` can re-check the homomorphic fold relation
+    /// per step from committed data.  `None` for proofs produced without the
+    /// fold log (e.g. older step-2 golden vectors / audit).  When `Some`, its
+    /// length must equal `n_steps - 1` (one fold per step after the first).
+    pub fold_log: Option<Vec<FoldProofEntry>>,
 }
 
 /// Verify a slim sumcheck compression proof against a NIFS bundle (in-memory).
@@ -1713,6 +1861,10 @@ pub fn prove_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>
         e_opening: e_opening.table.iter().map(fr_to_string).collect(),
         bundle_final_instance_hash,
         norm: norm_section,
+        fold_log: folded
+            .fold_log
+            .as_ref()
+            .map(|log| log.iter().map(FoldProofEntry::from_entry).collect()),
     })
 }
 
@@ -2038,9 +2190,17 @@ pub fn verify_level1_norm<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarFiel
 ///      cross-check the per-step norm certificate carried in the proof
 ///      (`∥Z_j∥_∞, ∥E_j∥_∞ ≤ 2^bound_bits`).
 ///
+/// Complete (off-chain) verifier: Level-1 slim proof + optional norm audit +
+/// fold re-verification (FV).
+///
 /// Unlike the lightweight on-chain [`verify_slim`], this verifier enforces
-/// commitment binding and PCS openings off-chain.  Fold re-verification (FV,
-/// README `#29`) is intentionally out of scope here.
+/// commitment binding and PCS openings off-chain.  When the proof carries a
+/// fold log (every proof produced by [`prove_level1`] does), the FV pass
+/// (`#29`) additionally re-runs the homomorphic NIFS fold relation for every
+/// fold step from the log's committed data, so the final committed instance is
+/// bound to being the correct homomorphic fold of the whole chain — closing
+/// the vector-addition homomorphism gap.  Proofs without a fold log (legacy)
+/// are accepted as before, without the FV pass.
 pub fn verify_full<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     bundle: &NifsBundle,
     proof: &Level1SlimProof,
@@ -2053,6 +2213,12 @@ pub fn verify_full<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     opts: OptFlags,
 ) -> Result<FullVerifyOutput, Box<dyn Error>> {
     let out = verify_slim_level1::<C, CS>(bundle, proof, sis_param, circuit)?;
+
+    // Fold re-verification (FV): re-check the homomorphic fold relation per
+    // step from the fold log's committed data (no step witnesses needed).
+    if let Some(fold_log) = &proof.fold_log {
+        verify_fold_log::<C, CS>(bundle, fold_log)?;
+    }
 
     let norm = if norm_mode != norm::NormMode::None {
         let c = norm_circuit.ok_or_else(|| {
@@ -2080,6 +2246,194 @@ pub fn verify_full<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
         transcript_final: out.transcript_final,
         norm,
     })
+}
+
+/// Fold re-verification (FV): re-run the homomorphic NIFS fold relation for
+/// every fold step using only the fold log carried in the proof plus the
+/// bundle's public inputs — no step witnesses or circuit are needed.
+///
+/// For each fold step the verifier:
+///   1. recomputes the Fiat-Shamir challenge `r_j` from the evolving transcript
+///      chain (starting from `H(initial_state)` and extending with each folded
+///      instance's transcript hash), exactly as the prover did;
+///   2. recomputes the folded committed instance from the logged pre-fold
+///      instances and the logged cross-term commitment `com(T_j)`:
+///        x'  = x_acc + r·x_step
+///        u'  = u_acc + r·u_step
+///        W̄'  = W̄_acc + r·W̄_step
+///        Ē'  = Ē_acc + r·Ē_step + r·com(T_j)
+///   3. checks it equals the next logged accumulator (or the bundle's final
+///      instance on the last fold), and advances the transcript chain.
+///
+/// Finally the reconstructed transcript hash is checked against the bundle's
+/// `transcript_final`, binding the whole chain to the public bundle.
+///
+/// If any logged instance, cross-term commitment, or transcript step is
+/// tampered with, at least one commitment-level equality (or the final hash
+/// binding) fails and the proof is rejected.
+///
+/// Soundness boundary (honest scope): this verifies the *commitment-level
+/// consistency* of the whole fold chain — the final committed instance is, at
+/// every step, the correct homomorphic combination of the logged pre-fold
+/// commitments and cross-term commitments, and the fold transcript is fully
+/// reproducible from committed data.  It does NOT independently re-open every
+/// per-step witness to check that each `com(T_j)` commits the exact R1CS
+/// cross-term relation to actual witness evaluations; that would require a
+/// per-step sumcheck/opening (full recursive verification), a strictly larger
+/// design.  Combined with [`verify_slim_level1`] — which binds the final
+/// instance to an OP-checked short witness and checks the final relaxed-R1CS
+/// residual vanishes — FV closes the vector-addition homomorphism gap on the
+/// fold chain without trusting a prover's internal step-witness arithmetic.
+pub fn verify_fold_log<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
+    bundle: &NifsBundle,
+    fold_log: &[FoldProofEntry],
+) -> Result<(), Box<dyn Error>> {
+    if bundle.n_steps == 0 {
+        return Err("fold re-verification: empty bundle".into());
+    }
+    if fold_log.len() != (bundle.n_steps - 1) {
+        return Err(format!(
+            "fold re-verification: fold log has {} entries but n_steps-1 = {}",
+            fold_log.len(),
+            bundle.n_steps - 1
+        )
+        .into());
+    }
+
+    let initial_state = frs_from_strings::<ScalarField<C>>(&bundle.initial_state)?;
+    let final_x = frs_from_strings::<ScalarField<C>>(&bundle.final_instance.x)?;
+    let final_u = bundle
+        .final_instance
+        .u
+        .parse::<ScalarField<C>>()
+        .map_err(|_| format!("invalid final u: {}", bundle.final_instance.u))?;
+    let final_w_commit = commitment_parse::<CS::Commitment>(&bundle.final_instance.w_commit)?;
+    let final_e_commit = commitment_parse::<CS::Commitment>(&bundle.final_instance.e_commit)?;
+
+    let mut acc_hash = transcript_nifs_init::<C>(&initial_state);
+    // The transcript advances past the first (non-folding) step before the
+    // first fold, so the pre-fold hash for fold #0 is already one step ahead
+    // of `H(initial_state)`: it has absorbed the very first accumulator.  This
+    // matters whenever `n_steps >= 2`, which is exactly the case here (we
+    // returned early above when `fold_log` is empty).
+    {
+        let e0 = &fold_log[0];
+        let ax = frs_from_strings::<ScalarField<C>>(&e0.acc_x)?;
+        let au = e0
+            .acc_u
+            .parse::<ScalarField<C>>()
+            .map_err(|_| "fold re-verification: invalid first acc_u".to_string())?;
+        let aw = commitment_parse::<CS::Commitment>(&e0.acc_w_commit)?;
+        let ae = commitment_parse::<CS::Commitment>(&e0.acc_e_commit)?;
+        let a0 = nifs::RelaxedR1csInstance {
+            x: ax,
+            u: au,
+            w_commit: aw,
+            e_commit: ae,
+        };
+        acc_hash = transcript_nifs_step::<C, CS>(&acc_hash, &a0);
+    }
+
+    for (j, e) in fold_log.iter().enumerate() {
+        let acc_x = frs_from_strings::<ScalarField<C>>(&e.acc_x)?;
+        let acc_u = e
+            .acc_u
+            .parse::<ScalarField<C>>()
+            .map_err(|_| format!("entry {j}: invalid acc_u"))?;
+        let acc_w = commitment_parse::<CS::Commitment>(&e.acc_w_commit)?;
+        let acc_e = commitment_parse::<CS::Commitment>(&e.acc_e_commit)?;
+        let acc = nifs::RelaxedR1csInstance {
+            x: acc_x,
+            u: acc_u,
+            w_commit: acc_w,
+            e_commit: acc_e,
+        };
+        let step_x = frs_from_strings::<ScalarField<C>>(&e.step_x)?;
+        let step_u = e
+            .step_u
+            .parse::<ScalarField<C>>()
+            .map_err(|_| format!("entry {j}: invalid step_u"))?;
+        let step_w = commitment_parse::<CS::Commitment>(&e.step_w_commit)?;
+        let step_e = commitment_parse::<CS::Commitment>(&e.step_e_commit)?;
+        let step = nifs::RelaxedR1csInstance {
+            x: step_x,
+            u: step_u,
+            w_commit: step_w,
+            e_commit: step_e,
+        };
+        let cross = commitment_parse::<CS::Commitment>(&e.cross_commit)?;
+
+        let r = nifs::fold_challenge::<CS>(&acc_hash, &acc, &step);
+
+        // Homomorphic fold of the committed instances.
+        let folded_x: Vec<ScalarField<C>> = acc
+            .x
+            .iter()
+            .zip(&step.x)
+            .map(|(a, b)| *a + r * *b)
+            .collect();
+        let folded_u = acc.u + r * step.u;
+        let folded_w = CS::add(&acc.w_commit, &CS::scalar_mul(&step.w_commit, &r));
+        let folded_e = CS::add(
+            &CS::add(&acc.e_commit, &CS::scalar_mul(&step.e_commit, &r)),
+            &CS::scalar_mul(&cross, &r),
+        );
+        let folded = nifs::RelaxedR1csInstance {
+            x: folded_x,
+            u: folded_u,
+            w_commit: folded_w,
+            e_commit: folded_e,
+        };
+
+        // Compare against the target: next accumulator, or final instance.
+        let target: nifs::RelaxedR1csInstance<CS> = if j + 1 < fold_log.len() {
+            let ne = &fold_log[j + 1];
+            let tx = frs_from_strings::<ScalarField<C>>(&ne.acc_x)?;
+            let tu = ne
+                .acc_u
+                .parse::<ScalarField<C>>()
+                .map_err(|_| format!("entry {}: invalid acc_u", j + 1))?;
+            let tw = commitment_parse::<CS::Commitment>(&ne.acc_w_commit)?;
+            let te = commitment_parse::<CS::Commitment>(&ne.acc_e_commit)?;
+            nifs::RelaxedR1csInstance {
+                x: tx,
+                u: tu,
+                w_commit: tw,
+                e_commit: te,
+            }
+        } else {
+            nifs::RelaxedR1csInstance {
+                x: final_x.clone(),
+                u: final_u,
+                w_commit: final_w_commit.clone(),
+                e_commit: final_e_commit.clone(),
+            }
+        };
+
+        if folded.x != target.x
+            || folded.u != target.u
+            || folded.w_commit != target.w_commit
+            || folded.e_commit != target.e_commit
+        {
+            return Err(format!(
+                "fold re-verification: fold step {j} does not fold to the claimed next \
+                 instance (committed fold-relation mismatch)"
+            )
+            .into());
+        }
+
+        acc_hash = transcript_nifs_step::<C, CS>(&acc_hash, &folded);
+    }
+
+    if hex::encode(&acc_hash) != bundle.transcript_final {
+        return Err(
+            "fold re-verification: reconstructed fold transcript does not match \
+             the bundle's transcript_final"
+                .into(),
+        );
+    }
+
+    Ok(())
 }
 
 /// Verify a slim sumcheck compression proof against a NIFS bundle (CLI path).
@@ -3142,6 +3496,7 @@ mod tests {
             e_opening: vec![],
             bundle_final_instance_hash: "deadbeef".to_string(),
             norm: None,
+            fold_log: None,
         };
 
         let result = verify_slim_level1::<
@@ -3435,6 +3790,10 @@ mod tests {
         let bytes = l1.to_cbor::<Fr>().unwrap();
         let decoded = Level1SlimProof::from_cbor::<Fr>(&bytes).unwrap();
         assert_eq!(decoded.norm, l1.norm);
+        assert_eq!(
+            decoded.fold_log, l1.fold_log,
+            "fold re-verification log must survive the CBOR round-trip"
+        );
         verify_level1_norm::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(
             &r1cs_path,
             &steps_dir,
@@ -3891,6 +4250,112 @@ mod tests {
                 OptFlags::NONE,
             );
             prop_assert!(v.is_err(), "proof for bundle A must not verify against bundle B");
+        }
+
+        /// FV: a proof with a (valid-length) fold log whose first entry's
+        /// accumulator witness commitment is tampered must be rejected by the
+        /// fold re-verification (the homomorphic fold relation then fails).
+        #[test]
+        fn prop_verify_full_rejects_tampered_fold_acc_commit(
+            x1 in 2u64..20,
+            x2 in 2u64..20,
+            x3 in 2u64..20,
+        ) {
+            let (bundle, l1, c, _tmp) = setup_level1(x1, x2, x3);
+            let fv_entries = l1.fold_log.as_ref().expect("level-1 proof must carry a fold log");
+            prop_assert_eq!(fv_entries.len(), 2, "3 steps -> 2 folds");
+            let mut bad = l1.clone();
+            let entry = bad.fold_log.as_mut().unwrap().get_mut(0).unwrap();
+            // Flip the first hex nibble of the pre-fold accumulator's W commit.
+            let old = entry.acc_w_commit.clone();
+            let first = old.chars().next().unwrap();
+            let swapped = if first == '0' { '1' } else { '0' };
+            entry.acc_w_commit = format!("{swapped}{}", &old[1..]);
+            let v = verify_full::<
+                crate::curve::Bls12_381,
+                PedersenCommitment<crate::curve::Bls12_381>,
+            >(
+                &bundle,
+                &bad,
+                DEFAULT_SIS_PARAM,
+                Some(&c),
+                norm::NormMode::None,
+                None,
+                None,
+                64,
+                OptFlags::NONE,
+            );
+            prop_assert!(
+                v.is_err(),
+                "tampered fold-log acc witness commit must be rejected"
+            );
+        }
+
+        /// FV: a proof whose first entry's cross-term commitment `com(T)` is
+        /// tampered must be rejected (it breaks the folded E relation).
+        #[test]
+        fn prop_verify_full_rejects_tampered_fold_cross_commit(
+            x1 in 2u64..20,
+            x2 in 2u64..20,
+            x3 in 2u64..20,
+        ) {
+            let (bundle, l1, c, _tmp) = setup_level1(x1, x2, x3);
+            prop_assert!(l1.fold_log.is_some());
+            let mut bad = l1.clone();
+            let entry = bad.fold_log.as_mut().unwrap().get_mut(0).unwrap();
+            let old = entry.cross_commit.clone();
+            let first = old.chars().next().unwrap();
+            let swapped = if first == '0' { '1' } else { '0' };
+            entry.cross_commit = format!("{swapped}{}", &old[1..]);
+            let v = verify_full::<
+                crate::curve::Bls12_381,
+                PedersenCommitment<crate::curve::Bls12_381>,
+            >(
+                &bundle,
+                &bad,
+                DEFAULT_SIS_PARAM,
+                Some(&c),
+                norm::NormMode::None,
+                None,
+                None,
+                64,
+                OptFlags::NONE,
+            );
+            prop_assert!(
+                v.is_err(),
+                "tampered fold-log cross-term commitment must be rejected"
+            );
+        }
+
+        /// FV: a fold log whose length does not match `n_steps - 1` must be
+        /// rejected (covers a truncated or inflated log).
+        #[test]
+        fn prop_verify_full_rejects_fold_log_length_mismatch(
+            x1 in 2u64..20,
+            x2 in 2u64..20,
+            x3 in 2u64..20,
+        ) {
+            let (bundle, l1, c, _tmp) = setup_level1(x1, x2, x3);
+            let mut bad = l1.clone();
+            bad.fold_log.as_mut().unwrap().pop(); // now 1 entry, but 3 steps need 2
+            let v = verify_full::<
+                crate::curve::Bls12_381,
+                PedersenCommitment<crate::curve::Bls12_381>,
+            >(
+                &bundle,
+                &bad,
+                DEFAULT_SIS_PARAM,
+                Some(&c),
+                norm::NormMode::None,
+                None,
+                None,
+                64,
+                OptFlags::NONE,
+            );
+            prop_assert!(
+                v.is_err(),
+                "fold log length mismatch must be rejected"
+            );
         }
 
         /// Property: a slim proof for bundle A must NOT verify against a

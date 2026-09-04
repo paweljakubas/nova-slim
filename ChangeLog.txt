@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Fold re-verification (FV, soundness item #29) in the level-1 proof: the
+  prover records a per-fold-step fold log (the two pre-fold committed instances
+  plus the cross-term commitment `com(T)`), carried in `Level1SlimProof.fold_log`
+  (CBOR, `FORMAT_VERSION` bumped to 2). `verify_full` re-runs the homomorphic
+  NIFS fold relation per step from the log's committed data via `verify_fold_log`,
+  recomputing the Fiat-Shamir challenges from the evolving transcript and binding
+  the chain to the bundle's final instance and `transcript_final`.
+- `nifs::fold_with_log` exposes the per-fold cross-term commitment.
+
 ## [0.3.0] - 2026-08-29
 
 ### Added

@@ -169,17 +169,27 @@ The **full** sumcheck proof includes the entire HashPC opening (the witness
 | Verifier time | ~8 s (HashPC recompute) | **~0.2 ms** (sumcheck only, no MLE eval) |
 
 **Do we lose security?** The slim proof preserves knowledge soundness *in the
-batch-proving model* where the prover is trusted during folding. However, the
-current verifier does **not** evaluate the circuit MLEs at the random point,
-open the committed witness/error, or re-verify the fold.  Because relaxed R1CS
-has a free error vector $E$, an all-zero-polynomial transcript passes against
-any bundle.  Acceptance therefore attests honest pipeline execution, not
-knowledge of a valid witness under an untrusted prover.
+batch-proving model* where the prover is trusted during folding. The level-1
+verifier (`verify_slim_level1`/`verify_full`) closes two of the earlier gaps: it
+asserts the final residual vanishes (no more all-zeros free-`E` transcript), and
+it verifies the circuit-backed PCS openings, binding the final instance to a
+committed short witness. The remaining folding gap is closed at the
+*commitment level* by **fold re-verification (FV)**: with a fold log carrying
+the pre-fold committed instances and cross-term commitments `com(T)`, the
+verifier recomputes the per-step Fiat-Shamir challenges and re-checks the
+homomorphic fold relation `Ē' = Ē_acc + r·Ē_step + r·com(T)` (+ `x', u', W̄'`)
+for every fold step from committed data, binding the chain to the bundle's
+final instance and transcript. FV does **not** re-open every per-step witness to
+check each `com(T)` against the R1CS cross-term relation — that would be full
+recursive verification. Acceptance therefore attests honest pipeline execution
+plus a commitment-level-checked fold chain; under a fully untrusted prover the
+per-step witness re-opening remains the residual (small) assumption.
 
-**Honest sizing.** The headline ~0.4–2.5 KiB omits three things a sound
-system must carry:
+**Honest sizing.** The headline ~0.4–2.5 KiB omits the parts a sound system
+must carry:
 1. **PCS openings** (~1–4 KiB if succinct),
-2. **Fold verification** (~3–5 KiB amortised),
+2. **Fold verification log** (in the fold-log design: the per-fold-pre-instance
+   commitments + `com(T)` entries, ~3–5 KiB amortised for typical fold counts),
 3. **Norm proofs** (~20–80 KiB for SIS/Hash post-quantum).
 
 Closing these gaps yields estimated honest sizes of **~5–12 KiB**

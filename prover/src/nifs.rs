@@ -144,10 +144,11 @@ pub fn fold<CS: CommitmentScheme>(
     w2: &RelaxedR1csWitness<CS>,
     challenge: CS::Scalar,
 ) -> (RelaxedR1csInstance<CS>, RelaxedR1csWitness<CS>) {
-    fold_with_opts(params, l, r, o, u1, w1, u2, w2, challenge, false)
+    let (u3, w3, _cross) = fold_with_log(params, l, r, o, u1, w1, u2, w2, challenge, false);
+    (u3, w3)
 }
 
-/// Fold with optimization flags.
+/// Fold with optimization flags (discards the cross-term commitment).
 ///
 /// When `parallel` is true, the cross-term computation uses rayon for
 /// parallel row evaluation.
@@ -163,6 +164,38 @@ pub fn fold_with_opts<CS: CommitmentScheme>(
     challenge: CS::Scalar,
     parallel: bool,
 ) -> (RelaxedR1csInstance<CS>, RelaxedR1csWitness<CS>) {
+    let (u3, w3, _cross) = fold_with_log(params, l, r, o, u1, w1, u2, w2, challenge, parallel);
+    (u3, w3)
+}
+
+/// Fold two instances and additionally return the commitment to the NIFS
+/// cross-term vector `T = (AZ1)∘(BZ2) + (AZ2)∘(BZ1) − u1(CZ2) − u2(CZ1)`.
+///
+/// This is the data a verifier needs for **fold re-verification (FV)**:
+/// `com(T)` together with the pre-fold committed instances lets the verifier
+/// re-check the homomorphic fold relation `Ē' = Ē1 + r·Ē2 + r·com(T)` (and the
+/// analogous `x', u', W̄'` relations) from committed data alone, without
+/// trusting the step witnesses or re-opening them.
+///
+/// The returned cross-term commitment is exactly what `fold_with_opts`
+/// computes internally at its `e_commit3` step; exposing it here lets a caller
+/// carry it in a fold log for later (commitment-level) verification.
+pub fn fold_with_log<CS: CommitmentScheme>(
+    params: &CS::Params,
+    l: &[Vec<(u32, CS::Scalar)>],
+    r: &[Vec<(u32, CS::Scalar)>],
+    o: &[Vec<(u32, CS::Scalar)>],
+    u1: &RelaxedR1csInstance<CS>,
+    w1: &RelaxedR1csWitness<CS>,
+    u2: &RelaxedR1csInstance<CS>,
+    w2: &RelaxedR1csWitness<CS>,
+    challenge: CS::Scalar,
+    parallel: bool,
+) -> (
+    RelaxedR1csInstance<CS>,
+    RelaxedR1csWitness<CS>,
+    CS::Commitment,
+) {
     assert_eq!(u1.x.len(), u2.x.len(), "public input widths must match");
     assert_eq!(w1.w.len(), w2.w.len(), "witness widths must match");
     assert_eq!(w1.e.len(), w2.e.len(), "error widths must match");
@@ -186,6 +219,7 @@ pub fn fold_with_opts<CS: CommitmentScheme>(
     } else {
         cross_term(l, r, o, &w1.w, &w2.w, u1.u, u2.u)
     };
+    let cross_commit = CS::commit_error(params, &e3_cross);
     let e3: Vec<CS::Scalar> =
         w1.e.iter()
             .zip(&w2.e)
@@ -197,7 +231,7 @@ pub fn fold_with_opts<CS: CommitmentScheme>(
     let w_commit3 = CS::add(&u1.w_commit, &CS::scalar_mul(&u2.w_commit, &challenge));
     let e_commit3 = CS::add(
         &CS::add(&u1.e_commit, &CS::scalar_mul(&u2.e_commit, &challenge)),
-        &CS::scalar_mul(&CS::commit_error(params, &e3_cross), &challenge),
+        &CS::scalar_mul(&cross_commit, &challenge),
     );
 
     let u3 = RelaxedR1csInstance {
@@ -207,7 +241,7 @@ pub fn fold_with_opts<CS: CommitmentScheme>(
         e_commit: e_commit3,
     };
     debug_assert_eq!(u3.w_commit, CS::commit_witness(params, &w3));
-    (u3, RelaxedR1csWitness { w: w3, e: e3 })
+    (u3, RelaxedR1csWitness { w: w3, e: e3 }, cross_commit)
 }
 
 #[cfg(test)]
