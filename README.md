@@ -1,14 +1,29 @@
 # NovaSlim
 
-Transparent folding-scheme proofs sized for on-chain verification:
-NIFS-fold a chain of identical step circuits into one accumulator, compress
-with a sumcheck argument, and verify a **~0.4–2.5 KiB** proof with **no pairing,
-no trusted setup, and sub-millisecond verification**.
+A **Nova-family (IVC) solution** that NIFS-folds a chain of identical step
+circuits into one accumulator and compresses it with a transparent sumcheck
+argument, then verifies on-chain with **no pairing, no trusted setup, and
+sub-millisecond verification**.
+
+NovaSlim is deliberately **multi-faceted in the commitment-size-versus-security
+trade-off**: one pipeline exposes a ladder of proof modes, from a **~0.4 KiB
+on-chain slim proof** up to **norm-enforced post-quantum certificates of tens of
+KiB** (see [Proof modes and their guarantees](#proof-modes-and-their-guarantees)
+below) — so the operator chooses the guarantee appropriate to the adversary and
+application. It is **modular in commitment** (Pedersen classical; SIS/Ajtai and
+Hash post-quantum candidates, selectable at runtime via `--commitment
+{pedersen,sis,hash}`) and **modular in elliptic curves** (BLS12-381 for Cardano,
+BN254 for Ethereum, Pallas, Vesta, Grumpkin, Bandersnatch — one common proof
+format across all six). It **aspires to be performant and correct**: the
+prover/verifier are benchmarked against real circom circuits, and the security
+claims are backed by a formal (conditional) QROM analysis rather than asserted.
 
 📄 **Technical specification/whitepaper** — formal
-description of the protocol, security proofs, and benchmark analysis coming soon.
+description of the protocol, security proofs, and benchmark analysis.
 
-Supports **BLS12-381** (Cardano), **BN254** (Ethereum), **Pallas** (Zcash), **Vesta**, **Grumpkin**, and **Bandersnatch**. Three commitment schemes — **Pedersen** (fast, classical), **SIS** (faster folding, quantum-ready), and **Hash** (Blake2b-derived matrix entries, zero-param storage) — are selectable at runtime via `--commitment {pedersen,sis,hash}`.  **Hash is operationally SIS/Ajtai in disguise** ($c = A \cdot v$ with Blake2b-derived matrix entries), not a separate hash-based binding mechanism; it inherits the same missing-norm-enforcement caveat as SIS.
+**Hash is operationally SIS/Ajtai in disguise** ($c = A \cdot v$ with
+Blake2b-derived matrix entries), not a separate hash-based binding mechanism; it
+inherits the same missing-norm-enforcement caveat as SIS.
 
 ## Disclaimer
 
