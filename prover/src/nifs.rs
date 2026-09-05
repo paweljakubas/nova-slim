@@ -189,8 +189,16 @@ pub struct CheckpointEntry {
 ///
 /// This is the core of the batch-then-checkpoint protocol (P2b):
 /// instead of folding one step at a time with a full-field challenge,
-/// we fold `k` steps in one batch using ternary challenges, achieving
-/// soundness error `(1/3)^{k-1}` (`thm:batch-fold-small`).
+/// we fold `k` steps in one batch using ternary challenges.
+///
+/// Soundness note: with the affine error fold `E' = E1 + r*E2 + r*T`, a
+/// corrupted base step is masked exactly at `r = 0` (probability 1/3 per
+/// step), two interfering corruptions raise the masking probability to 5/9,
+/// and folding more steps does not amplify (`lem:small-challenge-nifs` /
+/// `thm:batch-fold-small` in `body.tex`).  The `(1/3)^{k-1}` bound and the
+/// batch sizes `k >= 127/203` quoted in earlier design notes apply only to
+/// the re-randomised fold upgrade (future work), not to this function;
+/// current guarantees are (C1)-(C3) of `thm:batch-checkpoint-soundness`.
 pub fn batch_fold<CS: CommitmentScheme>(
     params: &CS::Params,
     l: &[Vec<(u32, CS::Scalar)>],
