@@ -100,6 +100,7 @@ pub mod nifs;
 
 /// Sumcheck-based constant-size compression — a sumcheck argument over the
 /// relaxed R1CS equation + HashPC commitments.
+pub mod module_sis;
 pub mod norm;
 pub mod sumcheck;
 
