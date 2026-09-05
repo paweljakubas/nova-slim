@@ -3,7 +3,7 @@
 use crate::Curve;
 use clap::Parser;
 use prover::{
-    commitment::{HashCommitment, PedersenCommitment, SisCommitment},
+    commitment::{HashCommitment, ModuleSisCommitment, PedersenCommitment, SisCommitment},
     curve::{Bandersnatch, Bls12_381, Bn254, Grumpkin, Pallas, Vesta},
     run_verify_slim, run_verify_slim_level1, run_verify_sumcheck_opt, OptFlags, DEFAULT_SIS_PARAM,
 };
@@ -49,6 +49,13 @@ pub struct Args {
     #[arg(long, value_name = "M", default_value_t = DEFAULT_SIS_PARAM)]
     pub sis_param: usize,
 
+    /// Module-SIS parameter-set index (0 = Conservative-I, 1 = Balanced-I,
+    /// 2 = Compact-I), used only with --commitment module-sis.  Selects the
+    /// ring/on-chain size; defaults to 0.  Must match across fold, compress
+    /// and verify.
+    #[arg(long, value_name = "IDX")]
+    pub module_sis_params: Option<usize>,
+
     /// (Audit-only) expect the level-1 proof to carry an Option-A
     /// range/bit-decomposition norm certificate and enforce ∥Z_j∥_∞,∥E_j∥_∞
     /// ≤ B on every fold step's pre-fold witness.  Must match the mode used
@@ -83,6 +90,7 @@ pub struct Args {
 
 /// Run the `verify` subcommand.
 pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
+    let m = crate::cmd::effective_m(args.commitment, args.sis_param, args.module_sis_params);
     if let Some(ref l1) = args.level1_proof {
         let norm_mode = if args.norm_range {
             prover::norm::NormMode::Range
@@ -95,7 +103,7 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
             run_verify_slim_level1::<C, CS>(
                 &args.ivc,
                 l1,
-                args.sis_param,
+                m,
                 norm_mode,
                 args.norm_bits,
                 args.circuit.as_deref(),
@@ -133,7 +141,7 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
 
     if let Some(ref sc_proof) = args.sumcheck_proof {
         let out = dispatch!(args.curve, args.commitment, {
-            run_verify_sumcheck_opt::<C, CS>(&args.ivc, sc_proof, args.sis_param)
+            run_verify_sumcheck_opt::<C, CS>(&args.ivc, sc_proof, m)
         })?;
         eprintln!(
             "Verified {} steps: sumcheck compression proof OK, commitments OK, state chain OK",

@@ -20,6 +20,11 @@ macro_rules! dispatch {
                 type CS = HashCommitment<Bls12_381>;
                 $body
             }
+            (crate::Curve::Bls12_381, crate::CommitmentSchemeArg::ModuleSis) => {
+                type C = Bls12_381;
+                type CS = ModuleSisCommitment<Bls12_381>;
+                $body
+            }
             (crate::Curve::Bn254, crate::CommitmentSchemeArg::Pedersen) => {
                 type C = Bn254;
                 type CS = PedersenCommitment<Bn254>;
@@ -33,6 +38,11 @@ macro_rules! dispatch {
             (crate::Curve::Bn254, crate::CommitmentSchemeArg::Hash) => {
                 type C = Bn254;
                 type CS = HashCommitment<Bn254>;
+                $body
+            }
+            (crate::Curve::Bn254, crate::CommitmentSchemeArg::ModuleSis) => {
+                type C = Bn254;
+                type CS = ModuleSisCommitment<Bn254>;
                 $body
             }
             (crate::Curve::Pallas, crate::CommitmentSchemeArg::Pedersen) => {
@@ -50,6 +60,11 @@ macro_rules! dispatch {
                 type CS = HashCommitment<Pallas>;
                 $body
             }
+            (crate::Curve::Pallas, crate::CommitmentSchemeArg::ModuleSis) => {
+                type C = Pallas;
+                type CS = ModuleSisCommitment<Pallas>;
+                $body
+            }
             (crate::Curve::Vesta, crate::CommitmentSchemeArg::Pedersen) => {
                 type C = Vesta;
                 type CS = PedersenCommitment<Vesta>;
@@ -63,6 +78,11 @@ macro_rules! dispatch {
             (crate::Curve::Vesta, crate::CommitmentSchemeArg::Hash) => {
                 type C = Vesta;
                 type CS = HashCommitment<Vesta>;
+                $body
+            }
+            (crate::Curve::Vesta, crate::CommitmentSchemeArg::ModuleSis) => {
+                type C = Vesta;
+                type CS = ModuleSisCommitment<Vesta>;
                 $body
             }
             (crate::Curve::Grumpkin, crate::CommitmentSchemeArg::Pedersen) => {
@@ -80,6 +100,11 @@ macro_rules! dispatch {
                 type CS = HashCommitment<Grumpkin>;
                 $body
             }
+            (crate::Curve::Grumpkin, crate::CommitmentSchemeArg::ModuleSis) => {
+                type C = Grumpkin;
+                type CS = ModuleSisCommitment<Grumpkin>;
+                $body
+            }
             (crate::Curve::Bandersnatch, crate::CommitmentSchemeArg::Pedersen) => {
                 type C = Bandersnatch;
                 type CS = PedersenCommitment<Bandersnatch>;
@@ -93,6 +118,11 @@ macro_rules! dispatch {
             (crate::Curve::Bandersnatch, crate::CommitmentSchemeArg::Hash) => {
                 type C = Bandersnatch;
                 type CS = HashCommitment<Bandersnatch>;
+                $body
+            }
+            (crate::Curve::Bandersnatch, crate::CommitmentSchemeArg::ModuleSis) => {
+                type C = Bandersnatch;
+                type CS = ModuleSisCommitment<Bandersnatch>;
                 $body
             }
         }

@@ -12,7 +12,7 @@
 use crate::Curve;
 use clap::Parser;
 use prover::{
-    commitment::{HashCommitment, PedersenCommitment, SisCommitment},
+    commitment::{HashCommitment, ModuleSisCommitment, PedersenCommitment, SisCommitment},
     curve::{Bandersnatch, Bls12_381, Bn254, Grumpkin, NovaCurve, Pallas, ScalarField, Vesta},
     norm, run_compress_level1_batch_opt, run_compress_level1_opt, run_compress_sumcheck_batch_opt,
     run_compress_sumcheck_opt, NifsSumcheckProof, OptFlags, DEFAULT_SIS_PARAM,
@@ -73,6 +73,13 @@ pub struct Args {
     /// A value of 128 provides 128-bit post-quantum security.
     #[arg(long, value_name = "M", default_value_t = DEFAULT_SIS_PARAM)]
     pub sis_param: usize,
+
+    /// Module-SIS parameter-set index (0 = Conservative-I, 1 = Balanced-I,
+    /// 2 = Compact-I), used only with --commitment module-sis.  Selects the
+    /// ring/on-chain size; defaults to 0.  Must match across fold, compress
+    /// and verify.
+    #[arg(long, value_name = "IDX")]
+    pub module_sis_params: Option<usize>,
 
     /// (Audit-only) enforce an ∞-norm bound on every fold step's *pre-fold*
     /// witness `Z_j` and error `E_j` using Option A — a per-coordinate
@@ -148,6 +155,7 @@ fn strip_and_write<C: NovaCurve>(
 /// Run the `compress` subcommand.
 pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
     let opts = parse_opt_flags(&args.opt)?;
+    let m = crate::cmd::effective_m(args.commitment, args.sis_param, args.module_sis_params);
     let batch = args.batch_size > 0;
     if args.level1 {
         // (audit-only) norm enforcement mode, if any.
@@ -165,7 +173,7 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
                     &args.steps,
                     &args.out,
                     opts,
-                    args.sis_param,
+                    m,
                     norm_mode,
                     args.norm_bits,
                     args.batch_size,
@@ -177,7 +185,7 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
                     &args.steps,
                     &args.out,
                     opts,
-                    args.sis_param,
+                    m,
                     norm_mode,
                     args.norm_bits,
                 )
@@ -194,18 +202,12 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
                     &args.steps,
                     &tmp,
                     opts,
-                    args.sis_param,
+                    m,
                     args.batch_size,
                     args.bound_bits,
                 )
             } else {
-                run_compress_sumcheck_opt::<C, CS>(
-                    &args.circuit,
-                    &args.steps,
-                    &tmp,
-                    opts,
-                    args.sis_param,
-                )
+                run_compress_sumcheck_opt::<C, CS>(&args.circuit, &args.steps, &tmp, opts, m)
             }
         })?;
         let full_bytes = fs::read(&tmp)?;
@@ -226,18 +228,12 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
                     &args.steps,
                     &args.out,
                     opts,
-                    args.sis_param,
+                    m,
                     args.batch_size,
                     args.bound_bits,
                 )
             } else {
-                run_compress_sumcheck_opt::<C, CS>(
-                    &args.circuit,
-                    &args.steps,
-                    &args.out,
-                    opts,
-                    args.sis_param,
-                )
+                run_compress_sumcheck_opt::<C, CS>(&args.circuit, &args.steps, &args.out, opts, m)
             }
         })?;
     }

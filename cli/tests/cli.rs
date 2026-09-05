@@ -1611,6 +1611,200 @@ fn nifs_level1_compress_verify_end_to_end() {
     verify2.assert().failure();
 }
 
+// ------------------------------------------------------------------
+// EXPERIMENTAL Module-SIS commitment (P4): ring-domain commitment-chain
+// harness.  Fold/verify here is chain-consistency only — the scheme is
+// ring-homomorphic, NOT field-homomorphic, so the witness↔commitment
+// re-binding check is intentionally deferred (see PQ-GAP P4/P8).
+// ------------------------------------------------------------------
+
+/// SMOKE: honest ring-domain commitment chain across fold → compress --slim
+/// → verify, with the balanced Module-SIS parameter set (index 1).
+#[test]
+fn module_sis_commitment_chain_slim_end_to_end() {
+    let r1cs = NamedTempFile::new().unwrap();
+    fs::write(r1cs.path(), build_synthetic_step_r1cs()).unwrap();
+    let steps_dir = tempfile::tempdir().unwrap();
+    let mut state = 2u64;
+    for (i, x) in [3u64, 5, 7].iter().enumerate() {
+        state = write_step_wtns(steps_dir.path(), i, state, *x);
+    }
+
+    let ms = ["--commitment", "module-sis", "--module-sis-params", "1"];
+    e2e_slim_flow("bn254", &ms, r1cs.path(), steps_dir.path());
+}
+
+/// The Module-SIS parameter-set index must match between fold and compress:
+/// the slim proof's final instance is re-folded with the compress-time index,
+/// so a mismatch produces a final-instance hash that does not bind to the
+/// bundle → verification fails.
+#[test]
+fn module_sis_param_index_mismatch_rejected() {
+    let r1cs = NamedTempFile::new().unwrap();
+    fs::write(r1cs.path(), build_synthetic_step_r1cs()).unwrap();
+    let steps_dir = tempfile::tempdir().unwrap();
+    let mut state = 2u64;
+    for (i, x) in [3u64, 5, 7].iter().enumerate() {
+        state = write_step_wtns(steps_dir.path(), i, state, *x);
+    }
+
+    // fold with Conservative-I (index 0)...
+    let bundle_file = NamedTempFile::new().unwrap();
+    let mut fold = Command::cargo_bin("nova-slim").unwrap();
+    fold.arg("fold")
+        .arg("--curve")
+        .arg("bn254")
+        .arg("--commitment")
+        .arg("module-sis")
+        .arg("--module-sis-params")
+        .arg("0")
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(bundle_file.path());
+    fold.assert().success();
+
+    // ...but compress with Balanced-I (index 1): re-folding diverges.
+    let proof_file = NamedTempFile::new().unwrap();
+    let mut compress = Command::cargo_bin("nova-slim").unwrap();
+    compress
+        .arg("compress")
+        .arg("--slim")
+        .arg("--curve")
+        .arg("bn254")
+        .arg("--commitment")
+        .arg("module-sis")
+        .arg("--module-sis-params")
+        .arg("1")
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(proof_file.path());
+    compress.assert().success();
+
+    let mut verify = Command::cargo_bin("nova-slim").unwrap();
+    verify
+        .arg("verify")
+        .arg("--curve")
+        .arg("bn254")
+        .arg("--commitment")
+        .arg("module-sis")
+        .arg("--module-sis-params")
+        .arg("0")
+        .arg("--ivc")
+        .arg(bundle_file.path())
+        .arg("--slim-proof")
+        .arg(proof_file.path());
+    verify.assert().failure();
+}
+
+/// SMOKE: level-1 (degree-2 sumcheck + W/E openings + final-claim-zero)
+/// harness with the Module-SIS commitment.  The commitment re-binding step is
+/// skipped for non-field-homomorphic schemes, but the deterministic fold-log
+/// chain-consistency check and PCS opening checks still run; tampering the
+/// bundle must still fail.
+#[test]
+fn module_sis_commitment_chain_level1_end_to_end() {
+    let r1cs = NamedTempFile::new().unwrap();
+    fs::write(r1cs.path(), build_synthetic_step_r1cs()).unwrap();
+
+    let steps_dir = tempfile::tempdir().unwrap();
+    let mut state = 2u64;
+    for (i, x) in [3u64, 5, 7].iter().enumerate() {
+        state = write_step_wtns(steps_dir.path(), i, state, *x);
+    }
+
+    // 1. fold -> bundle
+    let bundle_file = NamedTempFile::new().unwrap();
+    let mut fold = Command::cargo_bin("nova-slim").unwrap();
+    fold.arg("fold")
+        .arg("--curve")
+        .arg("bn254")
+        .arg("--commitment")
+        .arg("module-sis")
+        .arg("--module-sis-params")
+        .arg("1")
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(bundle_file.path());
+    fold.assert().success();
+
+    // 2. compress --level1 -> level-1 proof
+    let proof_file = NamedTempFile::new().unwrap();
+    let mut compress = Command::cargo_bin("nova-slim").unwrap();
+    compress
+        .arg("compress")
+        .arg("--level1")
+        .arg("--curve")
+        .arg("bn254")
+        .arg("--commitment")
+        .arg("module-sis")
+        .arg("--module-sis-params")
+        .arg("1")
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(proof_file.path());
+    compress
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Level-1 proof written"));
+
+    // 3. verify the bundle with the level-1 proof
+    let mut verify = Command::cargo_bin("nova-slim").unwrap();
+    verify
+        .arg("verify")
+        .arg("--curve")
+        .arg("bn254")
+        .arg("--commitment")
+        .arg("module-sis")
+        .arg("--module-sis-params")
+        .arg("1")
+        .arg("--ivc")
+        .arg(bundle_file.path())
+        .arg("--level1-proof")
+        .arg(proof_file.path());
+    verify.assert().success().stderr(predicate::str::contains(
+        "Level-1 degree-2 sumcheck proof OK",
+    ));
+
+    // 4. tampering the bundle's instance must fail verification even for the
+    //    ring-domain chain harness.
+    let mut tampered: prover::NifsBundle =
+        prover::NifsBundle::from_cbor::<ark_bn254::Fr>(&fs::read(bundle_file.path()).unwrap())
+            .unwrap();
+    tampered.final_instance.x[0] = (state + 1).to_string();
+    let tampered_file = tempfile::NamedTempFile::new().unwrap();
+    fs::write(
+        tampered_file.path(),
+        tampered.to_cbor::<ark_bn254::Fr>().unwrap(),
+    )
+    .unwrap();
+    let mut verify2 = Command::cargo_bin("nova-slim").unwrap();
+    verify2
+        .arg("verify")
+        .arg("--curve")
+        .arg("bn254")
+        .arg("--commitment")
+        .arg("module-sis")
+        .arg("--module-sis-params")
+        .arg("1")
+        .arg("--ivc")
+        .arg(tampered_file.path())
+        .arg("--level1-proof")
+        .arg(proof_file.path());
+    verify2.assert().failure();
+}
+
 /// Full Level-1 norm-audit flow at the CLI level: compress --level1 with a JL
 /// norm record, then verify --level1-proof --norm-jl re-folds the step
 /// witnesses, enforces the per-step bound, and cross-checks the record.

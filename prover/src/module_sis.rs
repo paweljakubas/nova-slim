@@ -739,6 +739,8 @@ impl<C: NovaCurve> CommitmentScheme for ModuleSisCommitment<C> {
     type Commitment = Vec<Rq>;
     type Params = ModuleSisCommitParams;
 
+    const FIELD_HOMOMORPHIC: bool = false;
+
     fn params_from_seed(
         seed: &[u8],
         n_wires: usize,

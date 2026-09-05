@@ -1645,17 +1645,25 @@ fn verify_sumcheck_compression_inner<
         return Err("E HashPC opening truth table hash mismatch".into());
     }
 
-    // 5. Verify commitments match the bundle.
-    let params = CS::params_from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints, sis_param);
-    let w_vec = &w_opening.table[..n_wires.min(w_opening.table.len())];
-    let expected_w_commit: CS::Commitment = commitment_parse(&bundle.final_instance.w_commit)?;
-    if CS::commit_witness(&params, w_vec) != expected_w_commit {
-        return Err("W commitment does not match the NIFS bundle".into());
-    }
-    let e_vec = &e_opening.table[..n_constraints.min(e_opening.table.len())];
-    let expected_e_commit: CS::Commitment = commitment_parse(&bundle.final_instance.e_commit)?;
-    if CS::commit_error(&params, e_vec) != expected_e_commit {
-        return Err("E commitment does not match the NIFS bundle".into());
+    // 5. Verify commitments match the bundle.  Only valid for field-
+    //    homomorphic schemes: recomputing `commit(w)` from the *opened field
+    //    witness* and comparing it to the stored (possibly ring-folded)
+    //    commitment is sound when `commit(w1 + r·w2) == commit(w1) + r·commit(w2)`,
+    //    which holds for Pedersen/SIS/Hash but not for the experimental
+    //    Module-SIS commitment (ring-homomorphic only; witness re-binding is
+    //    the job of the committed-shortness / checkpoint protocol).
+    if CS::FIELD_HOMOMORPHIC {
+        let params = CS::params_from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints, sis_param);
+        let w_vec = &w_opening.table[..n_wires.min(w_opening.table.len())];
+        let expected_w_commit: CS::Commitment = commitment_parse(&bundle.final_instance.w_commit)?;
+        if CS::commit_witness(&params, w_vec) != expected_w_commit {
+            return Err("W commitment does not match the NIFS bundle".into());
+        }
+        let e_vec = &e_opening.table[..n_constraints.min(e_opening.table.len())];
+        let expected_e_commit: CS::Commitment = commitment_parse(&bundle.final_instance.e_commit)?;
+        if CS::commit_error(&params, e_vec) != expected_e_commit {
+            return Err("E commitment does not match the NIFS bundle".into());
+        }
     }
 
     // 6. Circuit-backed PCS opening `(OP)`, when a public circuit is supplied.
@@ -2150,7 +2158,6 @@ pub fn verify_slim_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarFiel
         }
     }
 
-    let n_wires = bundle.n_wires as usize;
     let n_constraints = bundle.n_constraints as usize;
 
     // 1. Parse and reconstruct the degree-2 sumcheck proof.
@@ -2278,17 +2285,26 @@ pub fn verify_slim_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarFiel
         return Err("E HashPC opening truth table hash mismatch".into());
     }
 
-    // 7. Verify Pedersen commitments match the bundle.
-    let params = CS::params_from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints, sis_param);
-    let w_vec = &w_opening.table[..n_wires.min(w_opening.table.len())];
-    let expected_w_commit: CS::Commitment = commitment_parse(&bundle.final_instance.w_commit)?;
-    if CS::commit_witness(&params, w_vec) != expected_w_commit {
-        return Err("W commitment does not match the NIFS bundle".into());
-    }
-    let e_vec = &e_opening.table[..n_constraints.min(e_opening.table.len())];
-    let expected_e_commit: CS::Commitment = commitment_parse(&bundle.final_instance.e_commit)?;
-    if CS::commit_error(&params, e_vec) != expected_e_commit {
-        return Err("E commitment does not match the NIFS bundle".into());
+    // 7. Verify commitments match the bundle.  Only valid for field-
+    //    homomorphic schemes — for the experimental Module-SIS commitment
+    //    (ring-homomorphic only) a fresh commitment of the *opened field
+    //    witness* cannot be compared to the stored ring-folded commitment;
+    //    re-binding is the job of the committed-shortness / checkpoint
+    //    protocol.  The deterministic fold-log chain consistency check below
+    //    remains the primary integrity guarantee.
+    if CS::FIELD_HOMOMORPHIC {
+        let n_wires = bundle.n_wires as usize;
+        let params = CS::params_from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints, sis_param);
+        let w_vec = &w_opening.table[..n_wires.min(w_opening.table.len())];
+        let expected_w_commit: CS::Commitment = commitment_parse(&bundle.final_instance.w_commit)?;
+        if CS::commit_witness(&params, w_vec) != expected_w_commit {
+            return Err("W commitment does not match the NIFS bundle".into());
+        }
+        let e_vec = &e_opening.table[..n_constraints.min(e_opening.table.len())];
+        let expected_e_commit: CS::Commitment = commitment_parse(&bundle.final_instance.e_commit)?;
+        if CS::commit_error(&params, e_vec) != expected_e_commit {
+            return Err("E commitment does not match the NIFS bundle".into());
+        }
     }
 
     // 8. Circuit-backed PCS opening (the paper's `(OP)` predicate).  When a

@@ -111,9 +111,9 @@ Use `nova-slim <COMMAND> --help` for the exact list for that command.
                             Example: --curve bn254
 
 --commitment <SCHEME>       Commitment scheme to use (default: pedersen)
-                            Available: pedersen, sis, hash
+                            Available: pedersen, sis, hash, module-sis
                             Applies to: fold, compress, verify
-                            Example: --commitment sis
+                            Example: --commitment module-sis
 
 --sis-param <M>             SIS output dimension m (default: 4)
                             Only used when --commitment sis is selected.
@@ -121,6 +121,15 @@ Use `nova-slim <COMMAND> --help` for the exact list for that command.
                             m=128 → 128-bit post-quantum security (production)
                             Applies to: fold, compress, verify
                             Example: --sis-param 128
+
+--module-sis-params <IDX>   EXPERIMENTAL Module-SIS parameter-set index
+                            (default: 0).  Only used with --commitment module-sis.
+                            0 → Conservative-I, 1 → Balanced-I, 2 → Compact-I.
+                            Selects the ring (n, q) and hence the on-chain
+                            commitment size; must match across fold, compress
+                            and verify.
+                            Applies to: fold, compress, verify
+                            Example: --commitment module-sis --module-sis-params 1
 
 --opt <OPTS>                Optimizations, comma-separated (default: none)
                             parallel  — use rayon for independent operations
@@ -176,8 +185,8 @@ fn print_commitment_help() {
     println!(
         r#"COMMITMENT SCHEMES
 
-NovaSlim supports three commitment schemes, selectable at runtime via
---commitment {{pedersen,sis,hash}}. All schemes are transparent (no trusted setup).
+NovaSlim supports four commitment schemes, selectable at runtime via
+ --commitment {{pedersen,sis,hash,module-sis}}. All schemes are transparent (no trusted setup).
 
 1. Pedersen (default) — Classical elliptic-curve commitments
    * Speed: Baseline (~350 ms/step for Ed25519 on BN254)
@@ -199,6 +208,18 @@ NovaSlim supports three commitment schemes, selectable at runtime via
    * Storage: Zero param storage (seed only)
    * Best for: Auditable deployments, minimal trusted code
 
+4. Module-SIS (Ajtai commitments over the ring R_q = Z_q[x]/(x^n+1)) — EXPERIMENTAL
+   * Scheme: Modules over the ring of n-th roots of unity; ring-homomorphic
+   * Configurable: --module-sis-params <idx> — 0 Conservative-I,
+     1 Balanced-I, 2 Compact-I (chooses (n, q), hence on-chain size)
+   * CAVEAT: ring-homomorphic, NOT field-homomorphic.  NIFS fold/verify keeps
+     the deterministic fold-log chain-consistency check but SKIPS the
+     witness↔commitment re-binding check (deferred to a committed-shortness /
+     checkpoint protocol).  This is a research-grade harness, not a sound
+     field-NIFS construction.
+   * Best for: Experiments on compact lattice commitments; expect the
+     protocol to change with the upstream ring-domain folding design.
+
 EXAMPLES
 
 # Pedersen (default) — no extra flags needed
@@ -218,6 +239,11 @@ nova-slim fold --commitment hash --circuit step.r1cs --steps ./w/ --out bundle.i
 nova-slim fold --commitment sis --sis-param 128 --circuit step.r1cs --steps ./w/ --out b.ivc.cbor
 nova-slim compress --slim --commitment sis --sis-param 128 --circuit step.r1cs --steps ./w/ --out slim.cbor
 nova-slim verify --commitment sis --sis-param 128 --ivc b.ivc.cbor --slim-proof slim.cbor
+
+# EXPERIMENTAL Module-SIS (ring-domain commitment chain — NOT sound field-NIFS)
+nova-slim fold --commitment module-sis --module-sis-params 1 --circuit step.r1cs --steps ./w/ --out b.ivc.cbor
+nova-slim compress --slim --commitment module-sis --module-sis-params 1 --circuit step.r1cs --steps ./w/ --out slim.cbor
+nova-slim verify --commitment module-sis --module-sis-params 1 --ivc b.ivc.cbor --slim-proof slim.cbor
 "#
     );
 }

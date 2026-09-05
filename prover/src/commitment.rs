@@ -11,6 +11,8 @@ use std::fmt::Debug;
 
 use crate::curve::{G1Projective, NovaCurve, ScalarField};
 
+pub use crate::module_sis::ModuleSisCommitment;
+
 /// A generic commitment scheme for NIFS folding.
 ///
 /// The scheme must be homomorphic (addition and scalar multiplication) so
@@ -59,6 +61,16 @@ pub trait CommitmentScheme: Clone + Debug + Send + Sync + 'static {
 
     /// The zero commitment.
     fn zero(m: usize) -> Self::Commitment;
+
+    /// Whether the commitment is homomorphic with respect to `Self::Scalar`
+    /// field addition: `commit(w1 + r·w2) == commit(w1) + r·commit(w2)`.
+    ///
+    /// Pedersen, SIS and Hash are field-homomorphic (their commitment value
+    /// lives in a group/vector space over the same field).  The experimental
+    /// `ModuleSisCommitment` is only homomorphic over its ring `R_q`, so NIFS
+    /// fold-verification must not re-derive a fresh commitment of the folded
+    /// *field* witness and compare it to the folded commitment.
+    const FIELD_HOMOMORPHIC: bool = true;
 }
 
 // ------------------------------------------------------------------

@@ -32,6 +32,13 @@ pub enum CommitmentSchemeArg {
     /// Hash-based commitments — on-the-fly Blake2b coefficient derivation,
     /// no stored matrix, O(m·n) computation per commitment.
     Hash,
+    /// EXPERIMENTAL Module-SIS/Ajtai lattice commitments over the ring
+    /// R_q = Z_q[x]/(x^n+1).  Ring-homomorphic only (NOT field-homomorphic):
+    /// NIFS verification keeps the deterministic fold-log chain-consistency
+    /// check but the witness↔commitment re-binding check is deferred to the
+    /// committed-shortness (checkpoint) protocol.  On-chain size follows from
+    /// `--module-sis-params`.
+    ModuleSis,
 }
 
 /// Supported elliptic curves.

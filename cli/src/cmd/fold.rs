@@ -4,7 +4,7 @@
 use crate::Curve;
 use clap::Parser;
 use prover::{
-    commitment::{HashCommitment, PedersenCommitment, SisCommitment},
+    commitment::{HashCommitment, ModuleSisCommitment, PedersenCommitment, SisCommitment},
     curve::{Bandersnatch, Bls12_381, Bn254, Grumpkin, NovaCurve, Pallas, ScalarField, Vesta},
     run_fold_nifs_batch_opt, run_fold_nifs_opt, NifsBundle, OptFlags, DEFAULT_SIS_PARAM,
 };
@@ -49,6 +49,13 @@ pub struct Args {
     /// A value of 128 provides 128-bit post-quantum security.
     #[arg(long, value_name = "M", default_value_t = DEFAULT_SIS_PARAM)]
     pub sis_param: usize,
+
+    /// Module-SIS parameter-set index (0 = Conservative-I, 1 = Balanced-I,
+    /// 2 = Compact-I), used only with --commitment module-sis.  Selects the
+    /// ring/on-chain size; defaults to 0.  Must match across fold, compress
+    /// and verify.
+    #[arg(long, value_name = "IDX")]
+    pub module_sis_params: Option<usize>,
 
     /// Batch size for batch-then-checkpoint folding (P2b).
     /// When set, folds instances in batches of this size using small
@@ -106,18 +113,19 @@ fn write_bundle<C: NovaCurve>(
 /// Run the `fold` subcommand.
 pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
     let opts = parse_opt_flags(&args.opt)?;
+    let m = crate::cmd::effective_m(args.commitment, args.sis_param, args.module_sis_params);
     dispatch!(args.curve, args.commitment, {
         let out = if args.batch_size > 0 {
             run_fold_nifs_batch_opt::<C, CS>(
                 &args.circuit,
                 &args.steps,
                 opts,
-                args.sis_param,
+                m,
                 args.batch_size,
                 args.bound_bits,
             )?
         } else {
-            run_fold_nifs_opt::<C, CS>(&args.circuit, &args.steps, opts, args.sis_param)?
+            run_fold_nifs_opt::<C, CS>(&args.circuit, &args.steps, opts, m)?
         };
         write_bundle::<C>(&out.bundle, &args.out, opts)
     })
