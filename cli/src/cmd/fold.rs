@@ -6,7 +6,7 @@ use clap::Parser;
 use prover::{
     commitment::{HashCommitment, PedersenCommitment, SisCommitment},
     curve::{Bandersnatch, Bls12_381, Bn254, Grumpkin, NovaCurve, Pallas, ScalarField, Vesta},
-    run_fold_nifs_opt, NifsBundle, OptFlags, DEFAULT_SIS_PARAM,
+    run_fold_nifs_batch_opt, run_fold_nifs_opt, NifsBundle, OptFlags, DEFAULT_SIS_PARAM,
 };
 use std::error::Error;
 use std::fs;
@@ -49,6 +49,19 @@ pub struct Args {
     /// A value of 128 provides 128-bit post-quantum security.
     #[arg(long, value_name = "M", default_value_t = DEFAULT_SIS_PARAM)]
     pub sis_param: usize,
+
+    /// Batch size for batch-then-checkpoint folding (P2b).
+    /// When set, folds instances in batches of this size using small
+    /// ternary challenges, with norm-reset checkpoints after each batch.
+    /// Defaults to 0 (disabled, standard step-by-step folding).
+    #[arg(long, value_name = "N", default_value_t = 0)]
+    pub batch_size: usize,
+
+    /// Infinity-norm bound in bits for checkpoint shortness checks.
+    /// Only used when --batch-size is set.  Coordinates exceeding this
+    /// bit-width abort the fold.
+    #[arg(long, value_name = "BITS", default_value_t = 256)]
+    pub bound_bits: u32,
 }
 
 fn parse_opt_flags(s: &str) -> Result<OptFlags, Box<dyn Error>> {
@@ -94,7 +107,18 @@ fn write_bundle<C: NovaCurve>(
 pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
     let opts = parse_opt_flags(&args.opt)?;
     dispatch!(args.curve, args.commitment, {
-        let out = run_fold_nifs_opt::<C, CS>(&args.circuit, &args.steps, opts, args.sis_param)?;
+        let out = if args.batch_size > 0 {
+            run_fold_nifs_batch_opt::<C, CS>(
+                &args.circuit,
+                &args.steps,
+                opts,
+                args.sis_param,
+                args.batch_size,
+                args.bound_bits,
+            )?
+        } else {
+            run_fold_nifs_opt::<C, CS>(&args.circuit, &args.steps, opts, args.sis_param)?
+        };
         write_bundle::<C>(&out.bundle, &args.out, opts)
     })
 }

@@ -424,6 +424,7 @@ fn nifs_fold_in_memory<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C
         final_witness: final_w,
         step_witnesses,
         fold_log: None,
+        checkpoints: None,
     }
 }
 

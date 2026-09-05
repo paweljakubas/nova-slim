@@ -758,6 +758,9 @@ pub struct NifsFoldOutput<CS: CommitmentScheme> {
     /// fold was performed without recording the log.  Each entry carries the
     /// two pre-fold committed instances and the cross-term commitment.
     pub fold_log: Option<Vec<FoldLogEntry<CS>>>,
+    /// Checkpoint log for batch-then-checkpoint folding (P2b).  `None` when
+    /// folding was performed step-by-step without checkpoints.
+    pub checkpoints: Option<Vec<nifs::CheckpointEntry>>,
 }
 
 /// Sumcheck-based compression proof.
@@ -906,6 +909,23 @@ pub fn run_fold_nifs_opt<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField
     sis_param: usize,
 ) -> Result<NifsFoldOutput<CS>, Box<dyn Error>> {
     fold_nifs::<C, CS>(circuit, steps, opts, sis_param)
+}
+
+/// Like [`run_fold_nifs_opt`] but uses batch-fold with periodic norm-reset
+/// checkpoints (P2b).  Folds `n_steps` in batches of `batch_size`, checking
+/// the accumulator witness/error infinity-norm after each batch.
+pub fn run_fold_nifs_batch_opt<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
+    circuit: &Path,
+    steps: &Path,
+    opts: OptFlags,
+    sis_param: usize,
+    batch_size: usize,
+    bound_bits: u32,
+) -> Result<NifsFoldOutput<CS>, Box<dyn Error>>
+where
+    CS::Scalar: ark_ff::PrimeField,
+{
+    fold_nifs_batch::<C, CS>(circuit, steps, opts, sis_param, batch_size, bound_bits)
 }
 
 /// Core folding routine shared by [`run_fold_nifs`] and [`run_compress`]
@@ -1070,6 +1090,187 @@ fn fold_nifs<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
         final_witness: final_w,
         step_witnesses,
         fold_log: Some(fold_log),
+        checkpoints: None,
+    })
+}
+
+/// Batch-fold variant of [`fold_nifs`] with periodic norm-reset checkpoints.
+fn fold_nifs_batch<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
+    circuit: &Path,
+    steps: &Path,
+    _opts: OptFlags,
+    sis_param: usize,
+    batch_size: usize,
+    bound_bits: u32,
+) -> Result<NifsFoldOutput<CS>, Box<dyn Error>>
+where
+    CS::Scalar: ark_ff::PrimeField,
+{
+    let circuit_path_str = circuit.to_string_lossy().into_owned();
+    let mut circuit = load_circuit::<C>(circuit)?;
+    check_step_circuit::<C>(&circuit)?;
+
+    let n_pub_out = circuit.n_pub_out as usize;
+    let n_pub_in = circuit.n_pub_in as usize;
+    let n_wires = circuit.n_wires as usize;
+    let n_constraints = circuit.n_constraints as usize;
+
+    let params = CS::params_from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints, sis_param);
+    let zero_e = vec![ScalarField::<C>::zero(); n_constraints];
+
+    let mut wtns_paths: Vec<PathBuf> = Vec::new();
+    for entry in fs::read_dir(steps)
+        .map_err(|e| format!("failed to read steps dir {}: {e}", steps.display()))?
+    {
+        let entry = entry.map_err(|e| format!("failed to read steps dir entry: {e}"))?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("wtns") {
+            wtns_paths.push(path);
+        }
+    }
+    wtns_paths.sort();
+
+    if wtns_paths.is_empty() {
+        return Err(format!("no .wtns files found in steps dir {}", steps.display()).into());
+    }
+    eprintln!(
+        "Batch-folding {} step witnesses (NIFS) from {} (batch_size={}, bound_bits={})",
+        wtns_paths.len(),
+        steps.display(),
+        batch_size,
+        bound_bits,
+    );
+
+    let mut prev_out: Option<Vec<String>> = None;
+    let mut initial_state: Vec<String> = Vec::new();
+    let mut acc_hash: Option<Vec<u8>> = None;
+
+    let mut instances: Vec<nifs::RelaxedR1csInstance<CS>> = Vec::with_capacity(wtns_paths.len());
+    let mut witnesses: Vec<nifs::RelaxedR1csWitness<CS>> = Vec::with_capacity(wtns_paths.len());
+    let mut step_witnesses: Vec<(Vec<String>, Vec<String>)> = Vec::new();
+
+    for (i, p) in wtns_paths.iter().enumerate() {
+        circuit
+            .load_witness(
+                p.to_str()
+                    .ok_or_else(|| format!("step witness path is not valid UTF-8: {p:?}"))?,
+            )
+            .map_err(|e| format!("failed to load witness {}: {e}", p.display()))?;
+        let w = &circuit.witness;
+
+        let out_fr = &w[1..1 + n_pub_out];
+        let in_fr = &w[1 + n_pub_out..1 + n_pub_out + n_pub_in];
+        let state_in: Vec<String> = in_fr.iter().map(fr_to_string).collect();
+        let state_out: Vec<String> = out_fr.iter().map(fr_to_string).collect();
+
+        if let Some(prev) = &prev_out {
+            if state_in != *prev {
+                return Err(format!(
+                    "step {i} ({}): state_in does not chain to previous state_out. \
+                     The step witnesses were not generated from a consistent state chain.",
+                    p.display()
+                )
+                .into());
+            }
+        } else {
+            initial_state = state_in.clone();
+            acc_hash = Some(transcript_nifs_init::<C>(in_fr));
+        }
+
+        let x: Vec<ScalarField<C>> = w[1..1 + n_pub_out + n_pub_in].to_vec();
+        let step_u = nifs::RelaxedR1csInstance {
+            x,
+            u: ScalarField::<C>::from(1u64),
+            w_commit: CS::commit_witness(&params, w),
+            e_commit: CS::zero(sis_param),
+        };
+        let step_w = nifs::RelaxedR1csWitness {
+            w: w.to_vec(),
+            e: zero_e.clone(),
+        };
+        step_witnesses.push((
+            step_w.w.iter().map(fr_to_string).collect(),
+            step_w.e.iter().map(fr_to_string).collect(),
+        ));
+        instances.push(step_u);
+        witnesses.push(step_w);
+        prev_out = Some(state_out);
+    }
+
+    let hash = acc_hash.ok_or("no steps to fold")?;
+    let (final_u, final_w, checkpoints) = nifs::batch_fold_with_checkpoints::<CS>(
+        &params,
+        &circuit.l,
+        &circuit.r,
+        &circuit.o,
+        &instances,
+        &witnesses,
+        &hash,
+        batch_size,
+        bound_bits,
+    )?;
+
+    // Build a traditional fold log for backward compatibility.
+    // We re-run the fold step-by-step to populate the fold_log.
+    let mut fold_log: Vec<FoldLogEntry<CS>> = Vec::new();
+    let mut acc_u = instances[0].clone();
+    let mut acc_w = witnesses[0].clone();
+    let mut running_hash = hash.clone();
+    for i in 1..instances.len() {
+        let step_u = &instances[i];
+        let step_w = &witnesses[i];
+        let challenge = nifs::fold_challenge::<CS>(&running_hash, &acc_u, step_u);
+        let (u3, w3, cross_commit) = nifs::fold_with_log::<CS>(
+            &params, &circuit.l, &circuit.r, &circuit.o,
+            &acc_u, &acc_w, step_u, step_w, challenge, false,
+        );
+        fold_log.push(FoldLogEntry::<CS> {
+            acc: acc_u.clone(),
+            step: step_u.clone(),
+            cross_commit,
+        });
+        acc_u = u3;
+        acc_w = w3;
+        running_hash = {
+            let mut h = blake2::Blake2b512::new();
+            h.update(&running_hash);
+            h.update(nifs::instance_to_bytes::<CS>(&acc_u).expect("serialize"));
+            h.finalize().to_vec()
+        };
+    }
+
+    let transcript_final = hex::encode(&running_hash);
+
+    let bundle = NifsBundle {
+        circuit: circuit_path_str,
+        n_wires: circuit.n_wires,
+        n_constraints: circuit.n_constraints,
+        n_pub_out: circuit.n_pub_out,
+        n_pub_in: circuit.n_pub_in,
+        initial_state,
+        n_steps: wtns_paths.len(),
+        final_instance: NifsFinalInstance {
+            x: final_u.x.iter().map(fr_to_string).collect(),
+            u: fr_to_string(&final_u.u),
+            w_commit: commitment_hex(&final_u.w_commit),
+            e_commit: commitment_hex(&final_u.e_commit),
+        },
+        transcript_final,
+    };
+
+    eprintln!(
+        "  batch-folded {} steps with {} checkpoints (all passed)",
+        wtns_paths.len(),
+        checkpoints.len(),
+    );
+
+    Ok(NifsFoldOutput {
+        bundle,
+        final_instance: final_u,
+        final_witness: final_w,
+        step_witnesses,
+        fold_log: Some(fold_log),
+        checkpoints: Some(checkpoints),
     })
 }
 

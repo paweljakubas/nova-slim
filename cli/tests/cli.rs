@@ -869,6 +869,92 @@ fn fold_nifs_end_to_end() {
     assert_eq!(bundle, bundle2);
 }
 
+/// `fold` with `--batch-size` uses batch-fold-with-checkpoints (P2b).
+#[test]
+fn fold_nifs_batch_fold_with_checkpoints() {
+    let r1cs = NamedTempFile::new().unwrap();
+    fs::write(r1cs.path(), build_synthetic_step_r1cs()).unwrap();
+
+    // State chain: 2 -> 6 -> 30 -> 210 (private factors 3, 5, 7).
+    let steps_dir = tempfile::tempdir().unwrap();
+    let mut state = 2u64;
+    for (i, x) in [3u64, 5, 7].iter().enumerate() {
+        state = write_step_wtns(steps_dir.path(), i, state, *x);
+    }
+    assert_eq!(state, 210);
+
+    let bundle_file = NamedTempFile::new().unwrap();
+    let mut cmd = Command::cargo_bin("nova-slim").unwrap();
+    cmd.arg("fold")
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(bundle_file.path())
+        .arg("--batch-size")
+        .arg("2")
+        .arg("--bound-bits")
+        .arg("256");
+    cmd.assert().success();
+
+    let bundle: prover::NifsBundle =
+        prover::NifsBundle::from_cbor::<ark_bls12_381::Fr>(&fs::read(bundle_file.path()).unwrap())
+            .unwrap();
+    assert_eq!(bundle.n_steps, 3);
+    assert_eq!(bundle.final_instance.x.len(), 2);
+    // With batch fold u can be 1 (e.g. all ternary challenges are 0).
+    assert!(!bundle.final_instance.u.is_empty());
+    assert!(!bundle.final_instance.w_commit.is_empty());
+    assert!(!bundle.final_instance.e_commit.is_empty());
+    assert_eq!(bundle.transcript_final.len(), 128);
+
+    // Determinism: re-folding with same batch parameters yields same bundle.
+    let rerun = NamedTempFile::new().unwrap();
+    let mut cmd = Command::cargo_bin("nova-slim").unwrap();
+    cmd.arg("fold")
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(rerun.path())
+        .arg("--batch-size")
+        .arg("2")
+        .arg("--bound-bits")
+        .arg("256");
+    cmd.assert().success();
+    let bundle2: prover::NifsBundle =
+        prover::NifsBundle::from_cbor::<ark_bls12_381::Fr>(&fs::read(rerun.path()).unwrap())
+            .unwrap();
+    assert_eq!(bundle, bundle2);
+}
+
+/// `fold` with `--batch-size` rejects a broken chain just like standard fold.
+#[test]
+fn fold_nifs_batch_rejects_broken_chain() {
+    let r1cs = NamedTempFile::new().unwrap();
+    fs::write(r1cs.path(), build_synthetic_step_r1cs()).unwrap();
+
+    let steps_dir = tempfile::tempdir().unwrap();
+    write_step_wtns(steps_dir.path(), 0, 2, 3);
+    write_step_wtns(steps_dir.path(), 1, 99, 5); // breaks chain: 99 != 2*3=6
+
+    let mut cmd = Command::cargo_bin("nova-slim").unwrap();
+    cmd.arg("fold")
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg("/dev/null")
+        .arg("--batch-size")
+        .arg("2");
+    cmd.assert()
+        .failure()
+        .stderr(predicates::str::contains("does not chain"));
+}
+
 /// `fold` isolates the exact step whose `state_in` breaks the chain.
 #[test]
 fn fold_nifs_rejects_broken_chain() {

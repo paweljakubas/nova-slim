@@ -586,6 +586,7 @@ fn nifs_fold<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
         final_witness: final_w,
         step_witnesses,
         fold_log: None,
+        checkpoints: None,
     }
 }
 
