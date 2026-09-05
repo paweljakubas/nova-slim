@@ -1309,6 +1309,120 @@ fn bn254_multi_constraint_cbor_roundtrip() {
         .stderr(predicate::str::contains("sumcheck compression proof OK"));
 }
 
+/// compress --batch-size uses batch-fold-with-checkpoints under the hood.
+#[test]
+fn compress_sumcheck_batch_end_to_end() {
+    let r1cs = NamedTempFile::new().unwrap();
+    fs::write(r1cs.path(), build_synthetic_step_r1cs()).unwrap();
+
+    let steps_dir = tempfile::tempdir().unwrap();
+    let mut state = 2u64;
+    for (i, x) in [3u64, 5, 7].iter().enumerate() {
+        state = write_step_wtns(steps_dir.path(), i, state, *x);
+    }
+
+    // 1. fold with --batch-size so bundle matches compress re-fold
+    let bundle_file = NamedTempFile::new().unwrap();
+    let mut fold = Command::cargo_bin("nova-slim").unwrap();
+    fold.arg("fold")
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(bundle_file.path())
+        .arg("--batch-size")
+        .arg("2");
+    fold.assert().success();
+
+    // 2. compress with --batch-size -> full proof
+    let proof_file = NamedTempFile::new().unwrap();
+    let mut compress = Command::cargo_bin("nova-slim").unwrap();
+    compress
+        .arg("compress")
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(proof_file.path())
+        .arg("--batch-size")
+        .arg("2");
+    compress.assert().success();
+
+    // 3. verify full proof
+    let mut verify = Command::cargo_bin("nova-slim").unwrap();
+    verify
+        .arg("verify")
+        .arg("--ivc")
+        .arg(bundle_file.path())
+        .arg("--sumcheck-proof")
+        .arg(proof_file.path());
+    verify
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("sumcheck compression proof OK"));
+}
+
+/// compress --slim --batch-size uses batch-fold + slim proof.
+#[test]
+fn compress_slim_batch_end_to_end() {
+    let r1cs = NamedTempFile::new().unwrap();
+    fs::write(r1cs.path(), build_synthetic_step_r1cs()).unwrap();
+
+    let steps_dir = tempfile::tempdir().unwrap();
+    let mut state = 2u64;
+    for (i, x) in [3u64, 5, 7].iter().enumerate() {
+        state = write_step_wtns(steps_dir.path(), i, state, *x);
+    }
+
+    // 1. fold with --batch-size so bundle matches compress re-fold
+    let bundle_file = NamedTempFile::new().unwrap();
+    let mut fold = Command::cargo_bin("nova-slim").unwrap();
+    fold.arg("fold")
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(bundle_file.path())
+        .arg("--batch-size")
+        .arg("2");
+    fold.assert().success();
+
+    // 2. compress --slim --batch-size
+    let proof_file = NamedTempFile::new().unwrap();
+    let mut compress = Command::cargo_bin("nova-slim").unwrap();
+    compress
+        .arg("compress")
+        .arg("--slim")
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(proof_file.path())
+        .arg("--batch-size")
+        .arg("2");
+    compress
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Slim proof written"));
+
+    // 3. verify slim
+    let mut verify = Command::cargo_bin("nova-slim").unwrap();
+    verify
+        .arg("verify")
+        .arg("--ivc")
+        .arg(bundle_file.path())
+        .arg("--slim-proof")
+        .arg(proof_file.path());
+    verify
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("slim sumcheck proof OK"));
+}
+
 // ------------------------------------------------------------------
 // CIP-197 e2e equivalence — the two documented demonstration ways
 // (cardano/cip197/README.md bls12-381 flavour vs E2E.md bn254 flavour)

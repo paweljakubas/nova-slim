@@ -1319,6 +1319,46 @@ pub fn run_compress_sumcheck_opt<C: NovaCurve, CS: CommitmentScheme<Scalar = Sca
     })
 }
 
+/// Like [`run_compress_sumcheck_opt`] but uses batch-fold with checkpoints.
+pub fn run_compress_sumcheck_batch_opt<
+    C: NovaCurve,
+    CS: CommitmentScheme<Scalar = ScalarField<C>>,
+>(
+    circuit: &Path,
+    steps: &Path,
+    out: &Path,
+    opts: OptFlags,
+    sis_param: usize,
+    batch_size: usize,
+    bound_bits: u32,
+) -> Result<CompressOutput, Box<dyn Error>>
+where
+    CS::Scalar: ark_ff::PrimeField,
+{
+    let c = load_circuit::<C>(circuit)?;
+    check_step_circuit::<C>(&c)?;
+
+    let folded =
+        fold_nifs_batch::<C, CS>(circuit, steps, opts, sis_param, batch_size, bound_bits)?;
+    let mut rng = rand::thread_rng();
+    let cproof = prove_sumcheck_compression_opt::<C, CS>(&c, &folded, &mut rng, opts)?;
+
+    let cbor = codec::sumcheck_proof_encode::<ScalarField<C>>(&cproof)
+        .map_err(|e| format!("failed to serialize sumcheck proof: {e}"))?;
+    fs::write(out, &cbor)
+        .map_err(|e| format!("failed to write sumcheck proof to {}: {e}", out.display()))?;
+    eprintln!(
+        "Sumcheck proof written to {} ({} bytes, u = {})",
+        out.display(),
+        cbor.len(),
+        fr_to_string(&folded.final_instance.u)
+    );
+    Ok(CompressOutput {
+        bytes: cbor.len(),
+        bundle: folded.bundle,
+    })
+}
+
 /// Verify a sumcheck compression proof against a NIFS bundle (CLI path).
 ///
 /// Loads the NIFS bundle and the compact CBOR sumcheck proof, then runs
@@ -2741,6 +2781,47 @@ pub fn run_compress_level1_opt<C: NovaCurve, CS: CommitmentScheme<Scalar = Scala
 
     let folded = fold_nifs::<C, CS>(circuit, steps, opts, sis_param)?;
     let l1 = prove_level1::<C, CS>(&c, &folded, opts, norm_mode, bound_bits)?;
+
+    let cbor = codec::level1_proof_encode::<ScalarField<C>>(&l1)
+        .map_err(|e| format!("failed to serialize level-1 proof: {e}"))?;
+    fs::write(out, &cbor)
+        .map_err(|e| format!("failed to write level-1 proof to {}: {e}", out.display()))?;
+    eprintln!(
+        "Level-1 proof written to {} ({} bytes, u = {})",
+        out.display(),
+        cbor.len(),
+        fr_to_string(&folded.final_instance.u)
+    );
+    Ok(CompressOutput {
+        bytes: cbor.len(),
+        bundle: folded.bundle,
+    })
+}
+
+/// Like [`run_compress_level1_opt`] but uses batch-fold with checkpoints.
+pub fn run_compress_level1_batch_opt<
+    C: NovaCurve,
+    CS: CommitmentScheme<Scalar = ScalarField<C>>,
+>(
+    circuit: &Path,
+    steps: &Path,
+    out: &Path,
+    opts: OptFlags,
+    sis_param: usize,
+    norm_mode: norm::NormMode,
+    norm_bits: u32,
+    batch_size: usize,
+    bound_bits: u32,
+) -> Result<CompressOutput, Box<dyn Error>>
+where
+    CS::Scalar: ark_ff::PrimeField,
+{
+    let c = load_circuit::<C>(circuit)?;
+    check_step_circuit::<C>(&c)?;
+
+    let folded =
+        fold_nifs_batch::<C, CS>(circuit, steps, opts, sis_param, batch_size, bound_bits)?;
+    let l1 = prove_level1::<C, CS>(&c, &folded, opts, norm_mode, norm_bits)?;
 
     let cbor = codec::level1_proof_encode::<ScalarField<C>>(&l1)
         .map_err(|e| format!("failed to serialize level-1 proof: {e}"))?;

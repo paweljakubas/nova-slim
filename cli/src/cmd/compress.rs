@@ -14,8 +14,8 @@ use clap::Parser;
 use prover::{
     commitment::{HashCommitment, PedersenCommitment, SisCommitment},
     curve::{Bandersnatch, Bls12_381, Bn254, Grumpkin, NovaCurve, Pallas, ScalarField, Vesta},
-    norm, run_compress_level1_opt, run_compress_sumcheck_opt, NifsSumcheckProof, OptFlags,
-    DEFAULT_SIS_PARAM,
+    norm, run_compress_level1_batch_opt, run_compress_level1_opt, run_compress_sumcheck_batch_opt,
+    run_compress_sumcheck_opt, NifsSumcheckProof, OptFlags, DEFAULT_SIS_PARAM,
 };
 use std::error::Error;
 use std::fs;
@@ -95,6 +95,17 @@ pub struct Args {
     /// `2^B`.  Only meaningful with `--norm-range`/`--norm-jl`.
     #[arg(long, value_name = "BITS", default_value_t = 64)]
     pub norm_bits: u32,
+
+    /// Batch size for batch-then-checkpoint folding (P2b) during compression.
+    /// When set, re-folds deterministically in batches with norm-reset
+    /// checkpoints.  Defaults to 0 (standard step-by-step folding).
+    #[arg(long, value_name = "N", default_value_t = 0)]
+    pub batch_size: usize,
+
+    /// Infinity-norm bound in bits for checkpoint shortness checks.
+    /// Only used when --batch-size is set.
+    #[arg(long, value_name = "BITS", default_value_t = 256)]
+    pub bound_bits: u32,
 }
 
 fn parse_opt_flags(s: &str) -> Result<OptFlags, Box<dyn Error>> {
@@ -137,6 +148,7 @@ fn strip_and_write<C: NovaCurve>(
 /// Run the `compress` subcommand.
 pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
     let opts = parse_opt_flags(&args.opt)?;
+    let batch = args.batch_size > 0;
     if args.level1 {
         // (audit-only) norm enforcement mode, if any.
         let norm_mode = if args.norm_range {
@@ -147,28 +159,54 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
             norm::NormMode::None
         };
         dispatch!(args.curve, args.commitment, {
-            run_compress_level1_opt::<C, CS>(
-                &args.circuit,
-                &args.steps,
-                &args.out,
-                opts,
-                args.sis_param,
-                norm_mode,
-                args.norm_bits,
-            )
+            if batch {
+                run_compress_level1_batch_opt::<C, CS>(
+                    &args.circuit,
+                    &args.steps,
+                    &args.out,
+                    opts,
+                    args.sis_param,
+                    norm_mode,
+                    args.norm_bits,
+                    args.batch_size,
+                    args.bound_bits,
+                )
+            } else {
+                run_compress_level1_opt::<C, CS>(
+                    &args.circuit,
+                    &args.steps,
+                    &args.out,
+                    opts,
+                    args.sis_param,
+                    norm_mode,
+                    args.norm_bits,
+                )
+            }
         })?;
         return Ok(());
     }
     if args.slim {
         let tmp = args.out.with_extension("full.cbor");
         dispatch!(args.curve, args.commitment, {
-            run_compress_sumcheck_opt::<C, CS>(
-                &args.circuit,
-                &args.steps,
-                &tmp,
-                opts,
-                args.sis_param,
-            )
+            if batch {
+                run_compress_sumcheck_batch_opt::<C, CS>(
+                    &args.circuit,
+                    &args.steps,
+                    &tmp,
+                    opts,
+                    args.sis_param,
+                    args.batch_size,
+                    args.bound_bits,
+                )
+            } else {
+                run_compress_sumcheck_opt::<C, CS>(
+                    &args.circuit,
+                    &args.steps,
+                    &tmp,
+                    opts,
+                    args.sis_param,
+                )
+            }
         })?;
         let full_bytes = fs::read(&tmp)?;
         match args.curve {
@@ -182,13 +220,25 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
         fs::remove_file(&tmp).ok();
     } else {
         dispatch!(args.curve, args.commitment, {
-            run_compress_sumcheck_opt::<C, CS>(
-                &args.circuit,
-                &args.steps,
-                &args.out,
-                opts,
-                args.sis_param,
-            )
+            if batch {
+                run_compress_sumcheck_batch_opt::<C, CS>(
+                    &args.circuit,
+                    &args.steps,
+                    &args.out,
+                    opts,
+                    args.sis_param,
+                    args.batch_size,
+                    args.bound_bits,
+                )
+            } else {
+                run_compress_sumcheck_opt::<C, CS>(
+                    &args.circuit,
+                    &args.steps,
+                    &args.out,
+                    opts,
+                    args.sis_param,
+                )
+            }
         })?;
     }
     Ok(())
