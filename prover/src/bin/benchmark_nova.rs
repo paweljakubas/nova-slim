@@ -53,7 +53,7 @@ fn main() {
         .map(|w| w[1].clone());
     let (Some(circuit_path), Some(steps_dir)) = (circuit_path, steps_dir) else {
         eprintln!(
-            "usage: benchmark_nova [--curve bls12-381|bn254|pallas|vesta|grumpkin|bandersnatch] [--commitment pedersen|sis|hash] [--opt-parallel] --circuit <step.r1cs> --steps <witness-dir> [--limit N]"
+            "usage: benchmark_nova [--curve bls12-381|bn254|pallas|vesta|grumpkin|bandersnatch] [--commitment pedersen|sis|hash] [--opt-parallel] [--batch-size N] [--bound-bits B] --circuit <step.r1cs> --steps <witness-dir> [--limit N]"
         );
         std::process::exit(2);
     };
@@ -69,6 +69,22 @@ fn main() {
                 .expect("--sis-param must be a positive integer")
         })
         .unwrap_or(DEFAULT_SIS_PARAM);
+    let batch_size = args
+        .windows(2)
+        .find(|w| w[0] == "--batch-size")
+        .map(|w| {
+            w[1].parse::<usize>()
+                .expect("--batch-size must be a positive integer")
+        })
+        .unwrap_or(0);
+    let bound_bits = args
+        .windows(2)
+        .find(|w| w[0] == "--bound-bits")
+        .map(|w| {
+            w[1].parse::<u32>()
+                .expect("--bound-bits must be a positive integer")
+        })
+        .unwrap_or(256);
 
     let curve = curve.as_deref().unwrap_or("bls12-381");
     let commitment = commitment.as_deref().unwrap_or("pedersen");
@@ -77,47 +93,47 @@ fn main() {
             prover::curve::Bls12_381,
             PedersenCommitment<prover::curve::Bls12_381>,
         >(
-            &circuit_path, &steps_dir, limit, opt_parallel, sis_param
+            &circuit_path, &steps_dir, limit, opt_parallel, sis_param, batch_size, bound_bits
         ),
         #[cfg(feature = "bn254")]
         ("bn254", "pedersen") => benchmark::<
             prover::curve::Bn254,
             PedersenCommitment<prover::curve::Bn254>,
         >(
-            &circuit_path, &steps_dir, limit, opt_parallel, sis_param
+            &circuit_path, &steps_dir, limit, opt_parallel, sis_param, batch_size, bound_bits
         ),
         #[cfg(feature = "pallas")]
         ("pallas", "pedersen") => benchmark::<
             prover::curve::Pallas,
             PedersenCommitment<prover::curve::Pallas>,
         >(
-            &circuit_path, &steps_dir, limit, opt_parallel, sis_param
+            &circuit_path, &steps_dir, limit, opt_parallel, sis_param, batch_size, bound_bits
         ),
         #[cfg(feature = "vesta")]
         ("vesta", "pedersen") => benchmark::<
             prover::curve::Vesta,
             PedersenCommitment<prover::curve::Vesta>,
         >(
-            &circuit_path, &steps_dir, limit, opt_parallel, sis_param
+            &circuit_path, &steps_dir, limit, opt_parallel, sis_param, batch_size, bound_bits
         ),
         #[cfg(feature = "grumpkin")]
         ("grumpkin", "pedersen") => benchmark::<
             prover::curve::Grumpkin,
             PedersenCommitment<prover::curve::Grumpkin>,
         >(
-            &circuit_path, &steps_dir, limit, opt_parallel, sis_param
+            &circuit_path, &steps_dir, limit, opt_parallel, sis_param, batch_size, bound_bits
         ),
         #[cfg(feature = "bandersnatch")]
         ("bandersnatch", "pedersen") => benchmark::<
             prover::curve::Bandersnatch,
             PedersenCommitment<prover::curve::Bandersnatch>,
         >(
-            &circuit_path, &steps_dir, limit, opt_parallel, sis_param
+            &circuit_path, &steps_dir, limit, opt_parallel, sis_param, batch_size, bound_bits
         ),
         ("bls12-381", "sis") => benchmark::<
             prover::curve::Bls12_381,
             SisCommitment<prover::curve::Bls12_381>,
-        >(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        >(&circuit_path, &steps_dir, limit, opt_parallel, sis_param, batch_size, bound_bits),
         #[cfg(feature = "bn254")]
         ("bn254", "sis") => benchmark::<prover::curve::Bn254, SisCommitment<prover::curve::Bn254>>(
             &circuit_path,
@@ -148,19 +164,19 @@ fn main() {
         ("grumpkin", "sis") => benchmark::<
             prover::curve::Grumpkin,
             SisCommitment<prover::curve::Grumpkin>,
-        >(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        >(&circuit_path, &steps_dir, limit, opt_parallel, sis_param, batch_size, bound_bits),
         #[cfg(feature = "bandersnatch")]
         ("bandersnatch", "sis") => benchmark::<
             prover::curve::Bandersnatch,
             SisCommitment<prover::curve::Bandersnatch>,
         >(
-            &circuit_path, &steps_dir, limit, opt_parallel, sis_param
+            &circuit_path, &steps_dir, limit, opt_parallel, sis_param, batch_size, bound_bits
         ),
         ("bls12-381", "hash") => benchmark::<
             prover::curve::Bls12_381,
             HashCommitment<prover::curve::Bls12_381>,
         >(
-            &circuit_path, &steps_dir, limit, opt_parallel, sis_param
+            &circuit_path, &steps_dir, limit, opt_parallel, sis_param, batch_size, bound_bits
         ),
         #[cfg(feature = "bn254")]
         ("bn254", "hash") => {
@@ -176,7 +192,7 @@ fn main() {
         ("pallas", "hash") => benchmark::<
             prover::curve::Pallas,
             HashCommitment<prover::curve::Pallas>,
-        >(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        >(&circuit_path, &steps_dir, limit, opt_parallel, sis_param, batch_size, bound_bits),
         #[cfg(feature = "vesta")]
         ("vesta", "hash") => {
             benchmark::<prover::curve::Vesta, HashCommitment<prover::curve::Vesta>>(
@@ -191,13 +207,13 @@ fn main() {
         ("grumpkin", "hash") => benchmark::<
             prover::curve::Grumpkin,
             HashCommitment<prover::curve::Grumpkin>,
-        >(&circuit_path, &steps_dir, limit, opt_parallel, sis_param),
+        >(&circuit_path, &steps_dir, limit, opt_parallel, sis_param, batch_size, bound_bits),
         #[cfg(feature = "bandersnatch")]
         ("bandersnatch", "hash") => benchmark::<
             prover::curve::Bandersnatch,
             HashCommitment<prover::curve::Bandersnatch>,
         >(
-            &circuit_path, &steps_dir, limit, opt_parallel, sis_param
+            &circuit_path, &steps_dir, limit, opt_parallel, sis_param, batch_size, bound_bits
         ),
         _ => {
             eprintln!("unknown curve/commitment: {curve}/{commitment} — valid curves: bls12-381, bn254, pallas, vesta, grumpkin, bandersnatch; valid commitments: pedersen, sis, hash");
@@ -212,7 +228,11 @@ fn benchmark<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     limit: Option<usize>,
     opt_parallel: bool,
     sis_param: usize,
-) {
+    batch_size: usize,
+    bound_bits: u32,
+) where
+    CS::Scalar: ark_ff::PrimeField,
+{
     use std::path::Path;
     let mut circuit = prover::load_circuit::<C>(Path::new(circuit_path))
         .unwrap_or_else(|e| panic!("failed to load circuit {circuit_path}: {e}"));
@@ -257,7 +277,7 @@ fn benchmark<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     println!("step witnesses: {n_steps} (from {steps_dir})");
     println!("commitment scheme: {scheme_name}");
 
-    benchmark_slim::<C, CS>(&mut circuit, &wtns, opt_parallel, sis_param);
+    benchmark_slim::<C, CS>(&mut circuit, &wtns, opt_parallel, sis_param, batch_size, bound_bits);
 }
 
 /// Slim flow: NIFS fold → sumcheck compression → full/slim verify.
@@ -266,24 +286,37 @@ fn benchmark_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     wtns: &[PathBuf],
     parallel: bool,
     sis_param: usize,
-) {
+    batch_size: usize,
+    bound_bits: u32,
+) where
+    CS::Scalar: ark_ff::PrimeField,
+{
     let n_steps = wtns.len();
     let opt = if parallel { "parallel" } else { "baseline" };
+    let mode_str = if batch_size > 0 {
+        format!("batch (size={batch_size})")
+    } else {
+        opt.to_string()
+    };
     println!(
-        "mode: NIFS fold + sumcheck compress ({opt}), curve: {}",
+        "mode: NIFS fold + sumcheck compress ({mode_str}), curve: {}",
         std::any::type_name::<C>()
     );
 
-    // Starting norm bound B (bit-length); the per-mode loop below increases it
-    // until the honest witness actually fits, so this is just a lower bound.
-    let bound_bits = 64u32;
+    // Starting norm bound B (bit-length) for norm certificates; the loop below
+    // increases it until the honest witness fits, so this is just a lower bound.
+    let norm_bound_bits = 64u32;
 
     // 1. NIFS fold.
     let t = Instant::now();
-    let folded = nifs_fold::<C, CS>(circuit, wtns, parallel, sis_param);
+    let folded = if batch_size > 0 {
+        nifs_fold_batch::<C, CS>(circuit, wtns, sis_param, batch_size, bound_bits)
+    } else {
+        nifs_fold::<C, CS>(circuit, wtns, parallel, sis_param)
+    };
     let fold_s = t.elapsed().as_secs_f64();
     println!(
-        "nifs fold: {fold_s:.3} s total, {:.3} ms/step over {n_steps} steps",
+        "nifs fold ({mode_str}): {fold_s:.3} s total, {:.3} ms/step over {n_steps} steps",
         fold_s * 1000.0 / n_steps as f64
     );
 
@@ -333,7 +366,7 @@ fn benchmark_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
 
     // 4a. Plain level-1 (no norm enforcement).
     let t = Instant::now();
-    let l1 = prove_level1::<C, CS>(circuit, &folded, opts, norm::NormMode::None, bound_bits)
+    let l1 = prove_level1::<C, CS>(circuit, &folded, opts, norm::NormMode::None, norm_bound_bits)
         .unwrap_or_else(|e| panic!("failed to build Level-1 proof: {e}"));
     let level1_compress_s = t.elapsed().as_secs_f64();
     println!(
@@ -358,7 +391,7 @@ fn benchmark_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
         norm::NormMode::None,
         None,
         None,
-        bound_bits,
+        norm_bound_bits,
         opts,
     )
     .unwrap_or_else(|e| panic!("verify_full failed: {e}"));
@@ -372,7 +405,7 @@ fn benchmark_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     let mut jl_level1_bytes = 0usize;
     for (mode, label) in [(norm::NormMode::Range, "range"), (norm::NormMode::Jl, "jl")] {
         // Ensure the honest witness actually fits B, else pick a larger bound.
-        let mut b = bound_bits;
+        let mut b = norm_bound_bits;
         while prove_level1::<C, CS>(circuit, &folded, opts, mode, b).is_err() {
             b *= 2;
         }
@@ -587,6 +620,127 @@ fn nifs_fold<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
         step_witnesses,
         fold_log: None,
         checkpoints: None,
+    }
+}
+
+/// Batch-then-checkpoint fold variant of `nifs_fold`.
+fn nifs_fold_batch<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
+    circuit: &mut SparseCircuit<ScalarField<C>>,
+    wtns: &[PathBuf],
+    sis_param: usize,
+    batch_size: usize,
+    bound_bits: u32,
+) -> NifsFoldOutput<CS>
+where
+    CS::Scalar: ark_ff::PrimeField,
+{
+    let n_pub_out = circuit.n_pub_out as usize;
+    let n_pub_in = circuit.n_pub_in as usize;
+    let n_wires = circuit.n_wires as usize;
+    let n_constraints = circuit.n_constraints as usize;
+
+    let params = CS::params_from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints, sis_param);
+    let zero_e = vec![ScalarField::<C>::zero(); n_constraints];
+
+    let mut acc_hash: Option<Vec<u8>> = None;
+    let mut prev_out: Option<Vec<String>> = None;
+    let mut initial_state: Vec<String> = Vec::new();
+    let mut instances: Vec<nifs::RelaxedR1csInstance<CS>> = Vec::with_capacity(wtns.len());
+    let mut witnesses_v: Vec<nifs::RelaxedR1csWitness<CS>> = Vec::with_capacity(wtns.len());
+    let mut step_witnesses: Vec<(Vec<String>, Vec<String>)> = Vec::new();
+
+    for p in wtns {
+        circuit
+            .load_witness(p.to_str().expect("witness path is not valid UTF-8"))
+            .unwrap_or_else(|e| panic!("failed to load witness {}: {e}", p.display()));
+        let w = &circuit.witness;
+
+        let out_fr = &w[1..1 + n_pub_out];
+        let in_fr = &w[1 + n_pub_out..1 + n_pub_out + n_pub_in];
+        let state_in: Vec<String> = in_fr.iter().map(fr_to_string).collect();
+        let state_out: Vec<String> = out_fr.iter().map(fr_to_string).collect();
+        if let Some(prev) = &prev_out {
+            assert_eq!(
+                &state_in, prev,
+                "state_in does not chain to previous state_out"
+            );
+        } else {
+            initial_state = state_in.clone();
+            acc_hash = Some(transcript_nifs_init::<C>(in_fr));
+        }
+
+        let x = w[1..1 + n_pub_out + n_pub_in].to_vec();
+        let step_u = nifs::RelaxedR1csInstance {
+            x,
+            u: ScalarField::<C>::from(1u64),
+            w_commit: CS::commit_witness(&params, w),
+            e_commit: CS::zero(sis_param),
+        };
+        let step_w: nifs::RelaxedR1csWitness<CS> = nifs::RelaxedR1csWitness {
+            w: w.to_vec(),
+            e: zero_e.clone(),
+        };
+        step_witnesses.push((
+            step_w.w.iter().map(fr_to_string).collect(),
+            step_w.e.iter().map(fr_to_string).collect(),
+        ));
+        instances.push(step_u);
+        witnesses_v.push(step_w);
+        prev_out = Some(state_out);
+    }
+
+    let hash = acc_hash.expect("no step witnesses folded");
+    let (final_u, final_w, checkpoints) = nifs::batch_fold_with_checkpoints::<CS>(
+        &params,
+        &circuit.l,
+        &circuit.r,
+        &circuit.o,
+        &instances,
+        &witnesses_v,
+        &hash,
+        batch_size,
+        bound_bits,
+    )
+    .expect("batch fold failed");
+
+    let transcript_final = hex::encode({
+        let mut running_hash = hash.clone();
+        for u in &instances {
+            running_hash = {
+                let mut h = Blake2b512::new();
+                h.update(NIFS_TRANSCRIPT_PREFIX);
+                h.update(&running_hash);
+                h.update(nifs::instance_to_bytes::<CS>(u).expect("serialize"));
+                h.finalize().to_vec()
+            };
+        }
+        running_hash
+    });
+
+    let bundle = NifsBundle {
+        circuit: String::new(),
+        n_wires: circuit.n_wires,
+        n_constraints: circuit.n_constraints,
+        n_pub_out: circuit.n_pub_out,
+        n_pub_in: circuit.n_pub_in,
+        initial_state,
+        n_steps: wtns.len(),
+        final_instance: NifsFinalInstance {
+            x: final_u.x.iter().map(fr_to_string).collect(),
+            u: fr_to_string(&final_u.u),
+            w_commit: commitment_hex(&final_u.w_commit),
+            e_commit: commitment_hex(&final_u.e_commit),
+        },
+        transcript_final,
+    };
+
+    NifsFoldOutput {
+        bundle,
+        final_instance: final_u,
+        final_witness: final_w,
+        step_witnesses,
+        fold_log: None,
+        checkpoints: Some(checkpoints),
     }
 }
 

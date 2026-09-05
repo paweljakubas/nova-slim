@@ -537,6 +537,28 @@ for state-width-24 synthetic circuits the fold scales with available cores.
 witness is kept in memory; R1CS matrices are loaded once (synthetic runs peak
 ~5 MiB; well under 100 MiB even for 59K-constraint circuits).
 
+**7. Batch-fold with checkpoints** (P2b, synthetic, bls12-381, 255 steps,
+state-width 24).  Using `--batch-size` with `batch_fold_with_checkpoints`
+amortizes commitment work across steps and can improve fold throughput:
+
+| Commitment | Standard fold | Batch fold (size=127) | Speedup |
+|---|---|---|---|
+| Pedersen | 4.24 ms/step | **2.68 ms/step** | **1.58×** |
+| Hash | 5.07 ms/step | **4.50 ms/step** | **1.13×** |
+| SIS (m=4) | 0.29 ms/step | 0.56 ms/step | 0.51× |
+
+- **Pedersen** benefits most because batching amortizes the expensive MSM
+  across multiple steps.  The cross-term commitment is computed once per batch
+  rather than once per step.
+- **Hash** benefits modestly: coefficient derivation is cheaper per batch.
+- **SIS** is already so fast (matrix–vector product) that the batch overhead
+  (norm checks, checkpoint bookkeeping) dominates; batching is neutral to
+  slightly slower.
+- The slim proof size is unchanged (~0.4 KiB) because the final accumulator is
+  identical regardless of fold path.
+- CLI usage: `nova-slim fold --batch-size 127 --bound-bits 256` and
+  `nova-slim compress --batch-size 127 --bound-bits 256`.
+
 ---
 
 **Prior reference — original 16-core / 64 GiB machine.** These heavier
