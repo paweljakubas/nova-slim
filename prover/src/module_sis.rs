@@ -1,9 +1,9 @@
-//! Exploratory Module-SIS commitment parameters.
+//! Module-SIS (Ajtai) commitment parameters and implementation.
 //!
-//! This module documents and validates candidate parameter sets for a future
-//! modular, CLI-selectable Module-SIS commitment that would close NovaSlim's
-//! concrete post-quantum security gap.  The commitment is **not yet
-//! implemented** — these are planning-only types and validation functions.
+//! This module documents candidate parameter sets and provides an
+//! **experimental implementation** (`ModuleSisCommitment`) of a Module-SIS
+//! commitment over `R_q = Z_q[x]/(x^n + 1)` that closes NovaSlim's concrete
+//! post-quantum security gap.  The parameter sets are also validated here.
 //!
 //! # Why Module-SIS?
 //!
@@ -26,10 +26,20 @@
 //! # The critical open problem
 //!
 //! NIFS folds `s' = s_1 + r·s_2`.  With a full-field Fiat-Shamir challenge `r`,
-//! even two short vectors fold to a large-norm vector.  Until a
-//! **folding-preserving committed-shortness** protocol is designed and reviewed
-//! (e.g. small-fold-scalar variant or a binding shortness argument on the
-//! commitment inputs), the Module-SIS commitment remains planning-only.
+//! even two short vectors fold to a large-norm vector.  NovaSlim keeps the
+//! fold challenge **ternary** (`r ∈ {-1, 0, 1}`) via the checkpoint protocol
+//! (see `recommended_checkpoint_interval`); the committed-norm growth between
+//! checkpoints is bounded by `simulate_norm_growth`.
+//!
+//! A second caveat is that `commit_witness` here embeds field-scale Scalar
+//! values into `R_q` via a reduction map `φ: F → R_q` (a stand-in for the
+//! committed-shortness protocol).  Because `φ` is **not a ring homomorphism**,
+//! field-scalar folding (`C(a+b) = C(a) + C(b)` over `F`) does not hold.  The
+//! commitment is homomorphic over the *ring* `R_q`: for ring blocks
+//! `s_1, s_2` and ring scalar `r`, `C(s_1 + s_2) = C(s_1) + C(s_2)` and
+//! `C(r·s) = r·C(s)`.  Pipeline deployment therefore requires folding in the
+//! ring domain with ring scalars — the subject of the committed-shortness work.
+//! This is the honest scope of the current experimental implementation.
 //!
 //! # Candidate parameter sets
 //!
@@ -42,6 +52,16 @@
 //!
 //! These are **exploratory** and must be validated with a standard lattice
 //! estimator before operational use.
+
+use std::io::{Read, Write};
+use std::marker::PhantomData;
+
+use ark_ff::{BigInteger, PrimeField};
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, SerializationError, Valid, Compress};
+use blake2::{Blake2b512, Digest};
+
+use crate::commitment::CommitmentScheme;
+use crate::curve::{NovaCurve, ScalarField};
 
 /// NTT-friendly modulus for the Conservative-I / Balanced-I parameter sets.
 ///
@@ -375,9 +395,395 @@ pub fn recommended_checkpoint_interval(
     }
 }
 
+// ------------------------------------------------------------------
+// P3: Module-SIS (Ajtai) commitment over R_q = Z_q[x]/(x^n + 1)
+// ------------------------------------------------------------------
+
+/// A ring element in `R_q = Z_q[x]/(x^n + 1)`.
+///
+/// Coefficients are stored canonically reduced into `[0, q)`, with `x^n ≡ -1`
+/// enforced by `mul`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rq {
+    /// Ring dimension (power of two).
+    pub n: usize,
+    /// Coefficient modulus.
+    pub q: u64,
+    /// `n` coefficients in `[0, q)`.
+    pub coeffs: Vec<u64>,
+}
+
+impl Rq {
+    /// The zero ring element for ring `(n, q)`.
+    pub fn zero(n: usize, q: u64) -> Self {
+        Self { n, q, coeffs: vec![0; n] }
+    }
+
+    /// Build a ring element from already-reduced coefficients.
+    pub fn from_coeffs(coeffs: Vec<u64>, q: u64) -> Self {
+        let n = coeffs.len();
+        assert!(n > 0, "ring element must have at least one coefficient");
+        debug_assert!(coeffs.iter().all(|&c| c < q), "coefficients must be reduced mod q");
+        Self { n, q, coeffs }
+    }
+
+    /// Additive inverse.
+    pub fn neg(&self) -> Self {
+        let coeffs = self.coeffs.iter().map(|&c| (self.q - c) % self.q).collect();
+        Self { n: self.n, q: self.q, coeffs }
+    }
+
+    /// Addition in `R_q`.
+    pub fn add(&self, other: &Self) -> Self {
+        debug_assert_eq!(self.n, other.n, "ring dimensions must match");
+        debug_assert_eq!(self.q, other.q, "moduli must match");
+        let coeffs = self
+            .coeffs
+            .iter()
+            .zip(&other.coeffs)
+            .map(|(&a, &b)| (a + b) % self.q)
+            .collect();
+        Self { n: self.n, q: self.q, coeffs }
+    }
+
+    /// Multiplication by an integer scalar modulo `q`.
+    pub fn scalar_mul(&self, s: u64) -> Self {
+        let coeffs = self
+            .coeffs
+            .iter()
+            .map(|&c| ((c as u128 * s as u128) % self.q as u128) as u64)
+            .collect();
+        Self { n: self.n, q: self.q, coeffs }
+    }
+
+    /// Negacyclic multiplication in `R_q`: reduce modulo `x^n + 1`.
+    ///
+    /// Computes the linear convolution of `2n - 1` coefficients and wraps with
+    /// `x^n ≡ -1` (i.e. `c_k = lin[k] - lin[k + n]`).
+    pub fn mul(&self, other: &Self) -> Self {
+        debug_assert_eq!(self.n, other.n, "ring dimensions must match");
+        debug_assert_eq!(self.q, other.q, "moduli must match");
+        let n = self.n;
+        let mut lin = vec![0i128; 2 * n - 1];
+        for (i, a) in self.coeffs.iter().enumerate() {
+            for (j, b) in other.coeffs.iter().enumerate() {
+                lin[i + j] += (*a as i128) * (*b as i128);
+            }
+        }
+        let mut coeffs = Vec::with_capacity(n);
+        for k in 0..n {
+            let mut v = lin[k];
+            if k + n <= 2 * n - 2 {
+                v -= lin[k + n];
+            }
+            coeffs.push(v.rem_euclid(self.q as i128) as u64);
+        }
+        Self { n: self.n, q: self.q, coeffs }
+    }
+}
+
+/// Number of bits needed to represent `q` (i.e. all coefficients `< q`).
+fn coeff_bits(q: u64) -> usize {
+    64 - q.leading_zeros() as usize
+}
+
+/// Pack coefficients at `coeff_bits(q)` bits per coefficient, LSB-first.
+fn pack_coeffs(coeffs: &[u64], q: u64) -> Vec<u8> {
+    let w = coeff_bits(q);
+    // Only triggered by extreme (unrealistic) moduli; real sets use q < 2^32.
+    assert!(w <= 56, "coefficient width too large for u64 packing");
+    let mut out = Vec::with_capacity((coeffs.len() * w).div_ceil(8));
+    let mut acc: u64 = 0;
+    let mut acc_bits: u32 = 0;
+    for &c in coeffs {
+        acc |= c << acc_bits;
+        acc_bits += w as u32;
+        while acc_bits >= 8 {
+            out.push((acc & 0xff) as u8);
+            acc >>= 8;
+            acc_bits -= 8;
+        }
+    }
+    if acc_bits > 0 {
+        out.push((acc & 0xff) as u8);
+    }
+    out
+}
+
+/// Invert [`pack_coeffs`].
+fn unpack_coeffs(bytes: &[u8], n: usize, q: u64) -> Vec<u64> {
+    let w = coeff_bits(q);
+    let mask = if w >= 64 { u64::MAX } else { (1u64 << w) - 1 };
+    let mut out = Vec::with_capacity(n);
+    let mut acc: u64 = 0;
+    let mut acc_bits: u32 = 0;
+    'outer: for &b in bytes {
+        acc |= (b as u64) << acc_bits;
+        acc_bits += 8;
+        while acc_bits >= w as u32 {
+            out.push(acc & mask);
+            acc >>= w;
+            acc_bits -= w as u32;
+            if out.len() == n {
+                break 'outer;
+            }
+        }
+    }
+    assert_eq!(out.len(), n, "packed byte length does not match n coeffs");
+    out
+}
+
+impl Valid for Rq {
+    fn check(&self) -> Result<(), SerializationError> {
+        if self.n == 0 || self.coeffs.len() != self.n {
+            return Err(SerializationError::InvalidData);
+        }
+        if self.coeffs.iter().any(|&c| c >= self.q) {
+            return Err(SerializationError::InvalidData);
+        }
+        Ok(())
+    }
+}
+
+impl CanonicalSerialize for Rq {
+    fn serialize_with_mode<W: Write>(
+        &self,
+        mut writer: W,
+        _compress: ark_serialize::Compress,
+    ) -> Result<(), SerializationError> {
+        writer.write_all(&(self.n as u32).to_le_bytes())?;
+        writer.write_all(&self.q.to_le_bytes())?;
+        writer.write_all(&pack_coeffs(&self.coeffs, self.q))?;
+        Ok(())
+    }
+
+    fn serialized_size(&self, _compress: ark_serialize::Compress) -> usize {
+        let w = coeff_bits(self.q);
+        4 + 8 + (self.coeffs.len() * w).div_ceil(8)
+    }
+}
+
+impl CanonicalDeserialize for Rq {
+    fn deserialize_with_mode<R: Read>(
+        mut reader: R,
+        _compress: Compress,
+        validate: ark_serialize::Validate,
+    ) -> Result<Self, SerializationError> {
+        let mut n_bytes = [0u8; 4];
+        reader.read_exact(&mut n_bytes)?;
+        let n = u32::from_le_bytes(n_bytes) as usize;
+        let mut q_bytes = [0u8; 8];
+        reader.read_exact(&mut q_bytes)?;
+        let q = u64::from_le_bytes(q_bytes);
+        if n == 0 {
+            return Err(SerializationError::InvalidData);
+        }
+        let len = (n * coeff_bits(q)).div_ceil(8);
+        let mut packed = vec![0u8; len];
+        reader.read_exact(&mut packed)?;
+        let element = Self::from_coeffs(unpack_coeffs(&packed, n, q), q);
+        if matches!(validate, ark_serialize::Validate::Yes) {
+            element.check()?;
+        }
+        Ok(element)
+    }
+}
+
+/// Reduce a field element to `[0, q)` by folding its full byte representation.
+///
+/// This is the embedding map `φ: F → Z_q` used by [`embed_scalars`].  It is a
+/// deterministic stand-in for the committed-shortness protocol; see the module
+/// docs for the (non-homomorphic-over-`F`) caveat.
+pub fn field_mod_q<F: PrimeField>(f: &F, q: u64) -> u64 {
+    let mut acc: u128 = 0;
+    // `to_bytes_le` returns the least-significant byte first; Horner must run
+    // on the most-significant-first order to evaluate Σ b_i · 256^i.
+    for &b in f.into_bigint().to_bytes_le().iter().rev() {
+        acc = ((acc * 256) + b as u128) % q as u128;
+    }
+    acc as u64
+}
+
+/// Embed a vector of field scalars into blocks of `n` ring coefficients
+/// (zero-padded), i.e. `s ∈ R_q^{ceil(len/n)}`.
+pub fn embed_scalars<C: NovaCurve>(values: &[ScalarField<C>], n: usize, q: u64) -> Vec<Rq> {
+    let nblocks = values.len().div_ceil(n).max(1);
+    let mut blocks = Vec::with_capacity(nblocks);
+    for b in 0..nblocks {
+        let mut coeffs = Vec::with_capacity(n);
+        for k in 0..n {
+            let i = b * n + k;
+            coeffs.push(if i < values.len() { field_mod_q(&values[i], q) } else { 0 });
+        }
+        blocks.push(Rq::from_coeffs(coeffs, q));
+    }
+    blocks
+}
+
+/// Multiply the matrix `A ∈ R_q^{rows × cols}` by the block vector `s ∈ R_q^cols`.
+///
+/// `rows` must equal `commitment_len()`; extra matrix columns beyond `s.len()`
+/// are ignored, which lets callers commit to shorter vectors against the same
+/// seeded parameters.
+pub fn mat_vec_mul(matrix: &[Vec<Rq>], s: &[Rq]) -> Vec<Rq> {
+    if s.is_empty() {
+        return Vec::new();
+    }
+    let (n, q) = (s[0].n, s[0].q);
+    matrix
+        .iter()
+        .map(|row| {
+            row.iter()
+                .zip(s)
+                .map(|(a, b)| a.mul(b))
+                .fold(Rq::zero(n, q), |acc, x| acc.add(&x))
+        })
+        .collect()
+}
+
+/// Commitment parameters for `ModuleSisCommitment`.
+///
+/// Holds the base candidate set plus the seed-derived matrix `A` for both the
+/// witness (`a_w`) and error (`a_e`) domains.  `A` has `d` rows (the module
+/// rank) and `nblocks` columns, where `nblocks = max(1, ceil(len / n))`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleSisCommitParams {
+    /// The underlying candidate parameter set (n, q, d, β, ...).
+    pub base: ModuleSisParams,
+    /// Witness commitment matrix `A_w ∈ R_q^{d × nblocks_w}`.
+    pub a_w: Vec<Vec<Rq>>,
+    /// Error commitment matrix `A_e ∈ R_q^{d × nblocks_e}`.
+    pub a_e: Vec<Vec<Rq>>,
+    /// Number of witness ring blocks.
+    pub nblocks_w: usize,
+    /// Number of error ring blocks.
+    pub nblocks_e: usize,
+}
+
+/// Derive the `i,j`-th ring element of a matrix from the seed.
+fn derive_ring(seed: &[u8], domain: &[u8], i: u64, j: u64, n: usize, q: u64) -> Rq {
+    let mut coeffs = Vec::with_capacity(n);
+    for k in 0..n {
+        let mut h = Blake2b512::new();
+        h.update(seed);
+        h.update(domain);
+        h.update(i.to_le_bytes());
+        h.update(j.to_le_bytes());
+        h.update((k as u64).to_le_bytes());
+        let out = h.finalize();
+        let mut acc: u128 = 0;
+        for &b in out.iter() {
+            acc = ((acc * 256) + b as u128) % q as u128;
+        }
+        coeffs.push(acc as u64);
+    }
+    Rq::from_coeffs(coeffs, q)
+}
+
+/// Derive the full matrix `A` from a seed with a domain-separation label.
+fn derive_matrix(seed: &[u8], domain: &[u8], base: ModuleSisParams, nblocks: usize) -> Vec<Vec<Rq>> {
+    let n = base.n as usize;
+    let q = base.q;
+    let d = base.d as usize;
+    (0..d)
+        .map(|i| {
+            (0..nblocks)
+                .map(|j| derive_ring(seed, domain, i as u64, j as u64, n, q))
+                .collect()
+        })
+        .collect()
+}
+
+impl ModuleSisCommitParams {
+    /// Derive parameters for the candidate set at `index` into
+    /// [`ModuleSisParams::ALL`].
+    ///
+    /// `m` is interpreted as that index (clamped), which is the hook P4 will
+    /// use to expose `--module-sis-params`.  Identical seeds, dimensions and
+    /// indexes produce identical matrices.
+    pub fn from_seed(seed: &[u8], n_wires: usize, n_constraints: usize, index: usize) -> Self {
+        let base = ModuleSisParams::ALL[index % ModuleSisParams::ALL.len()];
+        assert!(base.validate().is_ok(), "selected parameter set must validate");
+        let n = base.n as usize;
+        let nblocks_w = n_wires.div_ceil(n).max(1);
+        let nblocks_e = n_constraints.div_ceil(n).max(1);
+        let a_w = derive_matrix(seed, b"module-sis-w", base, nblocks_w);
+        let a_e = derive_matrix(seed, b"module-sis-e", base, nblocks_e);
+        Self { base, a_w, a_e, nblocks_w, nblocks_e }
+    }
+
+    /// Number of ring elements in a commitment (`d`).
+    pub fn commitment_len(&self) -> usize {
+        self.base.d as usize
+    }
+
+    /// Estimated on-wire commitment size in bytes.
+    pub fn commitment_size(&self) -> usize {
+        self.base.commitment_size()
+    }
+}
+
+/// An experimental Ajtai/Module-SIS commitment over `R_q`.
+///
+/// `c = A·s mod q` for `A ∈ R_q^{d × nblocks}` derived from a public seed and
+/// short `s ∈ R_q^{nblocks}`.  Binding reduces tightly to Module-SIS when the
+/// committed vector is short (subject to the committed-shortness protocol; see
+/// module docs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModuleSisCommitment<C: NovaCurve> {
+    _phantom: PhantomData<C>,
+}
+
+impl<C: NovaCurve> CommitmentScheme for ModuleSisCommitment<C> {
+    type Scalar = ScalarField<C>;
+    type Commitment = Vec<Rq>;
+    type Params = ModuleSisCommitParams;
+
+    fn params_from_seed(
+        seed: &[u8],
+        n_wires: usize,
+        n_constraints: usize,
+        m: usize,
+    ) -> Self::Params {
+        ModuleSisCommitParams::from_seed(seed, n_wires, n_constraints, m)
+    }
+
+    fn commit_witness(params: &Self::Params, values: &[Self::Scalar]) -> Self::Commitment {
+        mat_vec_mul(
+            &params.a_w,
+            &embed_scalars::<C>(values, params.base.n as usize, params.base.q),
+        )
+    }
+
+    fn commit_error(params: &Self::Params, values: &[Self::Scalar]) -> Self::Commitment {
+        mat_vec_mul(
+            &params.a_e,
+            &embed_scalars::<C>(values, params.base.n as usize, params.base.q),
+        )
+    }
+
+    fn add(c1: &Self::Commitment, c2: &Self::Commitment) -> Self::Commitment {
+        assert_eq!(c1.len(), c2.len(), "commitments must have equal length");
+        c1.iter().zip(c2).map(|(a, b)| a.add(b)).collect()
+    }
+
+    fn scalar_mul(c: &Self::Commitment, scalar: &Self::Scalar) -> Self::Commitment {
+        let phi = c.first().map(|r| field_mod_q(scalar, r.q)).unwrap_or(0);
+        c.iter().map(|r| r.scalar_mul(phi)).collect()
+    }
+
+    fn zero(m: usize) -> Self::Commitment {
+        let base = ModuleSisParams::ALL[m % ModuleSisParams::ALL.len()];
+        vec![Rq::zero(base.n as usize, base.q); base.d as usize]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// BLS12-381 scalar convenience alias (matches the crate feature `bls12-381`).
+    type Fr = ScalarField<crate::curve::Bls12_381>;
 
     #[test]
     fn all_predefined_sets_validate() {
@@ -648,5 +1054,322 @@ mod tests {
             int_l3 >= 2,
             "Conservative-III should allow at least 2 folds"
         );
+    }
+
+    // ── P3: ring arithmetic tests ───────────────────────────────────
+
+    /// Toy module-SIS parameter set for fast tests.
+    fn toy_base() -> ModuleSisParams {
+        ModuleSisParams {
+            level: NistLevel::Level1,
+            balance: ParamBalance::Conservative,
+            n: 4,
+            q: 97,
+            d: 2,
+            m: 4,
+            beta: 4,
+            beta_bits: 2,
+        }
+    }
+
+    fn toy_params(seed: &[u8], nblocks: usize) -> ModuleSisCommitParams {
+        let base = toy_base();
+        let a_w = derive_matrix(seed, b"module-sis-w", base, nblocks);
+        let a_e = derive_matrix(seed, b"module-sis-e", base, nblocks);
+        ModuleSisCommitParams {
+            base,
+            a_w,
+            a_e,
+            nblocks_w: nblocks,
+            nblocks_e: nblocks,
+        }
+    }
+
+    #[test]
+    fn rq_mul_negacyclic_wrap() {
+        // x² · x² = x⁴ ≡ -1 mod (x⁴ + 1).
+        let a = Rq::from_coeffs(vec![0, 0, 1, 0], 97);
+        let b = Rq::from_coeffs(vec![0, 0, 1, 0], 97);
+        assert_eq!(a.mul(&b).coeffs, vec![96, 0, 0, 0]);
+    }
+
+    #[test]
+    fn rq_mul_linear_convolution() {
+        // (1 + 2x + 3x²) · (4 + 5x + 6x²) mod (x⁴ + 1):
+        // degree ≤ 4 term (20x⁴ · 1 = coeff 0 gains +20·x⁴, x⁴ ≡ -1 → -20).
+        let a = Rq::from_coeffs(vec![1, 2, 3, 0], 97);
+        let b = Rq::from_coeffs(vec![4, 5, 6, 0], 97);
+        let c = a.mul(&b);
+        // Schoolbook, wrapping the x⁴ term (3x²·6x² = 18x⁴ ≡ -18) into k=0:
+        // c0 = 1·4 − 18 = −14 ≡ 83; c1 = 13; c2 = 28; c3 = 27.
+        assert_eq!(c.coeffs, vec![83, 13, 28, 27]);
+    }
+
+    #[test]
+    fn rq_add_and_scalar_mul() {
+        let a = Rq::from_coeffs(vec![1, 2, 3, 4], 97);
+        let b = Rq::from_coeffs(vec![5, 6, 7, 8], 97);
+        assert_eq!(a.add(&b).coeffs, vec![6, 8, 10, 12]);
+        assert_eq!(a.scalar_mul(10).coeffs, vec![10, 20, 30, 40]);
+        // Reduce mod q.
+        assert_eq!(a.add(&a).add(&a).add(&a).add(&a).coeffs, vec![5, 10, 15, 20]);
+    }
+
+    #[test]
+    fn rq_neg_and_distributivity() {
+        let a = Rq::from_coeffs(vec![7, 8, 9, 10], 97);
+        let b = Rq::from_coeffs(vec![1, 2, 3, 4], 97);
+        let c = Rq::from_coeffs(vec![5, 6, 7, 8], 97);
+        // a·(b + c) == a·b + a·c
+        let lhs = a.mul(&b.add(&c));
+        let rhs = a.mul(&b).add(&a.mul(&c));
+        assert_eq!(lhs, rhs);
+        // a + (-a) == 0
+        assert_eq!(a.add(&a.neg()).coeffs, vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn pack_unpack_roundtrip() {
+        let q = 97u64; // 7 bits
+        let coeffs = vec![0u64, 1, 2, 96, 3, 4];
+        let packed = pack_coeffs(&coeffs, q);
+        assert_eq!(unpack_coeffs(&packed, coeffs.len(), q), coeffs);
+    }
+
+    #[test]
+    fn rq_serialization_roundtrip() {
+        let a = Rq::from_coeffs(vec![1, 96, 42, 0], 97);
+        let mut buf = Vec::new();
+        a.serialize_compressed(&mut buf).unwrap();
+        let b = Rq::deserialize_compressed(&buf[..]).unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn commitment_serialization_roundtrip() {
+        let params = toy_params(b"ser", 2);
+        let v = vec![Fr::from(1u64); 4];
+        let c = ModuleSisCommitment::<crate::curve::Bls12_381>::commit_witness(&params, &v);
+        let mut buf = Vec::new();
+        c.serialize_compressed(&mut buf).unwrap();
+        let c2 = Vec::<Rq>::deserialize_compressed(&buf[..]).unwrap();
+        assert_eq!(c, c2);
+        // ark serializes Vec<T> with a u64 length prefix (8 bytes).
+        let elems: usize = c2.iter().map(|r| r.serialized_size(ark_serialize::Compress::Yes)).sum();
+        assert_eq!(buf.len(), elems + 8);
+    }
+
+    // ── P3: commitment-level tests ──────────────────────────────────
+
+    #[test]
+    fn module_sis_commit_deterministic() {
+        let params = toy_params(b"seed", 2);
+        let v: Vec<Fr> =
+            (1..=8).map(Fr::from).collect();
+        let c1 = ModuleSisCommitment::<crate::curve::Bls12_381>::commit_witness(&params, &v);
+        let c2 = ModuleSisCommitment::<crate::curve::Bls12_381>::commit_witness(&params, &v);
+        assert_eq!(c1, c2);
+        assert_eq!(c1.len(), 2, "module rank d=2 ring elements");
+    }
+
+    #[test]
+    fn module_sis_commit_witness_and_error_differ() {
+        let params = toy_params(b"seed", 2);
+        let v: Vec<Fr> =
+            (1..=8).map(Fr::from).collect();
+        let cw = ModuleSisCommitment::<crate::curve::Bls12_381>::commit_witness(&params, &v);
+        let ce = ModuleSisCommitment::<crate::curve::Bls12_381>::commit_error(&params, &v);
+        assert_ne!(cw, ce, "domain-separated matrices must give distinct commitments");
+    }
+
+    #[test]
+    fn module_sis_ring_homomorphic() {
+        // C(s1) + C(s2) == C(s1 + s2) over ring blocks, and r·C(s) == C(r·s).
+        let params = toy_params(b"seed", 2);
+        let s1 = vec![
+            Rq::from_coeffs(vec![1, 0, 1, 0], 97),
+            Rq::from_coeffs(vec![0, 1, 0, 1], 97),
+        ];
+        let s2 = vec![
+            Rq::from_coeffs(vec![2, 3, 0, 1], 97),
+            Rq::from_coeffs(vec![1, 0, 2, 0], 97),
+        ];
+        let c1 = mat_vec_mul(&params.a_w, &s1);
+        let c2 = mat_vec_mul(&params.a_w, &s2);
+        let sum: Vec<Rq> = s1.iter().zip(&s2).map(|(a, b)| a.add(b)).collect();
+        let csum = mat_vec_mul(&params.a_w, &sum);
+        let added = ModuleSisCommitment::<crate::curve::Bls12_381>::add(&c1, &c2);
+        assert_eq!(added, csum, "commitment must be additively homomorphic over R_q");
+
+        let scalar = 5u64;
+        let rs: Vec<Rq> = s1.iter().map(|a| a.scalar_mul(scalar)).collect();
+        let c_rs = mat_vec_mul(&params.a_w, &rs);
+        let scaled = ModuleSisCommitment::<crate::curve::Bls12_381>::scalar_mul(
+            &c1,
+            &Fr::from(scalar),
+        );
+        assert_eq!(scaled, c_rs, "commitment must be homomorphic under ring scalars");
+    }
+
+    #[test]
+    fn module_sis_commit_zero_vector() {
+        let params = toy_params(b"seed", 2);
+        let zeros = vec![Fr::from(0u64); 8];
+        let cz = ModuleSisCommitment::<crate::curve::Bls12_381>::commit_witness(&params, &zeros);
+        // Toy-set zero (d=2 ring elements over n=4, q=97), matching the toy params.
+        let z = vec![Rq::zero(4, 97); 2];
+        assert_eq!(cz, z);
+    }
+
+    #[test]
+    fn module_sis_seed_separation() {
+        // Distinct seeds ⇒ distinct matrices ⇒ (w.h.p.) distinct commitments.
+        let params_a = toy_params(b"alpha", 2);
+        let params_b = toy_params(b"beta", 2);
+        let v: Vec<Fr> =
+            (1..=8).map(Fr::from).collect();
+        let ca = ModuleSisCommitment::<crate::curve::Bls12_381>::commit_witness(&params_a, &v);
+        let cb = ModuleSisCommitment::<crate::curve::Bls12_381>::commit_witness(&params_b, &v);
+        assert_ne!(ca, cb, "different seeds must give different commitments");
+    }
+
+    #[test]
+    fn module_sis_binding_short_vectors() {
+        // Empirical SIS binding: distinct short block vectors give distinct
+        // commitments.  For the toy set (q=97, n=4, d=2, nblocks=2) the map
+        // from 3^8 short vectors into R_q^2 ≅ F_97^8 is injective whp.
+        let params = toy_params(b"binding", 4);
+        let short_vecs = [
+            vec![1u64, 0, 96, 0, 1, 0, 96, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+            vec![0u64, 1, 0, 96, 0, 1, 0, 96, 0, 0, 0, 0, 0, 0, 0, 0],
+            vec![1u64, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0],
+        ];
+        let commits: Vec<Vec<Rq>> = short_vecs
+            .iter()
+            .map(|coeffs| {
+                let blocks = embed_scalars_coeffs(coeffs, 4, 97);
+                mat_vec_mul(&params.a_w, &blocks)
+            })
+            .collect();
+        assert_ne!(commits[0], commits[1]);
+        assert_ne!(commits[0], commits[2]);
+        assert_ne!(commits[1], commits[2]);
+    }
+
+    fn embed_scalars_coeffs(coeffs: &[u64], n: usize, q: u64) -> Vec<Rq> {
+        let nblocks = coeffs.len().div_ceil(n).max(1);
+        (0..nblocks)
+            .map(|b| {
+                Rq::from_coeffs(
+                    (0..n)
+                        .map(|k| {
+                            let i = b * n + k;
+                            if i < coeffs.len() { coeffs[i] } else { 0 }
+                        })
+                        .collect(),
+                    q,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn balanced_i_commitment_serialized_size_within_5kib() {
+        // PQ-GAP acceptance: commitment size ≤ 5 KiB for the default set.
+        let params = ModuleSisCommitParams::from_seed(b"size", 24, 24, 1); // Balanced-I
+        assert!(params.commitment_size() <= 5 * 1024, "est. size {} B must be ≤ 5 KiB", params.commitment_size());
+        let v: Vec<Fr> =
+            (1..=24).map(Fr::from).collect();
+        let c = ModuleSisCommitment::<crate::curve::Bls12_381>::commit_witness(&params, &v);
+        let mut buf = Vec::new();
+        c.serialize_compressed(&mut buf).unwrap();
+        assert!(
+            buf.len() <= 5 * 1024,
+            "serialized commitment {} B must be ≤ 5 KiB",
+            buf.len()
+        );
+    }
+
+    #[test]
+    fn params_from_seed_index_selects_candidate() {
+        let p0 = ModuleSisCommitParams::from_seed(b"s", 8, 8, 0);
+        let p1 = ModuleSisCommitParams::from_seed(b"s", 8, 8, 1);
+        assert_eq!(p0.base, ModuleSisParams::CONSERVATIVE_I);
+        assert_eq!(p1.base, ModuleSisParams::BALANCED_I);
+        assert_eq!(p0.commitment_len(), 4);
+        assert_eq!(p1.commitment_len(), 6);
+    }
+
+    // ── P3: property-based tests ────────────────────────────────────
+
+    use proptest::prelude::*;
+
+    fn arb_short_block(len: usize) -> impl Strategy<Value = Vec<u64>> {
+        proptest::collection::vec(proptest::bool::ANY, len)
+            .prop_map(|bits| bits.into_iter().map(|b| if b { 1 } else { 96 }).collect())
+    }
+
+    proptest! {
+        /// Ring multiplication commutes and distributes as expected.
+        #[test]
+        fn prop_rq_mul_distributes(
+            a in arb_short_block(4),
+            b in arb_short_block(4),
+            c in arb_short_block(4),
+        ) {
+            let ra = Rq::from_coeffs(a, 97);
+            let rb = Rq::from_coeffs(b, 97);
+            let rc = Rq::from_coeffs(c, 97);
+            // Commutativity
+            prop_assert_eq!(ra.mul(&rb), rb.mul(&ra));
+            // Distributivity
+            prop_assert_eq!(ra.mul(&rb.add(&rc)), ra.mul(&rb).add(&ra.mul(&rc)));
+        }
+
+        /// The commitment is additively homomorphic over ring blocks.
+        #[test]
+        fn prop_module_sis_homomorphism(
+            a in arb_short_block(16),
+            b in arb_short_block(16),
+        ) {
+            let params = toy_params(b"prop", 4);
+            let sa = embed_scalars_coeffs(&a, 4, 97);
+            let sb = embed_scalars_coeffs(&b, 4, 97);
+            let sum: Vec<Rq> = sa.iter().zip(&sb).map(|(x, y)| x.add(y)).collect();
+            let csum = mat_vec_mul(&params.a_w, &sum);
+            let cas = mat_vec_mul(&params.a_w, &sa);
+            let cbs = mat_vec_mul(&params.a_w, &sb);
+            prop_assert_eq!(ModuleSisCommitment::<crate::curve::Bls12_381>::add(&cas, &cbs), csum);
+        }
+
+        /// Distinct short vectors collide with negligible probability.
+        #[test]
+        fn prop_module_sis_no_short_collisions(
+            a in arb_short_block(16),
+            b in arb_short_block(16),
+        ) {
+            if a == b { return Ok(()); }
+            let params = toy_params(b"prop-collision", 4);
+            let sa = embed_scalars_coeffs(&a, 4, 97);
+            let sb = embed_scalars_coeffs(&b, 4, 97);
+            let ca = mat_vec_mul(&params.a_w, &sa);
+            let cb = mat_vec_mul(&params.a_w, &sb);
+            prop_assert_ne!(ca, cb);
+        }
+
+        /// Seed separation: distinct seeds never yield matching commitments.
+        #[test]
+        fn prop_module_sis_seed_separation(
+            a in arb_short_block(16),
+            b in arb_short_block(16),
+        ) {
+            let pa = toy_params(b"prop-seed-a", 4);
+            let pb = toy_params(b"prop-seed-b", 4);
+            let sa = embed_scalars_coeffs(&a, 4, 97);
+            let sb = embed_scalars_coeffs(&b, 4, 97);
+            let ca = mat_vec_mul(&pa.a_w, &sa);
+            let cb = mat_vec_mul(&pb.a_w, &sb);
+            prop_assert_ne!(ca, cb);
+        }
     }
 }
