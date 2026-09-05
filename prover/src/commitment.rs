@@ -599,7 +599,11 @@ mod tests {
         }
 
         /// Property: distinct seeds produce distinct commitments for the
-        /// same input (seed separation).
+        /// same non-zero input (seed separation).
+        ///
+        /// Note: if `v` is the all-zero vector, `A * v = 0` for any matrix `A`,
+        /// so the commitment is identically zero regardless of seed.  This is
+        /// expected and correct; we exclude the all-zero case from the test.
         #[test]
         fn prop_hash_commit_seed_separation(
             v in arb_fr_vec(8),
@@ -607,6 +611,7 @@ mod tests {
             seed_b in proptest::collection::vec(0u8..255, 1..32),
         ) {
             prop_assume!(seed_a != seed_b);
+            prop_assume!(!v.iter().all(|x| *x == Fr::zero()));
             let len = v.len();
             let pa = HashParams::<Bls12_381>::from_seed(&seed_a, len, len, HASH_OUTPUT_DIM);
             let pb = HashParams::<Bls12_381>::from_seed(&seed_b, len, len, HASH_OUTPUT_DIM);
