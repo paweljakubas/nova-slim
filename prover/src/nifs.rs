@@ -11,7 +11,7 @@
 //! parameters are derived deterministically from a fixed seed — transparent,
 //! no trusted setup.
 
-use ark_ff::{One, PrimeField, Zero};
+use ark_ff::{BigInteger, One, PrimeField, Zero};
 use ark_serialize::CanonicalSerialize;
 use blake2::{Blake2b512, Digest};
 use rayon::prelude::*;
@@ -159,6 +159,28 @@ pub fn small_fold_challenge<CS: CommitmentScheme>(
     }
 }
 
+/// A checkpoint records the state after a batch fold.
+///
+/// Checkpoints are used in the batch-then-checkpoint protocol (P2b):
+/// after folding a batch of instances with small challenges, the prover
+/// measures the accumulator witness/error infinity-norm and records it.
+/// If the norm exceeds the SIS bound, the fold aborts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckpointEntry {
+    /// Index of the first step in this batch (inclusive).
+    pub start_step: usize,
+    /// Index of the last step in this batch (exclusive).
+    pub end_step: usize,
+    /// Number of challenges used in this batch (= end_step - start_step).
+    pub n_challenges: usize,
+    /// Measured infinity-norm of the folded witness (in bigint magnitude).
+    pub witness_norm: Vec<u8>,
+    /// Measured infinity-norm of the folded error (in bigint magnitude).
+    pub error_norm: Vec<u8>,
+    /// Whether the checkpoint passed (norms within bound).
+    pub passed: bool,
+}
+
 /// Batch-fold `k` instances into one accumulator using `k-1` small challenges.
 ///
 /// `instances[0]` is the initial accumulator; `instances[1..]` are the
@@ -219,6 +241,108 @@ pub fn batch_fold<CS: CommitmentScheme>(
     }
 
     Ok((acc_u, acc_w, challenges, cross_commits))
+}
+
+/// Batch-fold with periodic norm-reset checkpoints.
+///
+/// Folds `n_instances` in batches of `batch_size`, checking the
+/// accumulator witness/error infinity-norm after each batch.
+/// Returns the final instance, witness, and checkpoint log.
+///
+/// `bound_bits` is the maximum allowed bit-width of any coordinate.
+/// If a checkpoint fails, the function returns an error.
+pub fn batch_fold_with_checkpoints<CS: CommitmentScheme>(
+    params: &CS::Params,
+    l: &[Vec<(u32, CS::Scalar)>],
+    r: &[Vec<(u32, CS::Scalar)>],
+    o: &[Vec<(u32, CS::Scalar)>],
+    instances: &[RelaxedR1csInstance<CS>],
+    witnesses: &[RelaxedR1csWitness<CS>],
+    initial_hash: &[u8],
+    batch_size: usize,
+    bound_bits: u32,
+) -> Result<
+    (
+        RelaxedR1csInstance<CS>,
+        RelaxedR1csWitness<CS>,
+        Vec<CheckpointEntry>,
+    ),
+    Box<dyn std::error::Error>,
+>
+where
+    CS::Scalar: ark_ff::PrimeField,
+{
+    if instances.len() != witnesses.len() {
+        return Err(
+            "batch_fold_with_checkpoints: instances and witnesses length mismatch".into(),
+        );
+    }
+    if instances.is_empty() {
+        return Err("batch_fold_with_checkpoints: no instances".into());
+    }
+    if batch_size == 0 {
+        return Err("batch_fold_with_checkpoints: batch_size must be > 0".into());
+    }
+
+    let mut acc_u = instances[0].clone();
+    let mut acc_w = witnesses[0].clone();
+    let mut hash = initial_hash.to_vec();
+    let mut checkpoints = Vec::new();
+    let mut idx = 1;
+
+    while idx < instances.len() {
+        let end = (idx + batch_size).min(instances.len());
+        let batch_instances = &instances[idx - 1..end];
+        let batch_witnesses = &witnesses[idx - 1..end];
+
+        let (new_u, new_w, _challenges, _crosses) = batch_fold::<CS>(
+            params, l, r, o, batch_instances, batch_witnesses, &hash,
+        )?;
+
+        // Measure norms.
+        let w_norm = crate::norm::measure_inf_norm(&new_w.w);
+        let e_norm = crate::norm::measure_inf_norm(&new_w.e);
+        let w_pass = crate::norm::fits_bits(&new_w.w, bound_bits);
+        let e_pass = crate::norm::fits_bits(&new_w.e, bound_bits);
+
+        let checkpoint = CheckpointEntry {
+            start_step: idx - 1,
+            end_step: end,
+            n_challenges: end - idx,
+            witness_norm: w_norm.to_bytes_le(),
+            error_norm: e_norm.to_bytes_le(),
+            passed: w_pass && e_pass,
+        };
+
+        if !checkpoint.passed {
+            return Err(format!(
+                "checkpoint failed at steps {}-{}: witness_norm bits={}, error_norm bits={}, bound={}",
+                checkpoint.start_step,
+                checkpoint.end_step,
+                crate::norm::magnitude_bits(&w_norm),
+                crate::norm::magnitude_bits(&e_norm),
+                bound_bits,
+            )
+            .into());
+        }
+
+        checkpoints.push(checkpoint);
+        acc_u = new_u;
+        acc_w = new_w;
+
+        // Advance hash past the batch.
+        hash = {
+            let mut h = Blake2b512::new();
+            h.update(&hash);
+            h.update(b"checkpoint");
+            h.update((idx as u64).to_le_bytes());
+            h.finalize().to_vec()
+        };
+
+        idx = end;
+    }
+
+    Ok((acc_u, acc_w, checkpoints))
 }
 
 /// Fold two Relaxed-R1CS instances (and their witnesses) into one.
@@ -1021,6 +1145,332 @@ mod tests {
             prop_assert_eq!(w1, w2);
             prop_assert_eq!(c1, c2);
             prop_assert_eq!(x1, x2);
+        }
+    }
+
+    // ── Checkpoint tests (P2b-continued) ──────────────────────────────
+
+    #[test]
+    fn checkpoint_basic_valid_batch_passes() {
+        let k = 4;
+        let n_wires = 1 + 3 * k;
+        let (l, r, o) = chain_r1cs(k);
+        let params =
+            crate::commitment::PedersenParams::<Bls12_381>::from_seed(b"ckpt", n_wires, k);
+        let mut rng = rand::thread_rng();
+
+        let mut instances = Vec::new();
+        let mut witnesses = Vec::new();
+        for _ in 0..5 {
+            let w = random_satisfying_witness(k, &mut rng);
+            let (u, w_r) = make_instance_chain(&params, &w, k);
+            instances.push(u);
+            witnesses.push(w_r);
+        }
+
+        let (folded_u, folded_w, checkpoints) =
+            batch_fold_with_checkpoints::<PedersenCommitment<Bls12_381>>(
+                &params, &l, &r, &o, &instances, &witnesses, b"ckpt-acc", 3, 256,
+            )
+            .expect("checkpoint should pass for valid instances");
+
+        assert_valid(&l, &r, &o, &params, &folded_u, &folded_w);
+        assert!(!checkpoints.is_empty(), "should have at least one checkpoint");
+        for ck in &checkpoints {
+            assert!(ck.passed, "all checkpoints should pass");
+        }
+    }
+
+    #[test]
+    fn checkpoint_golden_vector_reproducible() {
+        let k = 2;
+        let n_wires = 1 + 3 * k;
+        let (l, r, o) = chain_r1cs(k);
+        let params =
+            crate::commitment::PedersenParams::<Bls12_381>::from_seed(b"golden-ckpt", n_wires, k);
+
+        let w0 = vec![
+            Fr::from(1u64), Fr::from(2u64), Fr::from(3u64), Fr::from(6u64),
+            Fr::from(4u64), Fr::from(5u64), Fr::from(20u64),
+        ];
+        let w1 = vec![
+            Fr::from(1u64), Fr::from(7u64), Fr::from(8u64), Fr::from(56u64),
+            Fr::from(9u64), Fr::from(10u64), Fr::from(90u64),
+        ];
+        let w2 = vec![
+            Fr::from(1u64), Fr::from(11u64), Fr::from(12u64), Fr::from(132u64),
+            Fr::from(13u64), Fr::from(14u64), Fr::from(182u64),
+        ];
+
+        let (u0, w0_r) = make_instance_chain(&params, &w0, k);
+        let (u1, w1_r) = make_instance_chain(&params, &w1, k);
+        let (u2, w2_r) = make_instance_chain(&params, &w2, k);
+
+        let (folded_u, _folded_w, checkpoints) =
+            batch_fold_with_checkpoints::<PedersenCommitment<Bls12_381>>(
+                &params, &l, &r, &o,
+                &[u0.clone(), u1.clone(), u2.clone()],
+                &[w0_r, w1_r, w2_r],
+                b"golden-ckpt-acc", 2, 256,
+            )
+            .unwrap();
+
+        // Determinism: same inputs → same checkpoints.
+        let (folded_u2, _, checkpoints2) =
+            batch_fold_with_checkpoints::<PedersenCommitment<Bls12_381>>(
+                &params, &l, &r, &o,
+                &[u0, u1, u2],
+                &[
+                    make_instance_chain(&params, &w0, k).1,
+                    make_instance_chain(&params, &w1, k).1,
+                    make_instance_chain(&params, &w2, k).1,
+                ],
+                b"golden-ckpt-acc", 2, 256,
+            )
+            .unwrap();
+
+        assert_eq!(folded_u, folded_u2);
+        assert_eq!(checkpoints.len(), checkpoints2.len());
+        for (a, b) in checkpoints.iter().zip(&checkpoints2) {
+            assert_eq!(a.start_step, b.start_step);
+            assert_eq!(a.end_step, b.end_step);
+            assert_eq!(a.passed, b.passed);
+        }
+    }
+
+    #[test]
+    fn checkpoint_single_instance_no_checkpoints() {
+        let k = 4;
+        let n_wires = 1 + 3 * k;
+        let (l, r, o) = chain_r1cs(k);
+        let params =
+            crate::commitment::PedersenParams::<Bls12_381>::from_seed(b"ckpt-1", n_wires, k);
+        let mut rng = rand::thread_rng();
+
+        let w = random_satisfying_witness(k, &mut rng);
+        let (u, w_r) = make_instance_chain(&params, &w, k);
+
+        let (_folded_u, _folded_w, checkpoints) =
+            batch_fold_with_checkpoints::<PedersenCommitment<Bls12_381>>(
+                &params, &l, &r, &o, &[u], &[w_r], b"ckpt-acc", 3, 256,
+            )
+            .unwrap();
+
+        assert!(checkpoints.is_empty(), "single instance → no folds → no checkpoints");
+    }
+
+    #[test]
+    fn checkpoint_batch_size_1_produces_n_minus_1_checkpoints() {
+        let k = 4;
+        let n_wires = 1 + 3 * k;
+        let (l, r, o) = chain_r1cs(k);
+        let params =
+            crate::commitment::PedersenParams::<Bls12_381>::from_seed(b"ckpt-bs1", n_wires, k);
+        let mut rng = rand::thread_rng();
+
+        let mut instances = Vec::new();
+        let mut witnesses = Vec::new();
+        for _ in 0..5 {
+            let w = random_satisfying_witness(k, &mut rng);
+            let (u, w_r) = make_instance_chain(&params, &w, k);
+            instances.push(u);
+            witnesses.push(w_r);
+        }
+
+        let (_folded_u, _folded_w, checkpoints) =
+            batch_fold_with_checkpoints::<PedersenCommitment<Bls12_381>>(
+                &params, &l, &r, &o, &instances, &witnesses, b"ckpt-acc", 1, 256,
+            )
+            .unwrap();
+
+        assert_eq!(checkpoints.len(), 4, "batch_size=1, 5 instances → 4 checkpoints");
+        for (i, ck) in checkpoints.iter().enumerate() {
+            assert_eq!(ck.n_challenges, 1, "checkpoint {} should have 1 challenge", i);
+            assert!(ck.passed);
+        }
+    }
+
+    #[test]
+    fn checkpoint_batch_size_larger_than_n_instances() {
+        let k = 4;
+        let n_wires = 1 + 3 * k;
+        let (l, r, o) = chain_r1cs(k);
+        let params =
+            crate::commitment::PedersenParams::<Bls12_381>::from_seed(b"ckpt-big", n_wires, k);
+        let mut rng = rand::thread_rng();
+
+        let mut instances = Vec::new();
+        let mut witnesses = Vec::new();
+        for _ in 0..3 {
+            let w = random_satisfying_witness(k, &mut rng);
+            let (u, w_r) = make_instance_chain(&params, &w, k);
+            instances.push(u);
+            witnesses.push(w_r);
+        }
+
+        let (_folded_u, _folded_w, checkpoints) =
+            batch_fold_with_checkpoints::<PedersenCommitment<Bls12_381>>(
+                &params, &l, &r, &o, &instances, &witnesses, b"ckpt-acc", 100, 256,
+            )
+            .unwrap();
+
+        assert_eq!(checkpoints.len(), 1, "batch_size=100, 3 instances → 1 checkpoint");
+        assert_eq!(checkpoints[0].n_challenges, 2);
+        assert!(checkpoints[0].passed);
+    }
+
+    #[test]
+    fn checkpoint_rejects_empty_instances() {
+        let k = 4;
+        let n_wires = 1 + 3 * k;
+        let (l, r, o) = chain_r1cs(k);
+        let params =
+            crate::commitment::PedersenParams::<Bls12_381>::from_seed(b"ckpt-empty", n_wires, k);
+
+        let result = batch_fold_with_checkpoints::<PedersenCommitment<Bls12_381>>(
+            &params, &l, &r, &o, &[], &[], b"ckpt-acc", 3, 256,
+        );
+        assert!(result.is_err(), "empty instances should be rejected");
+    }
+
+    #[test]
+    fn checkpoint_rejects_zero_batch_size() {
+        let k = 4;
+        let n_wires = 1 + 3 * k;
+        let (l, r, o) = chain_r1cs(k);
+        let params =
+            crate::commitment::PedersenParams::<Bls12_381>::from_seed(b"ckpt-zero", n_wires, k);
+        let mut rng = rand::thread_rng();
+
+        let w = random_satisfying_witness(k, &mut rng);
+        let (u, w_r) = make_instance_chain(&params, &w, k);
+
+        let result = batch_fold_with_checkpoints::<PedersenCommitment<Bls12_381>>(
+            &params, &l, &r, &o, &[u], &[w_r], b"ckpt-acc", 0, 256,
+        );
+        assert!(result.is_err(), "batch_size=0 should be rejected");
+    }
+
+    #[test]
+    fn checkpoint_norms_grow_with_batch_size() {
+        let k = 4;
+        let n_wires = 1 + 3 * k;
+        let (l, r, o) = chain_r1cs(k);
+        let params =
+            crate::commitment::PedersenParams::<Bls12_381>::from_seed(b"ckpt-grow", n_wires, k);
+        let mut rng = rand::thread_rng();
+
+        let mut instances = Vec::new();
+        let mut witnesses = Vec::new();
+        for _ in 0..10 {
+            let w = random_satisfying_witness(k, &mut rng);
+            let (u, w_r) = make_instance_chain(&params, &w, k);
+            instances.push(u);
+            witnesses.push(w_r);
+        }
+
+        let (_, _, checkpoints_small) =
+            batch_fold_with_checkpoints::<PedersenCommitment<Bls12_381>>(
+                &params, &l, &r, &o, &instances, &witnesses, b"ckpt-acc", 2, 256,
+            )
+            .unwrap();
+
+        let (_, _, checkpoints_large) =
+            batch_fold_with_checkpoints::<PedersenCommitment<Bls12_381>>(
+                &params, &l, &r, &o, &instances, &witnesses, b"ckpt-acc", 5, 256,
+            )
+            .unwrap();
+
+        // Larger batch size → fewer checkpoints.
+        assert!(
+            checkpoints_large.len() < checkpoints_small.len(),
+            "larger batch size should produce fewer checkpoints"
+        );
+    }
+
+    // ── Checkpoint property tests (P2b-continued) ─────────────────────
+
+    proptest! {
+        /// Property: batch_fold_with_checkpoints of valid instances always
+        /// passes all checkpoints (with a generous bound).
+        #[test]
+        fn prop_checkpoint_passes_for_valid_instances(
+            k in 2usize..6,
+            n_batch in 2usize..8,
+            batch_size in 1usize..5,
+        ) {
+            let n_wires = 1 + 3 * k;
+            let (l, r, o) = chain_r1cs(k);
+            let params = crate::commitment::PedersenParams::<Bls12_381>::from_seed(
+                b"ckpt-prop", n_wires, k,
+            );
+            let mut rng = rand::thread_rng();
+
+            let mut instances = Vec::with_capacity(n_batch);
+            let mut witnesses = Vec::with_capacity(n_batch);
+            for _ in 0..n_batch {
+                let w = random_satisfying_witness(k, &mut rng);
+                let (u, w_r) = make_instance_chain(&params, &w, k);
+                instances.push(u);
+                witnesses.push(w_r);
+            }
+
+            let (folded_u, folded_w, checkpoints) =
+                batch_fold_with_checkpoints::<PedersenCommitment<Bls12_381>>(
+                    &params, &l, &r, &o, &instances, &witnesses, b"ckpt-acc",
+                    batch_size, 256,
+                )
+                .expect("valid instances should pass checkpoints");
+
+            assert_valid(&l, &r, &o, &params, &folded_u, &folded_w);
+            for ck in &checkpoints {
+                prop_assert!(ck.passed, "checkpoint {:?} should pass", ck);
+            }
+        }
+
+        /// Property: checkpoint determinism — same inputs always produce
+        /// same checkpoints.
+        #[test]
+        fn prop_checkpoint_deterministic(
+            k in 2usize..6,
+            n_batch in 2usize..8,
+            batch_size in 1usize..5,
+        ) {
+            let n_wires = 1 + 3 * k;
+            let (l, r, o) = chain_r1cs(k);
+            let params = crate::commitment::PedersenParams::<Bls12_381>::from_seed(
+                b"ckpt-det", n_wires, k,
+            );
+            let mut rng = rand::thread_rng();
+
+            let mut instances = Vec::with_capacity(n_batch);
+            let mut witnesses = Vec::with_capacity(n_batch);
+            for _ in 0..n_batch {
+                let w = random_satisfying_witness(k, &mut rng);
+                let (u, w_r) = make_instance_chain(&params, &w, k);
+                instances.push(u);
+                witnesses.push(w_r);
+            }
+
+            let (u1, w1, c1) = batch_fold_with_checkpoints::<PedersenCommitment<Bls12_381>>(
+                &params, &l, &r, &o, &instances, &witnesses, b"det-acc",
+                batch_size, 256,
+            )
+            .unwrap();
+            let (u2, w2, c2) = batch_fold_with_checkpoints::<PedersenCommitment<Bls12_381>>(
+                &params, &l, &r, &o, &instances, &witnesses, b"det-acc",
+                batch_size, 256,
+            )
+            .unwrap();
+
+            prop_assert_eq!(u1, u2);
+            prop_assert_eq!(w1, w2);
+            prop_assert_eq!(c1.len(), c2.len());
+            for (a, b) in c1.iter().zip(&c2) {
+                prop_assert_eq!(a.start_step, b.start_step);
+                prop_assert_eq!(a.end_step, b.end_step);
+                prop_assert_eq!(a.passed, b.passed);
+            }
         }
     }
 }
