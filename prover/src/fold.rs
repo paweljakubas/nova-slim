@@ -192,7 +192,7 @@ mod tests {
     /// pins the exact gap so it is not silently "fixed" by reintroducing the
     /// equality check for Module-SIS before the ring-residue fold lands.
     #[test]
-    fn module_sis_field_fold_does_not_rebind_on_coefficient_wrap() {
+    fn module_sis_default_fold_rebinds_exactly() {
         type CS = MS;
         type S = <CS as CommitmentScheme>::Scalar;
         let params = CS::params_from_seed(b"p8-rebind", 4, 1, 0);
@@ -222,11 +222,14 @@ mod tests {
         let (u3, w3, _cross) = crate::nifs::fold_with_log::<CS>(
             &params, &l, &r, &o, &u1, &w1, &u2, &w2, -S::one(), false,
         );
-        assert_ne!(
+        // fold_with_log now routes Module-SIS through fold_ring_residue
+        // (which folds as [0,q) residues), so the homomorphic commitment
+        // equals a fresh commitment of the folded residue witness — exact
+        // re-binding (`lem:ring-fold-rebinding`).
+        assert_eq!(
             u3.w_commit,
             CS::commit_witness(&params, &w3.w),
-            "folded field witness w1 − w2 wraps mod p (e.g. 2 − 7), so naive field \
-             folding cannot rebind the Module-SIS commitment; must use the ring-residue fold"
+            "fold_with_log for Module-SIS must re-bind the witness commitment exactly"
         );
     }
 

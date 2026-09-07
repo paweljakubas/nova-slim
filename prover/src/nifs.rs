@@ -522,6 +522,15 @@ pub fn fold_with_log<CS: CommitmentScheme>(
     assert_eq!(w1.e.len(), w2.e.len(), "error widths must match");
     assert_eq!(w1.e.len(), l.len(), "error length must equal n_constraints");
 
+    // Ring-residue fold: when the commitment scheme carries a ring modulus
+    // (e.g. Module-SIS with modulus q), fold everything as canonical residues
+    // mod q (`def:canonical-lift`) and compute the cross term in R_q.  This
+    // achieves exact witness re-binding (`lem:ring-fold-rebinding`) and is the
+    // W1 transport fold of `subsec:per-window-ring`.
+    if let Some(q) = CS::ring_modulus(params) {
+        return fold_ring_residue::<CS>(params, l, r, o, u1, w1, u2, w2, challenge, q, parallel);
+    }
+
     let x3: Vec<CS::Scalar> =
         u1.x.iter()
             .zip(&u2.x)
