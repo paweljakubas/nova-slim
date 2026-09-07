@@ -98,6 +98,9 @@ pub mod commitment;
 /// NIFS folding module — Relaxed-R1CS over any commitment scheme.
 pub mod nifs;
 
+/// Domain-aware folding protocol (field vs. ring-domain folds, P8).
+pub mod fold;
+
 /// Sumcheck-based constant-size compression — a sumcheck argument over the
 /// relaxed R1CS equation + HashPC commitments.
 pub mod module_sis;
