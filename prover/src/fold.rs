@@ -23,9 +23,7 @@
 //! `FIELD_HOMOMORPHIC` flag.
 
 use crate::commitment::CommitmentScheme;
-use crate::nifs::{
-    fold_challenge, small_fold_challenge, RelaxedR1csInstance, RelaxedR1csWitness,
-};
+use crate::nifs::{fold_challenge, small_fold_challenge, RelaxedR1csInstance};
 
 /// Which algebraic domain a scheme's NIFS folds run over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -84,6 +82,7 @@ mod tests {
     use super::*;
     use crate::commitment::{ModuleSisCommitment, PedersenCommitment};
     use crate::curve::Bls12_381;
+    use crate::nifs::RelaxedR1csWitness;
     use ark_ff::{One, Zero};
     use blake2::Digest;
 
@@ -244,6 +243,166 @@ mod tests {
                 "ring-domain challenge must be ternary, got {:?}",
                 r,
             );
+        }
+    }
+
+    /// The **ring-residue fold** performs exact re-binding where the naive
+    /// field fold cannot: `com(w3) == com(w1) + r̂·com(w2)` and the same for
+    /// `e3`, *including* across coefficient wraps of `w1 − w2` (the mirror of
+    /// `module_sis_field_fold_does_not_rebind_on_coefficient_wrap`, pins
+    /// `lem:ring-fold-rebinding`).
+    #[test]
+    fn ring_residue_fold_rebinds_exactly_on_coefficient_wrap() {
+        type CS = MS;
+        type S = <CS as CommitmentScheme>::Scalar;
+        let params = CS::params_from_seed(b"p8-rebind", 4, 1, 0);
+        let q = CS::ring_modulus(&params).expect("Module-SIS must report its ring modulus");
+        let l = vec![vec![(1u32, S::one())]];
+        let r = vec![vec![(2u32, S::one())]];
+        let o = vec![vec![(3u32, S::one())]];
+
+        let e = vec![S::zero()];
+        let (w1, w2) = (
+            vec![S::one(), S::from(2), S::from(3), S::from(6)],
+            vec![S::one(), S::from(7), S::from(6), S::from(42)],
+        );
+        let u1 = RelaxedR1csInstance {
+            x: w1[1..3].to_vec(),
+            u: S::one(),
+            w_commit: CS::commit_witness(&params, &w1),
+            e_commit: CS::commit_error(&params, &e),
+        };
+        let u2 = RelaxedR1csInstance {
+            x: w2[1..3].to_vec(),
+            u: S::one(),
+            w_commit: CS::commit_witness(&params, &w2),
+            e_commit: CS::commit_error(&params, &e),
+        };
+        let w1 = RelaxedR1csWitness { w: w1, e: e.clone() };
+        let w2 = RelaxedR1csWitness { w: w2, e: e };
+        let (u3, w3, _cross) = crate::nifs::fold_ring_residue::<CS>(
+            &params, &l, &r, &o, &u1, &w1, &u2, &w2, -S::one(), q, false,
+        );
+        // The folded witness here is `w1 − w2` mod q = [0, q−5, q−3, q−36];
+        // a fresh commitment of those residues equals the folded commitment.
+        assert_eq!(
+            u3.w_commit,
+            CS::commit_witness(&params, &w3.w),
+            "ring fold must re-bind the witness commitment exactly"
+        );
+        assert_eq!(
+            u3.e_commit,
+            CS::commit_error(&params, &w3.e),
+            "ring fold must re-bind the error commitment exactly"
+        );
+        // x and u are canonical residues too.
+        let expected_x = vec![
+            crate::module_sis::qsub(&S::from(2), &S::from(7), q),
+            crate::module_sis::qsub(&S::from(3), &S::from(6), q),
+        ];
+        assert_eq!(
+            u3.x,
+            expected_x,
+            "folded public input must be a residue (got {:?})",
+            u3.x
+        );
+        // u3 = (1 + (−1)·1) mod q = 0.
+        assert_eq!(u3.u, S::zero(), "folded slack must be a canonical residue");
+    }
+
+    /// The ring cross-term equals the field cross-term when no mod-`p` wrap
+    /// occurs, reduced mod `q` — i.e. ring folding is the same algebra as
+    /// field folding except that every coefficient is pinned to `[0, q)`.
+    #[test]
+    fn ring_cross_term_reduces_field_cross_term_mod_q() {
+        use crate::module_sis::qresidue;
+        type CS = MS;
+        type S = <CS as CommitmentScheme>::Scalar;
+        let params = CS::params_from_seed(b"p8-rebind", 4, 1, 0);
+        let q = CS::ring_modulus(&params).unwrap();
+        let l = vec![vec![(0u32, S::from(3))], vec![(1u32, S::from(5))]];
+        let r = vec![vec![(2u32, S::from(7))], vec![(0u32, S::from(11))]];
+        let o = vec![vec![(3u32, S::from(2))], vec![(2u32, S::from(13))]];
+        let z1: Vec<S> = vec![S::from(1), S::from(2), S::from(3), S::from(4)];
+        let z2: Vec<S> = vec![S::from(5), S::from(7), S::from(11), S::from(13)];
+        let u1 = S::from(2);
+        let u2 = S::from(3);
+
+        let field = crate::nifs::cross_term(&l, &r, &o, &z1, &z2, u1, u2);
+        let ring = crate::nifs::ring_cross_term(&l, &r, &o, &z1, &z2, u1, u2, q);
+        assert_eq!(field.len(), ring.len());
+        for (f, t) in field.iter().zip(&ring) {
+            assert_eq!(
+                qresidue(f, q),
+                *t,
+                "ring cross-term must equal the field cross-term reduced mod q"
+            );
+        }
+    }
+
+    /// Folding a chain of fresh steps with the small (ternary) challenge keeps
+    /// re-binding exact at every fold, and the folded state stays in canonical
+    /// residues `[0, q)`.
+    #[test]
+    fn ring_residue_chain_rebinds_at_every_fold() {
+        type CS = MS;
+        type S = <CS as CommitmentScheme>::Scalar;
+        let params = CS::params_from_seed(b"p8-chain", 4, 1, 0);
+        let q = CS::ring_modulus(&params).unwrap();
+        let l = vec![vec![(1u32, S::one())]];
+        let r = vec![vec![(2u32, S::one())]];
+        let o = vec![vec![(3u32, S::one())]];
+
+        fn mk<CS: CommitmentScheme>(
+            params: &CS::Params,
+            w: &[CS::Scalar],
+        ) -> (RelaxedR1csInstance<CS>, RelaxedR1csWitness<CS>) {
+            let e = vec![CS::Scalar::zero()];
+            (
+                RelaxedR1csInstance {
+                    x: w[1..3].to_vec(),
+                    u: CS::Scalar::one(),
+                    w_commit: CS::commit_witness(params, w),
+                    e_commit: CS::commit_error(params, &e),
+                },
+                RelaxedR1csWitness { w: w.to_vec(), e },
+            )
+        }
+
+        let (mut u_acc, mut w_acc) = mk::<CS>(&params, &[S::one(), S::from(2), S::from(3), S::from(6)]);
+        let mut acc: Vec<u8> = b"chain".to_vec();
+        let mut steps = [(7u64, 42u64), (11u64, 462u64), (13u64, 6006u64)];
+        let mut prev = 6u64;
+        for (a, b) in steps.iter_mut() {
+            *b = prev * *a;
+            prev = *b;
+        }
+        for (a, b) in steps.into_iter().take(2) {
+            let (u_step, w_step) = mk::<CS>(&params, &[S::one(), S::from(a), S::from(b / a), S::from(b)]);
+            let chi = <CS as FoldProtocol>::fold_challenge(&acc, &u_acc, &u_step);
+            assert!(
+                chi == -S::one() || chi == S::zero() || chi == S::one(),
+                "ring-domain challenge must be ternary"
+            );
+            let (u3, w3, _cross) = crate::nifs::fold_ring_residue::<CS>(
+                &params, &l, &r, &o, &u_acc, &w_acc, &u_step, &w_step, chi, q, false,
+            );
+            assert_eq!(
+                u3.w_commit,
+                CS::commit_witness(&params, &w3.w),
+                "fold {a}: W re-binds exactly"
+            );
+            assert_eq!(
+                u3.e_commit,
+                CS::commit_error(&params, &w3.e),
+                "fold {a}: E re-binds exactly"
+            );
+            u_acc = u3;
+            w_acc = w3;
+            let mut h = blake2::Blake2b512::new();
+            h.update(&acc);
+            h.update(crate::nifs::instance_to_bytes::<CS>(&u_acc).unwrap());
+            acc = h.finalize().to_vec();
         }
     }
 }

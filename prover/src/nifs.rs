@@ -70,7 +70,7 @@ fn sparse_eval<F: PrimeField>(m: &[Vec<(u32, F)>], z: &[F]) -> Vec<F> {
 
 /// The NIFS cross-term vector (length = n_constraints):
 /// `E_cross = (AZ1)∘(BZ2) + (AZ2)∘(BZ1) − u1·(CZ2) − u2·(CZ1)`.
-fn cross_term<F: PrimeField>(
+pub(crate) fn cross_term<F: PrimeField>(
     l: &[Vec<(u32, F)>],
     r: &[Vec<(u32, F)>],
     o: &[Vec<(u32, F)>],
@@ -110,6 +110,103 @@ pub fn cross_term_parallel<F: PrimeField>(
     (0..l.len())
         .into_par_iter()
         .map(|j| az1[j] * bz2[j] + az2[j] * bz1[j] - u1 * cz2[j] - u2 * cz1[j])
+        .collect()
+}
+
+/// Evaluate the sparse matrix `m` at the assignment `z` with **ring-residue**
+/// arithmetic: every product and sum is reduced mod `q` (`R_q` evaluation).
+///
+/// `l`/`r`/`o` coefficients and `z` are interpreted as their canonical
+/// residues in `[0, q)`; the result is again a canonical residue.
+fn sparse_eval_ring<F: PrimeField>(m: &[Vec<(u32, F)>], z: &[F], q: u64) -> Vec<F> {
+    use crate::module_sis::{qadd, qmul, qresidue};
+    m.iter()
+        .map(|row| {
+            row.iter()
+                .fold(F::zero(), |acc, &(i, v)| qadd(&acc, &qmul(&qresidue(&v, q), &z[i as usize], q), q))
+        })
+        .collect()
+}
+
+/// The NIFS cross-term vector computed **in the ring** `R_q` (all coefficients
+/// reduced mod `q`):
+/// `T_j = (AZ1∘BZ2 + AZ2∘BZ1 − u1·CZ2 − u2·CZ1) mod q`.
+///
+/// This is the cross term the ring-residue fold commits to, so the folded
+/// error commitment `Ē3 = Ē1 + r̂·Ē2 + r̂·com(T)` re-binds exactly to a fresh
+/// commitment of the ring-folded error (`lem:ring-fold-rebinding`).
+pub fn ring_cross_term<F: PrimeField>(
+    l: &[Vec<(u32, F)>],
+    r: &[Vec<(u32, F)>],
+    o: &[Vec<(u32, F)>],
+    z1: &[F],
+    z2: &[F],
+    u1: F,
+    u2: F,
+    q: u64,
+) -> Vec<F> {
+    use crate::module_sis::{qadd, qmul, qsub};
+    let az1 = sparse_eval_ring(l, z1, q);
+    let az2 = sparse_eval_ring(l, z2, q);
+    let bz1 = sparse_eval_ring(r, z1, q);
+    let bz2 = sparse_eval_ring(r, z2, q);
+    let cz1 = sparse_eval_ring(o, z1, q);
+    let cz2 = sparse_eval_ring(o, z2, q);
+    (0..l.len())
+        .map(|j| {
+            // T_j = az1·bz2 + az2·bz1 − u1·cz2 − u2·cz1   (all mod q)
+            qadd(
+                &qadd(
+                    &qmul(&az1[j], &bz2[j], q),
+                    &qmul(&az2[j], &bz1[j], q),
+                    q,
+                ),
+                &qsub(
+                    &qsub(&F::zero(), &qmul(&u1, &cz2[j], q), q),
+                    &qmul(&u2, &cz1[j], q),
+                    q,
+                ),
+                q,
+            )
+        })
+        .collect()
+}
+
+/// Parallel version of [`ring_cross_term`] (rayon).
+pub fn ring_cross_term_parallel<F: PrimeField>(
+    l: &[Vec<(u32, F)>],
+    r: &[Vec<(u32, F)>],
+    o: &[Vec<(u32, F)>],
+    z1: &[F],
+    z2: &[F],
+    u1: F,
+    u2: F,
+    q: u64,
+) -> Vec<F> {
+    use crate::module_sis::{qadd, qmul, qsub};
+    let az1 = sparse_eval_ring(l, z1, q);
+    let az2 = sparse_eval_ring(l, z2, q);
+    let bz1 = sparse_eval_ring(r, z1, q);
+    let bz2 = sparse_eval_ring(r, z2, q);
+    let cz1 = sparse_eval_ring(o, z1, q);
+    let cz2 = sparse_eval_ring(o, z2, q);
+    (0..l.len())
+        .into_par_iter()
+        .map(|j| {
+            qadd(
+                &qadd(
+                    &qmul(&az1[j], &bz2[j], q),
+                    &qmul(&az2[j], &bz1[j], q),
+                    q,
+                ),
+                &qsub(
+                    &qsub(&F::zero(), &qmul(&u1, &cz2[j], q), q),
+                    &qmul(&u2, &cz1[j], q),
+                    q,
+                ),
+                q,
+            )
+        })
         .collect()
 }
 
@@ -472,6 +569,108 @@ pub fn fold_with_log<CS: CommitmentScheme>(
     // is checked at verification time.
     debug_assert!(!CS::verifies_rebinding() || u3.w_commit == CS::commit_witness(params, &w3));
     (u3, RelaxedR1csWitness { w: w3, e: e3 }, cross_commit)
+}
+
+/// The **ring-residue fold** of `subsec:ring-fold` / `subsec:per-window-ring`.
+///
+/// Folds two relaxed instances over the ring `R_q`: the folded public input,
+/// slack, witness and error are all kept as canonical residues mod `q`
+/// (`def:canonical-lift`), and the cross-term `T` is computed in the ring.  For
+/// a ternary challenge `r ∈ {0, ±1}` the ring embedding distributes exactly:
+/// `com(w1 + r·w2) = com(w1) + r̂·com(w2)` with `r̂ = r mod q`, so the folded
+/// commitment equals a fresh commitment of the folded residue witness — exact
+/// re-binding (`lem:ring-fold-rebinding`), which the naive field-linear fold
+/// breaks when `w1 − w2` wraps mod `p`.
+///
+/// This is the **off-circuit transport** fold (W1): it never feeds a
+/// field-level sumcheck, so the field-R1CS equation need not hold for the
+/// folded accumulator; per-window verification (W2) checks the window's raw
+/// step instances instead.
+///
+/// `q` must equal the scheme's ring modulus (`CS::ring_modulus`); everything
+/// is identical to [`fold_with_log`] otherwise, including the returned
+/// cross-term commitment.
+pub fn fold_ring_residue<CS: CommitmentScheme>(
+    params: &CS::Params,
+    l: &[Vec<(u32, CS::Scalar)>],
+    r: &[Vec<(u32, CS::Scalar)>],
+    o: &[Vec<(u32, CS::Scalar)>],
+    u1: &RelaxedR1csInstance<CS>,
+    w1: &RelaxedR1csWitness<CS>,
+    u2: &RelaxedR1csInstance<CS>,
+    w2: &RelaxedR1csWitness<CS>,
+    challenge: CS::Scalar,
+    q: u64,
+    parallel: bool,
+) -> (
+    RelaxedR1csInstance<CS>,
+    RelaxedR1csWitness<CS>,
+    CS::Commitment,
+) {
+    use crate::module_sis::{qadd, qmul, ring_mod_q};
+
+    assert_eq!(u1.x.len(), u2.x.len(), "public input widths must match");
+    assert_eq!(w1.w.len(), w2.w.len(), "witness widths must match");
+    assert_eq!(w1.e.len(), w2.e.len(), "error widths must match");
+    assert_eq!(w1.e.len(), l.len(), "error length must equal n_constraints");
+
+    // The exact ring multiplier of the challenge, `r̂ = r mod q` (with
+    // `-1 → q − 1`), used for every residue combination below.
+    let chi = CS::Scalar::from(ring_mod_q(&challenge, q));
+
+    let x3: Vec<CS::Scalar> = u1
+        .x
+        .iter()
+        .zip(&u2.x)
+        .map(|(a, b)| qadd(a, &qmul(&chi, b, q), q))
+        .collect();
+    let u3 = qadd(&u1.u, &qmul(&chi, &u2.u, q), q);
+
+    let w3: Vec<CS::Scalar> = w1
+        .w
+        .iter()
+        .zip(&w2.w)
+        .map(|(a, b)| qadd(a, &qmul(&chi, b, q), q))
+        .collect();
+
+    let e3_cross = if parallel {
+        ring_cross_term_parallel(l, r, o, &w1.w, &w2.w, u1.u, u2.u, q)
+    } else {
+        ring_cross_term(l, r, o, &w1.w, &w2.w, u1.u, u2.u, q)
+    };
+    let cross_commit = CS::commit_error(params, &e3_cross);
+    let e3: Vec<CS::Scalar> = w1
+        .e
+        .iter()
+        .zip(&w2.e)
+        .map(|(a, b)| qadd(a, &qmul(&chi, b, q), q))
+        .zip(&e3_cross)
+        .map(|(s, c)| qadd(&s, &qmul(&chi, &c, q), q))
+        .collect();
+
+    let w_commit3 = CS::add(&u1.w_commit, &CS::scalar_mul(&u2.w_commit, &challenge));
+    let e_commit3 = CS::add(
+        &CS::add(&u1.e_commit, &CS::scalar_mul(&u2.e_commit, &challenge)),
+        &CS::scalar_mul(&cross_commit, &challenge),
+    );
+
+    // Exact re-binding in the ring: the folded commitment equals a fresh
+    // commitment of the folded residue witness (mod q).  This holds exactly for
+    // the ring-residue fold, including across coefficient wraps of `w1 − w2`
+    // where the field-linear fold fails.
+    debug_assert_eq!(CS::commit_witness(params, &w3), w_commit3, "ring fold must re-bind W");
+    debug_assert_eq!(CS::commit_error(params, &e3), e_commit3, "ring fold must re-bind E");
+
+    (
+        RelaxedR1csInstance {
+            x: x3,
+            u: u3,
+            w_commit: w_commit3,
+            e_commit: e_commit3,
+        },
+        RelaxedR1csWitness { w: w3, e: e3 },
+        cross_commit,
+    )
 }
 
 #[cfg(test)]

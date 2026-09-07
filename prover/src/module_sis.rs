@@ -620,6 +620,45 @@ fn ring_scalar<F: PrimeField>(f: &F, q: u64) -> u64 {
     }
 }
 
+/// Public alias of the exact ring multiplier for a ring-domain fold challenge.
+///
+/// Field element `-1` (i.e. `p − 1`) maps to `q − 1` *exactly*; all other
+/// values reduce mod `q` (`lem:ring-fold-rebinding`).
+pub fn ring_mod_q<F: PrimeField>(f: &F, q: u64) -> u64 {
+    ring_scalar(f, q)
+}
+
+/// The canonical residue of `f` modulo `q`, as a field element in `[0, q)`.
+///
+/// Ring-domain folds keep every witness/error/input/slack coefficient as its
+/// canonical residue in `[0, q)` (`def:canonical-lift` in the paper), so the
+/// ring embedding distributes over the fold exactly.
+pub fn qresidue<F: PrimeField>(f: &F, q: u64) -> F {
+    F::from(field_mod_q(f, q))
+}
+
+/// Ring-residue addition: `(a + b) mod q`, both operands reduced mod `q`.
+pub fn qadd<F: PrimeField>(a: &F, b: &F, q: u64) -> F {
+    F::from(((field_mod_q(a, q) + field_mod_q(b, q)) % q) as u64)
+}
+
+/// Ring-residue subtraction: `(a - b) mod q`, both operands reduced mod `q`.
+pub fn qsub<F: PrimeField>(a: &F, b: &F, q: u64) -> F {
+    let (a, b) = (field_mod_q(a, q), field_mod_q(b, q));
+    F::from(((a + q - (b % q)) % q) as u64)
+}
+
+/// Ring-residue multiplication: `(a · b) mod q`, both operands reduced mod `q`.
+pub fn qmul<F: PrimeField>(a: &F, b: &F, q: u64) -> F {
+    let (a, b) = (field_mod_q(a, q), field_mod_q(b, q));
+    F::from(((a as u128 * b as u128) % q as u128) as u64)
+}
+
+/// Ring-residue scalar multiplication: `(s · a) mod q` for a field scalar `s`.
+pub fn qsmul<F: PrimeField>(s: &F, a: &F, q: u64) -> F {
+    qmul(s, a, q)
+}
+
 /// Embed a vector of field scalars into blocks of `n` ring coefficients
 /// (zero-padded), i.e. `s ∈ R_q^{ceil(len/n)}`.
 pub fn embed_scalars<C: NovaCurve>(values: &[ScalarField<C>], n: usize, q: u64) -> Vec<Rq> {
@@ -767,6 +806,14 @@ impl<C: NovaCurve> CommitmentScheme for ModuleSisCommitment<C> {
 
     fn verifies_rebinding() -> bool {
         false
+    }
+
+    fn ring_modulus(params: &Self::Params) -> Option<u64> {
+        Some(params.base.q)
+    }
+
+    fn commitment_ring_modulus(commitment: &Self::Commitment) -> Option<u64> {
+        commitment.first().map(|r| r.q)
     }
 
     fn params_from_seed(

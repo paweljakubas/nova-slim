@@ -97,6 +97,27 @@ pub trait CommitmentScheme: Clone + Debug + Send + Sync + 'static {
     fn verifies_rebinding() -> bool {
         true
     }
+
+    /// The ring modulus `q` for ring-domain schemes, if any.
+    ///
+    /// Ring-domain folds (Module-SIS, `subsec:ring-fold`) keep witnesses,
+    /// errors, inputs and slack as canonical residues mod `q` so the pairwise
+    /// embedding distributes over the fold exactly; the fold engine needs `q`
+    /// to reduce every coefficient.  Field-homomorphic schemes return `None`.
+    fn ring_modulus(params: &Self::Params) -> Option<u64> {
+        let _ = params;
+        None
+    }
+
+    /// The ring modulus carried by a commitment, if the scheme is ring-domain.
+    ///
+    /// Commitment-level re-verification (the fold-log chain-consistency check
+    /// of `verify_fold_log`) re-derives the folded public input `x` and slack
+    /// `u` as canonical residues, so a module-SIS commitment must be able to
+    /// report its own `q` from the committed value.
+    fn commitment_ring_modulus(_commitment: &Self::Commitment) -> Option<u64> {
+        None
+    }
 }
 
 // ------------------------------------------------------------------
