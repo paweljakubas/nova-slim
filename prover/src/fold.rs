@@ -106,10 +106,10 @@ mod tests {
         let acc: Vec<u8> = vec![1, 2, 3];
         assert_eq!(P::FOLD_DOMAIN, FoldDomain::Field);
         assert_eq!(MS::FOLD_DOMAIN, FoldDomain::Ring);
-        // Field schemes rebind under full-field challenges; Module-SIS needs
-        // the (not-yet-implemented) ring-residue fold, so it reports false.
+        // Field schemes rebind under full-field challenges; Module-SIS rebinds
+        // exactly under the ring-residue fold (P8 engine + P9 per-window).
         assert!(P::verifies_rebinding());
-        assert!(!MS::verifies_rebinding());
+        assert!(MS::verifies_rebinding());
         // A Pedersen challenge matches the classical full-field derivation.
         assert_eq!(
             <P as FoldProtocol>::fold_challenge(&acc, &up, &up),

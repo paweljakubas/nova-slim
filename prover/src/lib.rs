@@ -2479,7 +2479,7 @@ pub fn verify_full<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     // Fold re-verification (FV): re-check the homomorphic fold relation per
     // step from the fold log's committed data (no step witnesses needed).
     if let Some(fold_log) = &proof.fold_log {
-        verify_fold_log::<C, CS>(bundle, fold_log)?;
+        verify_fold_log::<C, CS>(bundle, fold_log, sis_param)?;
     }
 
     let norm = if norm_mode != norm::NormMode::None {
@@ -2549,6 +2549,7 @@ pub fn verify_full<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
 pub fn verify_fold_log<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     bundle: &NifsBundle,
     fold_log: &[FoldProofEntry],
+    sis_param: usize,
 ) -> Result<(), Box<dyn Error>> {
     if bundle.n_steps == 0 {
         return Err("fold re-verification: empty bundle".into());
@@ -2561,6 +2562,18 @@ pub fn verify_fold_log<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C
         )
         .into());
     }
+
+    // Ring modulus (e.g. Module-SIS q) for the ring-residue fold: when set,
+    // x and u are stored as canonical residues mod q, so the reconstructed
+    // field-linear fold must be reduced back to a canonical residue before
+    // comparison (`subsec:ring-fold`).
+    let params = CS::params_from_seed(
+        NIFS_PARAMS_SEED,
+        bundle.n_wires as usize,
+        bundle.n_constraints as usize,
+        sis_param,
+    );
+    let q = <CS as commitment::CommitmentScheme>::ring_modulus(&params);
 
     let initial_state = frs_from_strings::<ScalarField<C>>(&bundle.initial_state)?;
     let final_x = frs_from_strings::<ScalarField<C>>(&bundle.final_instance.x)?;
@@ -2627,14 +2640,33 @@ pub fn verify_fold_log<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C
 
         let r = <CS as fold::FoldProtocol>::fold_challenge(&acc_hash, &acc, &step);
 
-        // Homomorphic fold of the committed instances.
-        let folded_x: Vec<ScalarField<C>> = acc
-            .x
-            .iter()
-            .zip(&step.x)
-            .map(|(a, b)| *a + r * *b)
-            .collect();
-        let folded_u = acc.u + r * step.u;
+        // Homomorphic fold of the committed instances.  For a ring-domain
+        // scheme (Module-SIS), x and u are canonical residues mod q and the
+        // fold combines them in R_q (`fold_ring_residue`): the challenge is
+        // first reduced to its exact ring multiplier `chi = r mod q` (with
+        // field `-1 ≡ p−1` mapping to `q−1`), then `qadd/qmul`.  Reducing the
+        // *field* result after the fact would give `(p·b) mod q` noise when
+        // `r = −1`, so the ring combination must be used directly.
+        let (folded_x, folded_u) = if let Some(q) = q {
+            let chi = ScalarField::<C>::from(crate::module_sis::ring_mod_q(&r, q));
+            let x = acc
+                .x
+                .iter()
+                .zip(&step.x)
+                .map(|(a, b)| crate::module_sis::qadd(a, &crate::module_sis::qmul(&chi, b, q), q))
+                .collect();
+            let u = crate::module_sis::qadd(&acc.u, &crate::module_sis::qmul(&chi, &step.u, q), q);
+            (x, u)
+        } else {
+            let x = acc
+                .x
+                .iter()
+                .zip(&step.x)
+                .map(|(a, b)| *a + r * *b)
+                .collect();
+            let u = acc.u + r * step.u;
+            (x, u)
+        };
         let folded_w = CS::add(&acc.w_commit, &CS::scalar_mul(&step.w_commit, &r));
         let folded_e = CS::add(
             &CS::add(&acc.e_commit, &CS::scalar_mul(&step.e_commit, &r)),
@@ -4393,6 +4425,74 @@ mod tests {
             .unwrap();
 
         (fold_out.bundle, l1, c, tmp)
+    }
+
+    /// Module-SIS ring-residue chain: `fold_with_log` now routes through
+    /// `fold_ring_residue`, so `verify_fold_log` must re-derive x/u as
+    /// canonical residues mod q and `verifies_rebinding()` must hold exactly.
+    #[test]
+    fn module_sis_ring_fold_log_and_full_verify() {
+        type C = crate::curve::Bls12_381;
+        type CS = crate::module_sis::ModuleSisCommitment<C>;
+        type S = <CS as CommitmentScheme>::Scalar;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let r1cs_path = tmp.path().join("step.r1cs");
+        let steps_dir = tmp.path().join("steps");
+        fs::write(&r1cs_path, step_r1cs_bytes()).unwrap();
+        fs::create_dir(&steps_dir).unwrap();
+
+        let mut state = 2u64;
+        for (i, x) in [3u64, 5, 7].iter().enumerate() {
+            state = write_step_wtns(&steps_dir, i, state, *x);
+        }
+        assert_eq!(state, 210);
+
+        let m = 1;
+        let folded = fold_nifs::<C, CS>(&r1cs_path, &steps_dir, OptFlags::NONE, m).unwrap();
+        let log: Vec<FoldProofEntry> = folded
+            .fold_log
+            .as_ref()
+            .expect("fold must record a fold log")
+            .iter()
+            .map(FoldProofEntry::from_entry)
+            .collect();
+        assert_eq!(log.len(), 2, "3 steps -> 2 folds");
+
+        // Ring-residue chain re-verification: x/u recomputed as canonical
+        // residues must match the logged accumulator values.
+        verify_fold_log::<C, CS>(&folded.bundle, &log, m).unwrap();
+
+        // Full verifier: re-binding check now active for Module-SIS
+        // (`verifies_rebinding() == true`), final instance must re-commit to
+        // the folded residue witness.
+        let c = load_circuit::<C>(&r1cs_path).unwrap();
+        let l1 = prove_level1::<C, CS>(&c, &folded, OptFlags::NONE, norm::NormMode::None, 64).unwrap();
+        let vout = verify_full::<C, CS>(
+            &folded.bundle,
+            &l1,
+            m,
+            Some(&c),
+            norm::NormMode::None,
+            None,
+            None,
+            64,
+            OptFlags::NONE,
+        )
+        .unwrap();
+        assert_eq!(vout.steps, 3);
+
+        // The ring fold must still produce a canonical-residue public input.
+        for xi in &folded.final_instance.x {
+            let q = <CS as commitment::CommitmentScheme>::ring_modulus(
+                &CS::params_from_seed(NIFS_PARAMS_SEED, 4, 1, m),
+            )
+            .unwrap();
+            assert!(
+                crate::module_sis::is_canonical_lift(xi, q),
+                "folded public input must be a canonical residue mod q"
+            );
+        }
     }
 
     proptest! {

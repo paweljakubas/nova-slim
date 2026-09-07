@@ -571,11 +571,10 @@ pub fn fold_with_log<CS: CommitmentScheme>(
         e_commit: e_commit3,
     };
     // For field-homomorphic schemes the homomorphic fold of commitments must
-    // equal a fresh commitment of the folded field witness.  Module-SIS (only
-    // ring-homomorphic) reports `verifies_rebinding() == false` until the
-    // ring-residue fold of `subsec:ring-fold` lands, so this check stays off
-    // for it; the commitment fold is still deterministic and chain-consistency
-    // is checked at verification time.
+    // equal a fresh commitment of the folded field witness.  Module-SIS is
+    // ring-homomorphic and takes the ring-residue path above (`fold_ring_residue`,
+    // whose own `debug_assert`s pin exact re-binding), so this field-domain
+    // check stays meaningful only for Pedersen/SIS/Hash.
     debug_assert!(!CS::verifies_rebinding() || u3.w_commit == CS::commit_witness(params, &w3));
     (u3, RelaxedR1csWitness { w: w3, e: e3 }, cross_commit)
 }

@@ -816,7 +816,7 @@ impl<C: NovaCurve> CommitmentScheme for ModuleSisCommitment<C> {
     }
 
     fn verifies_rebinding() -> bool {
-        false
+        true
     }
 
     fn ring_modulus(params: &Self::Params) -> Option<u64> {
