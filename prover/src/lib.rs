@@ -106,6 +106,7 @@ pub mod fold;
 pub mod module_sis;
 pub mod norm;
 pub mod sumcheck;
+pub mod window;
 
 /// JSON descriptor of a step circuit (emitted by the `params` operation).
 #[derive(Debug, Clone, Serialize, Deserialize)]

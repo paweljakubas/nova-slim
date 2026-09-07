@@ -628,6 +628,17 @@ pub fn ring_mod_q<F: PrimeField>(f: &F, q: u64) -> u64 {
     ring_scalar(f, q)
 }
 
+/// Whether `f` is a canonical residue mod `q`, i.e. `f ∈ [0, q)` as a field
+/// element.
+///
+/// The ring--field transport (`def:canonical-lift` / `lem:lift-faithful`)
+/// requires every wire that crosses between `R_q` and `F_r` — in particular
+/// window interface states — to be a canonical residue, so τ-tests on them
+/// coincide between the two domains.
+pub fn is_canonical_lift<F: PrimeField>(f: &F, q: u64) -> bool {
+    F::from(field_mod_q(f, q)) == *f
+}
+
 /// The canonical residue of `f` modulo `q`, as a field element in `[0, q)`.
 ///
 /// Ring-domain folds keep every witness/error/input/slack coefficient as its
