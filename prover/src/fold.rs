@@ -123,6 +123,20 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_interval_defaults_off_for_field_schemes() {
+        let p = P::params_from_seed(b"t", 3, 3, 0);
+        assert_eq!(P::recommended_checkpoint_interval(&p), None);
+    }
+
+    #[test]
+    fn module_sis_recommends_checkpoint_cadence() {
+        let m = MS::params_from_seed(b"t", 3, 3, 0);
+        let interval = MS::recommended_checkpoint_interval(&m)
+            .expect("module-sis must recommend a norm-reset cadence");
+        assert!(interval > 0, "checkpoint interval must be positive");
+    }
+
+    #[test]
     fn ring_domain_uses_ternary_challenges() {
         type S = <MS as CommitmentScheme>::Scalar;
         let m = MS::params_from_seed(b"t", 3, 3, 0);

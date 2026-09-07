@@ -741,6 +741,14 @@ impl<C: NovaCurve> CommitmentScheme for ModuleSisCommitment<C> {
 
     const FIELD_HOMOMORPHIC: bool = false;
 
+    fn recommended_checkpoint_interval(params: &Self::Params) -> Option<usize> {
+        Some(recommended_checkpoint_interval(
+            SmallChallengeSet::Ternary,
+            params.base.beta,
+            params.base.q,
+        ))
+    }
+
     fn params_from_seed(
         seed: &[u8],
         n_wires: usize,

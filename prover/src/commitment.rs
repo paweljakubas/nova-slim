@@ -71,6 +71,18 @@ pub trait CommitmentScheme: Clone + Debug + Send + Sync + 'static {
     /// fold-verification must not re-derive a fresh commitment of the folded
     /// *field* witness and compare it to the folded commitment.
     const FIELD_HOMOMORPHIC: bool = true;
+
+    /// Recommended norm-reset checkpoint cadence for this scheme, if any.
+    ///
+    /// Field-homomorphic schemes (Pedersen/SIS/Hash) fold over the full field
+    /// with no shortness concern, so this is `None`.  Ring-domain schemes
+    /// (Module-SIS) fold with small ternary challenges whose accumulation
+    /// grows the committed norm; `Some(interval)` reports the maximum number
+    /// of folds between norm-reset checkpoints that keeps the accumulator
+    /// short (see [`crate::module_sis::recommended_checkpoint_interval`]).
+    fn recommended_checkpoint_interval(_params: &Self::Params) -> Option<usize> {
+        None
+    }
 }
 
 // ------------------------------------------------------------------
