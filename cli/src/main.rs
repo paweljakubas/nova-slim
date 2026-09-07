@@ -22,7 +22,7 @@ mod macros;
 mod cmd;
 
 /// Supported commitment schemes.
-#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
 pub enum CommitmentSchemeArg {
     /// Pedersen (elliptic-curve) commitments — default, transparent.
     #[default]

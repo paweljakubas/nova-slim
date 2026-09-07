@@ -86,6 +86,11 @@ pub const NIFS_TRANSCRIPT_PREFIX: &[u8] = b"groth16-prover-nova-nifs-transcript-
 /// with the security parameter (e.g., `m = 128` for 128-bit PQ security).
 pub const DEFAULT_SIS_PARAM: usize = commitment::SIS_OUTPUT_DIM;
 
+/// Default window size (steps per window) for the window-model verifier (P9).
+/// The window-model CLI (`compress --windows` / `verify --windows-proof`)
+/// partitions the step chain into consecutive windows of this many steps.
+pub const DEFAULT_WINDOW_SIZE: usize = 4;
+
 /// Generic sparse R1CS circuit parser.
 pub mod circuit;
 
@@ -697,6 +702,150 @@ pub mod codec {
         /// Decode a compact binary (CBOR) level-1 proof.
         pub fn from_cbor<F: PrimeField>(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
             level1_proof_decode::<F>(bytes)
+        }
+    }
+
+    /// CBOR form of a single per-window uniformized proof (P9).
+    #[derive(Serialize, Deserialize)]
+    struct WindowRowCbor {
+        n_steps: u64,
+        n_pub: u64,
+        polys: Vec<Vec<FrCbor>>,
+        claims: Vec<FrCbor>,
+        r_challenges: Vec<FrCbor>,
+        az_r: FrCbor,
+        bz_r: FrCbor,
+        fr_r: FrCbor,
+        cz_r: FrCbor,
+        er_r: FrCbor,
+        window_io_in: Vec<FrCbor>,
+        window_io_out: Vec<FrCbor>,
+        w_hash: ByteBuf,
+        e_hash: ByteBuf,
+        w_opening: Vec<FrCbor>,
+        e_opening: Vec<FrCbor>,
+    }
+
+    /// CBOR form of the window-model proof artifact (P9).
+    #[derive(Serialize, Deserialize)]
+    struct WindowsProofCbor {
+        v: u8,
+        circuit: String,
+        dims: Dims,
+        initial_state: Vec<FrCbor>,
+        n_steps: u64,
+        window_size: u64,
+        bundle_instance_hash: ByteBuf,
+        windows: Vec<WindowRowCbor>,
+    }
+
+    fn window_row_enc<F: PrimeField>(
+        w: &super::WindowRowProof,
+    ) -> Result<WindowRowCbor, Box<dyn Error>> {
+        Ok(WindowRowCbor {
+            n_steps: w.n_steps as u64,
+            n_pub: w.n_pub as u64,
+            polys: w
+                .sumcheck_polys
+                .iter()
+                .map(|row| frs_enc::<F>(row))
+                .collect::<Result<_, _>>()?,
+            claims: frs_enc::<F>(&w.sumcheck_claims)?,
+            r_challenges: frs_enc::<F>(&w.r_challenges)?,
+            az_r: fr_enc(&fr_parse::<F>(&w.az_r)?),
+            bz_r: fr_enc(&fr_parse::<F>(&w.bz_r)?),
+            fr_r: fr_enc(&fr_parse::<F>(&w.fr_r)?),
+            cz_r: fr_enc(&fr_parse::<F>(&w.cz_r)?),
+            er_r: fr_enc(&fr_parse::<F>(&w.er_r)?),
+            window_io_in: frs_enc::<F>(&w.window_io_in)?,
+            window_io_out: frs_enc::<F>(&w.window_io_out)?,
+            w_hash: hash_enc(&w.w_commit_hash)?,
+            e_hash: hash_enc(&w.e_commit_hash)?,
+            w_opening: frs_enc::<F>(&w.w_opening)?,
+            e_opening: frs_enc::<F>(&w.e_opening)?,
+        })
+    }
+
+    fn window_row_dec<F: PrimeField>(
+        c: &WindowRowCbor,
+    ) -> Result<super::WindowRowProof, Box<dyn Error>> {
+        Ok(super::WindowRowProof {
+            n_steps: c.n_steps as usize,
+            n_pub: c.n_pub as usize,
+            sumcheck_polys: c
+                .polys
+                .iter()
+                .map(|row| frs_dec::<F>(row))
+                .collect::<Result<_, _>>()?,
+            sumcheck_claims: frs_dec::<F>(&c.claims)?,
+            r_challenges: frs_dec::<F>(&c.r_challenges)?,
+            az_r: super::fr_to_string(&fr_dec::<F>(&c.az_r)?),
+            bz_r: super::fr_to_string(&fr_dec::<F>(&c.bz_r)?),
+            fr_r: super::fr_to_string(&fr_dec::<F>(&c.fr_r)?),
+            cz_r: super::fr_to_string(&fr_dec::<F>(&c.cz_r)?),
+            er_r: super::fr_to_string(&fr_dec::<F>(&c.er_r)?),
+            window_io_in: frs_dec::<F>(&c.window_io_in)?,
+            window_io_out: frs_dec::<F>(&c.window_io_out)?,
+            w_commit_hash: hex::encode(&c.w_hash),
+            e_commit_hash: hex::encode(&c.e_hash),
+            w_opening: frs_dec::<F>(&c.w_opening)?,
+            e_opening: frs_dec::<F>(&c.e_opening)?,
+        })
+    }
+
+    pub fn windows_proof_encode<F: PrimeField>(
+        p: &super::WindowsProofSet,
+    ) -> Result<Vec<u8>, Box<dyn Error>> {
+        let dto = WindowsProofCbor {
+            v: FORMAT_VERSION,
+            circuit: p.circuit.clone(),
+            dims: Dims([p.n_wires, p.n_constraints, p.n_pub_out, p.n_pub_in]),
+            initial_state: frs_enc::<F>(&p.initial_state)?,
+            n_steps: p.n_steps as u64,
+            window_size: p.window_size as u64,
+            bundle_instance_hash: hash_enc(&p.bundle_final_instance_hash)?,
+            windows: p
+                .windows
+                .iter()
+                .map(window_row_enc::<F>)
+                .collect::<Result<_, _>>()?,
+        };
+        write(&dto)
+    }
+
+    pub fn windows_proof_decode<F: PrimeField>(
+        bytes: &[u8],
+    ) -> Result<super::WindowsProofSet, Box<dyn Error>> {
+        let d: WindowsProofCbor = ciborium::from_reader(bytes)
+            .map_err(|e| format!("invalid CBOR window proof: {e}"))?;
+        check_version(d.v)?;
+        let [n_wires, n_constraints, n_pub_out, n_pub_in] = d.dims.0;
+        Ok(super::WindowsProofSet {
+            circuit: d.circuit,
+            n_wires,
+            n_constraints,
+            n_pub_out,
+            n_pub_in,
+            initial_state: frs_dec::<F>(&d.initial_state)?,
+            n_steps: d.n_steps as usize,
+            window_size: d.window_size as usize,
+            bundle_final_instance_hash: hex::encode(&d.bundle_instance_hash),
+            windows: d
+                .windows
+                .iter()
+                .map(window_row_dec::<F>)
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+
+    impl super::WindowsProofSet {
+        /// Compact binary encoding (CBOR).
+        pub fn to_cbor<F: PrimeField>(&self) -> Result<Vec<u8>, Box<dyn Error>> {
+            windows_proof_encode::<F>(self)
+        }
+        /// Decode a compact binary (CBOR) window-model proof.
+        pub fn from_cbor<F: PrimeField>(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
+            windows_proof_decode::<F>(bytes)
         }
     }
 
@@ -1872,6 +2021,133 @@ pub struct Level1SlimProof {
     pub fold_log: Option<Vec<FoldProofEntry>>,
 }
 
+/// One per-window uniformized proof (P9), in serializable decimal/hex form.
+///
+/// Mirrors `window::WindowProof<C>` with every field element as a decimal
+/// string, so the artifact round-trips through JSON/CBOR without needing the
+/// curve type at decode time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WindowRowProof {
+    /// Number of steps in this window.
+    pub n_steps: usize,
+    /// Interface width (`n_pub_in == n_pub_out`).
+    pub n_pub: usize,
+    /// Degree-2 sumcheck round polynomials, each `[g(0), g(1), g(2)]`.
+    pub sumcheck_polys: Vec<Vec<String>>,
+    /// Sumcheck claims (initial sum + per-round + final).
+    pub sumcheck_claims: Vec<String>,
+    /// Fiat-Shamir random challenges.
+    pub r_challenges: Vec<String>,
+    /// Claimed MLE evaluations at random point r.
+    pub az_r: String,
+    pub bz_r: String,
+    pub fr_r: String,
+    pub cz_r: String,
+    pub er_r: String,
+    /// Asserted interface input (step 0's input).
+    pub window_io_in: Vec<String>,
+    /// Asserted interface output (last step's output).
+    pub window_io_out: Vec<String>,
+    /// BLAKE2b-512 hash of the uniformized witness Z.
+    pub w_commit_hash: String,
+    /// HashPC opening proof for Z.
+    pub w_opening: Vec<String>,
+    /// BLAKE2b-512 hash of the uniformized error E.
+    pub e_commit_hash: String,
+    /// HashPC opening proof for E.
+    pub e_opening: Vec<String>,
+}
+
+impl WindowRowProof {
+    /// Serialize an in-memory window proof into its artifact form.
+    pub fn from_window_proof<C: NovaCurve>(p: &window::WindowProof<C>) -> WindowRowProof {
+        WindowRowProof {
+            n_steps: p.n_steps,
+            n_pub: p.n_pub,
+            sumcheck_polys: p
+                .sumcheck
+                .polys
+                .iter()
+                .map(|row| row.iter().map(fr_to_string).collect())
+                .collect(),
+            sumcheck_claims: p.sumcheck.claims.iter().map(fr_to_string).collect(),
+            r_challenges: p.r_challenges.iter().map(fr_to_string).collect(),
+            az_r: fr_to_string(&p.sumcheck.az_r),
+            bz_r: fr_to_string(&p.sumcheck.bz_r),
+            fr_r: fr_to_string(&p.sumcheck.fr_r),
+            cz_r: fr_to_string(&p.sumcheck.cz_r),
+            er_r: fr_to_string(&p.sumcheck.er_r),
+            window_io_in: p.window_io_in.iter().map(fr_to_string).collect(),
+            window_io_out: p.window_io_out.iter().map(fr_to_string).collect(),
+            w_commit_hash: hex::encode(&p.w_commit_hash),
+            w_opening: p.w_opening.iter().map(fr_to_string).collect(),
+            e_commit_hash: hex::encode(&p.e_commit_hash),
+            e_opening: p.e_opening.iter().map(fr_to_string).collect(),
+        }
+    }
+
+    /// Reconstruct an in-memory window proof for verification.
+    pub fn to_window_proof<C: NovaCurve>(&self) -> Result<window::WindowProof<C>, Box<dyn Error>> {
+        let polys: Vec<[ScalarField<C>; 3]> = self
+            .sumcheck_polys
+            .iter()
+            .map(|row| {
+                let frs = frs_from_strings::<ScalarField<C>>(row)?;
+                if frs.len() != 3 {
+                    return Err("degree-2 polynomial must have exactly 3 evaluations".into());
+                }
+                Ok([frs[0], frs[1], frs[2]])
+            })
+            .collect::<Result<_, Box<dyn Error>>>()?;
+        Ok(window::WindowProof {
+            n_steps: self.n_steps,
+            n_pub: self.n_pub,
+            sumcheck: sumcheck::SumcheckProofDegree2 {
+                claims: frs_from_strings::<ScalarField<C>>(&self.sumcheck_claims)?,
+                polys,
+                az_r: frs_from_strings::<ScalarField<C>>(std::slice::from_ref(&self.az_r))?[0],
+                bz_r: frs_from_strings::<ScalarField<C>>(std::slice::from_ref(&self.bz_r))?[0],
+                fr_r: frs_from_strings::<ScalarField<C>>(std::slice::from_ref(&self.fr_r))?[0],
+                cz_r: frs_from_strings::<ScalarField<C>>(std::slice::from_ref(&self.cz_r))?[0],
+                er_r: frs_from_strings::<ScalarField<C>>(std::slice::from_ref(&self.er_r))?[0],
+            },
+            r_challenges: frs_from_strings::<ScalarField<C>>(&self.r_challenges)?,
+            window_io_in: frs_from_strings::<ScalarField<C>>(&self.window_io_in)?,
+            window_io_out: frs_from_strings::<ScalarField<C>>(&self.window_io_out)?,
+            w_commit_hash: hex::decode(&self.w_commit_hash)?,
+            w_opening: frs_from_strings::<ScalarField<C>>(&self.w_opening)?,
+            e_commit_hash: hex::decode(&self.e_commit_hash)?,
+            e_opening: frs_from_strings::<ScalarField<C>>(&self.e_opening)?,
+        })
+    }
+}
+
+/// The window-model proof artifact (P9): a bundle binding plus one
+/// uniformized per-window proof per window of `window_size` consecutive steps.
+///
+/// The bundle binding (`bundle_final_instance_hash`) ties the artifact to a
+/// specific NIFS bundle's `final_instance`; the per-window proofs then verify
+/// **every** step of the chain as a block-diagonal uniformized circuit with
+/// `u = 1, e = 0`, closing the field/ring sumcheck gap (`thm:per-window-ring`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WindowsProofSet {
+    pub circuit: String,
+    pub n_wires: u32,
+    pub n_constraints: u32,
+    pub n_pub_out: u32,
+    pub n_pub_in: u32,
+    pub initial_state: Vec<String>,
+    pub n_steps: usize,
+    /// Steps per window.  Step witness `j` belongs to window `j / window_size`:
+    /// the partition is deterministic, so the verifier can re-derive the
+    /// expected window boundaries from `n_steps` + `window_size`.
+    pub window_size: usize,
+    /// Hash of the bundle's `final_instance` (binds proof to bundle).
+    pub bundle_final_instance_hash: String,
+    /// One proof per window, in order.
+    pub windows: Vec<WindowRowProof>,
+}
+
 /// Verify a slim sumcheck compression proof against a NIFS bundle (in-memory).
 ///
 /// Checks the sumcheck protocol (round polynomials, Fiat-Shamir, final claim)
@@ -2124,7 +2400,227 @@ pub fn prove_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>
     })
 }
 
-/// /// Verify a Level-1 slim proof against a NIFS bundle.
+/// Build a window-model proof artifact (P9) from a folded NIFS instance.
+///
+/// Partitions the step witnesses into consecutive windows of `window_size`
+/// steps (window `j` covers `[j·window_size, min((j+1)·window_size, n_steps))`)
+/// and produces one uniformized per-window proof per window.  The bundle
+/// binding hash ties the artifact to the specific `final_instance`.
+pub fn prove_windows<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
+    circuit: &SparseCircuit<ScalarField<C>>,
+    folded: &NifsFoldOutput<CS>,
+    window_size: usize,
+    opts: OptFlags,
+) -> Result<WindowsProofSet, Box<dyn Error>> {
+    if window_size == 0 {
+        return Err("prove_windows: window_size must be > 0".into());
+    }
+    let n_steps = folded.bundle.n_steps;
+
+    // Parse each step witness (the Z part) into field elements.
+    let z_steps: Vec<Vec<ScalarField<C>>> = folded
+        .step_witnesses
+        .iter()
+        .map(|(z, _)| frs_from_strings::<ScalarField<C>>(z))
+        .collect::<Result<_, Box<dyn Error>>>()?;
+    if z_steps.len() != n_steps {
+        return Err(format!(
+            "prove_windows: {} step witnesses for {} steps",
+            z_steps.len(),
+            n_steps
+        )
+        .into());
+    }
+
+    // Bundle binding hash (same derivation as prove_level1).
+    let instance_str = format!(
+        "{}|{}|{}|{}",
+        folded.bundle.final_instance.x.join(":"),
+        folded.bundle.final_instance.u,
+        folded.bundle.final_instance.w_commit,
+        folded.bundle.final_instance.e_commit,
+    );
+    let hash = blake2::Blake2b512::digest(instance_str.as_bytes());
+    let bundle_final_instance_hash = hex::encode(&hash[..32]);
+
+    let mut windows = Vec::new();
+    let mut start = 0;
+    while start < n_steps {
+        let end = (start + window_size).min(n_steps);
+        let chain = window::ChainCircuit::uniformize(
+            circuit.n_wires,
+            circuit.n_pub_out,
+            circuit.n_pub_in,
+            end - start,
+            &circuit.l,
+            &circuit.r,
+            &circuit.o,
+        )?;
+        let wp = window::prove_window::<C>(&chain, &z_steps[start..end], opts.parallel);
+        windows.push(WindowRowProof::from_window_proof(&wp));
+        start = end;
+    }
+
+    Ok(WindowsProofSet {
+        circuit: folded.bundle.circuit.clone(),
+        n_wires: folded.bundle.n_wires,
+        n_constraints: folded.bundle.n_constraints,
+        n_pub_out: folded.bundle.n_pub_out,
+        n_pub_in: folded.bundle.n_pub_in,
+        initial_state: folded.bundle.initial_state.clone(),
+        n_steps,
+        window_size,
+        bundle_final_instance_hash,
+        windows,
+    })
+}
+
+/// Verify a window-model proof artifact (P9) against a NIFS bundle.
+///
+/// Checks, in order:
+/// 1. Bundle binding (final_instance hash).
+/// 2. Artifact/bundle metadata consistency (dims, initial_state, n_steps) and
+///    window partition: windows are consecutive `window_size`-wide chunks
+///    covering `[0, n_steps)` in exactly the deterministic order.
+/// 3. Per window: rebuild the uniformized chain circuit and run the full
+///    per-window verification (`verify_window`) — degree-2 sumcheck, residual
+///    zero, HashPC openings, circuit-backed OP check, interface match, and
+///    canonical-lift boundary whenever a ring modulus `q` is supplied.
+/// 4. Cross-window chaining (`windows_chain_ok`): window `i+1`'s input must
+///    equal window `i`'s output.
+/// 5. Window 0's input must equal the bundle's `initial_state`.
+pub fn verify_windows<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
+    bundle: &NifsBundle,
+    proof: &WindowsProofSet,
+    sis_param: usize,
+    circuit: &SparseCircuit<ScalarField<C>>,
+) -> Result<VerifyOutput, Box<dyn Error>> {
+    // 1. Bundle binding.
+    {
+        let instance_str = format!(
+            "{}|{}|{}|{}",
+            bundle.final_instance.x.join(":"),
+            bundle.final_instance.u,
+            bundle.final_instance.w_commit,
+            bundle.final_instance.e_commit,
+        );
+        let expected_hash = hex::encode(&blake2::Blake2b512::digest(instance_str.as_bytes())[..32]);
+        if proof.bundle_final_instance_hash != expected_hash {
+            return Err(
+                "window proof is not bound to this NIFS bundle (final instance hash mismatch)"
+                    .into(),
+            );
+        }
+    }
+
+    // 2. Metadata + partition.
+    if proof.n_wires != bundle.n_wires
+        || proof.n_constraints != bundle.n_constraints
+        || proof.n_pub_out != bundle.n_pub_out
+        || proof.n_pub_in != bundle.n_pub_in
+    {
+        return Err("window proof dims do not match the bundle".into());
+    }
+    if proof.initial_state != bundle.initial_state {
+        return Err("window proof initial_state does not match the bundle".into());
+    }
+    if proof.n_steps != bundle.n_steps {
+        return Err(format!(
+            "window proof n_steps ({}) does not match the bundle ({})",
+            proof.n_steps, bundle.n_steps
+        )
+        .into());
+    }
+    if proof.window_size == 0 {
+        return Err("window proof window_size must be > 0".into());
+    }
+    // Expected partition: window j covers [j·w, min((j+1)·w, n_steps)).
+    let expected_count = bundle.n_steps.div_ceil(proof.window_size);
+    if proof.windows.len() != expected_count {
+        return Err(format!(
+            "window proof has {} windows, expected {} for window_size {}",
+            proof.windows.len(),
+            expected_count,
+            proof.window_size
+        )
+        .into());
+    }
+    for (j, row) in proof.windows.iter().enumerate() {
+        let start = j * proof.window_size;
+        let ok_start = start < bundle.n_steps;
+        let ok_len = row.n_steps == (bundle.n_steps - start).min(proof.window_size);
+        if !(ok_start && ok_len) {
+            return Err(format!(
+                "window {j}: n_steps {} does not match the deterministic partition",
+                row.n_steps
+            )
+            .into());
+        }
+    }
+
+    // 3–5. Per-window verification, chaining, and initial-state match.
+    let params = CS::params_from_seed(
+        NIFS_PARAMS_SEED,
+        bundle.n_wires as usize,
+        bundle.n_constraints as usize,
+        sis_param,
+    );
+    let q = CS::ring_modulus(&params);
+
+    let mut prev: Option<window::WindowVerifyOutput<C>> = None;
+    let mut covered = 0usize;
+    for (j, row) in proof.windows.iter().enumerate() {
+        let chain = window::ChainCircuit::uniformize(
+            bundle.n_wires,
+            bundle.n_pub_out,
+            bundle.n_pub_in,
+            row.n_steps,
+            &circuit.l,
+            &circuit.r,
+            &circuit.o,
+        )?;
+        let wp = row.to_window_proof::<C>()?;
+        let out = window::verify_window::<C>(&chain, &wp, q);
+        if !out.ok {
+            return Err(format!(
+                "window {j}: per-window full verification failed (final claim {})",
+                fr_to_string(&out.final_claim)
+            )
+            .into());
+        }
+        if let Some(p) = &prev {
+            if !window::windows_chain_ok(p, &out) {
+                return Err(format!(
+                    "window {j}: output does not chain into the next window's input"
+                )
+                .into());
+            }
+        } else {
+            // Window 0 input == bundle initial_state (equality in F_r; with t
+            // canonical lifts this coincides with R_q by lem:lift-faithful).
+            let initial = frs_from_strings::<ScalarField<C>>(&bundle.initial_state)?;
+            if out.window_io_in != initial {
+                return Err("window 0: input does not match the bundle initial_state".into());
+            }
+        }
+        prev = Some(out);
+        covered += row.n_steps;
+    }
+    if covered != bundle.n_steps {
+        return Err(format!(
+            "window proofs cover {covered} steps, bundle has {}",
+            bundle.n_steps
+        )
+        .into());
+    }
+
+    Ok(VerifyOutput {
+        steps: bundle.n_steps,
+        transcript_final: bundle.transcript_final.clone(),
+    })
+}
+
+/// Verify a Level-1 slim proof against a NIFS bundle.
 ///
 /// Checks:
 /// 1. Bundle binding (final_instance hash).
@@ -2889,6 +3385,81 @@ where
         bytes: cbor.len(),
         bundle: folded.bundle,
     })
+}
+
+/// Produce a window-model proof artifact (P9) for a step chain.
+///
+/// Re-folds deterministically (batch-fold when `batch_size > 0`, step-by-step
+/// otherwise) to recover the step witnesses, then runs [`prove_windows`].
+/// The bundle reproduced here must match the `fold`-produced bundle exactly,
+/// since `verify_windows` checks the binding hash against it.
+pub fn run_compress_windows<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
+    circuit: &Path,
+    steps: &Path,
+    out: &Path,
+    opts: OptFlags,
+    sis_param: usize,
+    batch_size: usize,
+    bound_bits: u32,
+    window_size: usize,
+) -> Result<CompressOutput, Box<dyn Error>>
+where
+    CS::Scalar: ark_ff::PrimeField,
+{
+    let c = load_circuit::<C>(circuit)?;
+    check_step_circuit::<C>(&c)?;
+
+    let folded = if batch_size > 0 {
+        fold_nifs_batch::<C, CS>(circuit, steps, opts, sis_param, batch_size, bound_bits)?
+    } else {
+        fold_nifs::<C, CS>(circuit, steps, opts, sis_param)?
+    };
+    let ws = prove_windows::<C, CS>(&c, &folded, window_size, opts)?;
+
+    let cbor = codec::windows_proof_encode::<ScalarField<C>>(&ws)
+        .map_err(|e| format!("failed to serialize window proof: {e}"))?;
+    fs::write(out, &cbor)
+        .map_err(|e| format!("failed to write window proof to {}: {e}", out.display()))?;
+    eprintln!(
+        "Window proof written to {} ({} bytes, {} windows of ≤ {} steps each, u = {})",
+        out.display(),
+        cbor.len(),
+        ws.windows.len(),
+        window_size,
+        fr_to_string(&folded.final_instance.u)
+    );
+    Ok(CompressOutput {
+        bytes: cbor.len(),
+        bundle: folded.bundle,
+    })
+}
+
+/// Verify a window-model proof artifact (P9) against a NIFS bundle on disk.
+///
+/// Loads the bundle, the CBOR window proof, and the step circuit (required to
+/// rebuild the uniformized chain circuits), then runs [`verify_windows`].
+pub fn run_verify_windows<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
+    ivc: &Path,
+    windows_proof: &Path,
+    sis_param: usize,
+    circuit: &Path,
+) -> Result<VerifyOutput, Box<dyn Error>> {
+    let bundle_bytes =
+        fs::read(ivc).map_err(|e| format!("failed to read IVC bundle {}: {e}", ivc.display()))?;
+    let bundle: NifsBundle = codec::bundle_decode::<ScalarField<C>>(&bundle_bytes)
+        .map_err(|e| format!("failed to parse IVC bundle as NIFS bundle: {e}"))?;
+
+    let proof_bytes = fs::read(windows_proof).map_err(|e| {
+        format!(
+            "failed to read window proof {}: {e}",
+            windows_proof.display()
+        )
+    })?;
+    let ws: WindowsProofSet = codec::windows_proof_decode::<ScalarField<C>>(&proof_bytes)
+        .map_err(|e| format!("failed to parse window proof: {e}"))?;
+
+    let c = load_circuit::<C>(circuit)?;
+    verify_windows::<C, CS>(&bundle, &ws, sis_param, &c)
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -4493,6 +5064,69 @@ mod tests {
                 "folded public input must be a canonical residue mod q"
             );
         }
+    }
+
+    /// Window-model proof (P9): produce a `WindowsProofSet` from a folded
+    /// Module-SIS chain, CBOR round-trip it, and verify it against the bundle
+    /// with the ring modulus enabled.  Tampering the bundle or a window row
+    /// must be rejected.
+    #[test]
+    fn module_sis_window_proof_roundtrip_and_tamper() {
+        type C = crate::curve::Bls12_381;
+        type CS = crate::module_sis::ModuleSisCommitment<C>;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let r1cs_path = tmp.path().join("step.r1cs");
+        let steps_dir = tmp.path().join("steps");
+        fs::write(&r1cs_path, step_r1cs_bytes()).unwrap();
+        fs::create_dir(&steps_dir).unwrap();
+
+        let mut state = 2u64;
+        for (i, x) in [3u64, 5, 7].iter().enumerate() {
+            state = write_step_wtns(&steps_dir, i, state, *x);
+        }
+        assert_eq!(state, 210);
+
+        let m = 1;
+        let folded = fold_nifs::<C, CS>(&r1cs_path, &steps_dir, OptFlags::NONE, m).unwrap();
+        let c = load_circuit::<C>(&r1cs_path).unwrap();
+
+        // Partition into windows of 2 steps: [0,2) and [2,3).
+        let ws = prove_windows::<C, CS>(&c, &folded, 2, OptFlags::NONE).unwrap();
+        assert_eq!(ws.windows.len(), 2);
+        assert_eq!(ws.windows[0].n_steps, 2);
+        assert_eq!(ws.windows[1].n_steps, 1);
+        assert_eq!(ws.window_size, 2);
+
+        // CBOR round-trip.
+        let bytes = ws.to_cbor::<ScalarField<C>>().unwrap();
+        let decoded = WindowsProofSet::from_cbor::<ScalarField<C>>(&bytes).unwrap();
+        assert_eq!(decoded.windows.len(), 2);
+
+        // Honest verification passes (ring modulus is derived from params).
+        let vout = verify_windows::<C, CS>(&folded.bundle, &decoded, m, &c).unwrap();
+        assert_eq!(vout.steps, 3);
+
+        // Tampering the bundle's final instance must be rejected (binding).
+        let mut bad_bundle = folded.bundle.clone();
+        bad_bundle.final_instance.x[0] = (210 + 1).to_string();
+        assert!(verify_windows::<C, CS>(&bad_bundle, &decoded, m, &c).is_err());
+
+        // Tampering a window's claimed interface must be rejected.
+        let mut tampered = decoded.clone();
+        tampered.windows[0].window_io_out[0] = "1".to_string();
+        assert!(verify_windows::<C, CS>(&folded.bundle, &tampered, m, &c).is_err());
+
+        // A window count that does not match the deterministic partition is
+        // rejected even before any cryptography runs.
+        let mut truncated = decoded.clone();
+        truncated.windows.pop();
+        assert!(verify_windows::<C, CS>(&folded.bundle, &truncated, m, &c).is_err());
+
+        // Different window_size than the partition used must be rejected.
+        let mut resized = decoded.clone();
+        resized.window_size = 3;
+        assert!(verify_windows::<C, CS>(&folded.bundle, &resized, m, &c).is_err());
     }
 
     proptest! {

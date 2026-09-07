@@ -15,7 +15,8 @@ use prover::{
     commitment::{HashCommitment, ModuleSisCommitment, PedersenCommitment, SisCommitment},
     curve::{Bandersnatch, Bls12_381, Bn254, Grumpkin, NovaCurve, Pallas, ScalarField, Vesta},
     norm, run_compress_level1_batch_opt, run_compress_level1_opt, run_compress_sumcheck_batch_opt,
-    run_compress_sumcheck_opt, NifsSumcheckProof, OptFlags, DEFAULT_SIS_PARAM,
+    run_compress_sumcheck_opt, run_compress_windows, NifsSumcheckProof, OptFlags,
+    DEFAULT_SIS_PARAM, DEFAULT_WINDOW_SIZE,
 };
 use std::error::Error;
 use std::fs;
@@ -53,6 +54,15 @@ pub struct Args {
     /// proof but auditable.  Conflicts with `--slim`.
     #[arg(long, conflicts_with = "slim")]
     pub level1: bool,
+
+    /// Produce a window-model proof (P9): partition the step chain into
+    /// consecutive windows of `--window-size` steps (defaults to the batch
+    /// size, or `DEFAULT_WINDOW_SIZE`) and emit one uniformized per-window
+    /// proof.  The window verifier checks every step of the chain against
+    /// the step circuit with canonical-lift boundaries — the post-quantum
+    /// soundness anchor for ring schemes.  Conflicts with `--slim`/`--level1`.
+    #[arg(long, conflicts_with_all = ["slim", "level1"])]
+    pub windows: bool,
 
     /// Elliptic curve to use.
     #[arg(long, value_enum, default_value = "bls12-381")]
@@ -105,9 +115,16 @@ pub struct Args {
 
     /// Batch size for batch-then-checkpoint folding (P2b) during compression.
     /// When set, re-folds deterministically in batches with norm-reset
-    /// checkpoints.  Defaults to 0 (standard step-by-step folding).
+    /// checkpoints.  Defaults to 0 (standard step-by-step folding).  For
+    /// `--commitment module-sis` a zero batch size defaults to the window
+    /// size so the reproduced bundle matches the `fold`-produced transport.
     #[arg(long, value_name = "N", default_value_t = 0)]
     pub batch_size: usize,
+
+    /// Steps per window for `--windows`.  Defaults to the batch size, or
+    /// `DEFAULT_WINDOW_SIZE` when no batch size is set.
+    #[arg(long, value_name = "N", default_value_t = DEFAULT_WINDOW_SIZE)]
+    pub window_size: usize,
 
     /// Infinity-norm bound in bits for checkpoint shortness checks.
     /// Only used when --batch-size is set.
@@ -156,7 +173,34 @@ fn strip_and_write<C: NovaCurve>(
 pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
     let opts = parse_opt_flags(&args.opt)?;
     let m = crate::cmd::effective_m(args.commitment, args.sis_param, args.module_sis_params);
-    let batch = args.batch_size > 0;
+    // Module-SIS defaults to the window-model proof; the effective batch
+    // echoes the fold default (window size) so the reproduced bundle matches.
+    let windows = args.windows
+        || (args.commitment == crate::CommitmentSchemeArg::ModuleSis && !args.slim && !args.level1);
+    let batch = args.batch_size > 0
+        || (windows && args.commitment == crate::CommitmentSchemeArg::ModuleSis);
+    let eff_batch = if args.batch_size > 0 {
+        args.batch_size
+    } else if windows && args.commitment == crate::CommitmentSchemeArg::ModuleSis {
+        args.window_size
+    } else {
+        0
+    };
+    if windows {
+        dispatch!(args.curve, args.commitment, {
+            run_compress_windows::<C, CS>(
+                &args.circuit,
+                &args.steps,
+                &args.out,
+                opts,
+                m,
+                eff_batch,
+                args.bound_bits,
+                args.window_size,
+            )
+        })?;
+        return Ok(());
+    }
     if args.level1 {
         // (audit-only) norm enforcement mode, if any.
         let norm_mode = if args.norm_range {

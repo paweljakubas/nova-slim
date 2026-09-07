@@ -7,6 +7,7 @@ use prover::{
     commitment::{HashCommitment, ModuleSisCommitment, PedersenCommitment, SisCommitment},
     curve::{Bandersnatch, Bls12_381, Bn254, Grumpkin, NovaCurve, Pallas, ScalarField, Vesta},
     run_fold_nifs_batch_opt, run_fold_nifs_opt, NifsBundle, OptFlags, DEFAULT_SIS_PARAM,
+    DEFAULT_WINDOW_SIZE,
 };
 use std::error::Error;
 use std::fs;
@@ -60,7 +61,10 @@ pub struct Args {
     /// Batch size for batch-then-checkpoint folding (P2b).
     /// When set, folds instances in batches of this size using small
     /// ternary challenges, with norm-reset checkpoints after each batch.
-    /// Defaults to 0 (disabled, standard step-by-step folding).
+    /// Defaults to 0 (disabled, standard step-by-step folding).  For
+    /// `--commitment module-sis` a zero batch size defaults to the window
+    /// size (`DEFAULT_WINDOW_SIZE`), so the fold matches the transport
+    /// assumed by the window-model verifier.
     #[arg(long, value_name = "N", default_value_t = 0)]
     pub batch_size: usize,
 
@@ -114,14 +118,23 @@ fn write_bundle<C: NovaCurve>(
 pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
     let opts = parse_opt_flags(&args.opt)?;
     let m = crate::cmd::effective_m(args.commitment, args.sis_param, args.module_sis_params);
+    // Module-SIS defaults to batch+checkpoint folding with the window size so
+    // the transport (batch-folded bundle) matches the window-model verifier.
+    let batch_size = if args.batch_size > 0 {
+        args.batch_size
+    } else if args.commitment == crate::CommitmentSchemeArg::ModuleSis {
+        DEFAULT_WINDOW_SIZE
+    } else {
+        0
+    };
     dispatch!(args.curve, args.commitment, {
-        let out = if args.batch_size > 0 {
+        let out = if batch_size > 0 {
             run_fold_nifs_batch_opt::<C, CS>(
                 &args.circuit,
                 &args.steps,
                 opts,
                 m,
-                args.batch_size,
+                batch_size,
                 args.bound_bits,
             )?
         } else {

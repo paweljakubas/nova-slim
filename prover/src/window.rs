@@ -481,7 +481,7 @@ mod tests {
         xs.iter()
             .map(|&x| {
                 let z = step_z(cur, x);
-                cur = cur * x;
+                cur *= x;
                 z
             })
             .collect()
@@ -691,7 +691,7 @@ mod tests {
                 }
                 cur
             };
-            if k % 2 == 0 {
+            if k.is_multiple_of(2) {
                 // Break the per-step R1CS of a middle step.
                 steps[k][3] += Fr::from(7u64);
             } else {

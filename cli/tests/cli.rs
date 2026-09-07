@@ -1614,14 +1614,103 @@ fn nifs_level1_compress_verify_end_to_end() {
 // ------------------------------------------------------------------
 // EXPERIMENTAL Module-SIS commitment (P4): ring-domain commitment-chain
 // harness.  Fold/verify here is chain-consistency only — the scheme is
-// ring-homomorphic, NOT field-homomorphic, so the witness↔commitment
-// re-binding check is intentionally deferred (see PQ-GAP P4/P8).
+// ring-homomorphic, NOT field-homomorphic.  The per-window uniformized
+// verifier (P9) closes the resulting field/ring sumcheck gap by checking
+// every step of the chain against the step circuit with canonical-lift
+// boundaries (see PQ-GAP P8/P9).
 // ------------------------------------------------------------------
 
-/// SMOKE: honest ring-domain commitment chain across fold → compress --slim
-/// → verify, with the balanced Module-SIS parameter set (index 1).
+/// Run the window-model e2e flow (fold → compress --windows → verify
+/// --windows-proof --circuit) for a given curve plus extra flags; return the
+/// bundle and the window proof.
+fn e2e_windows_flow(
+    curve: &str,
+    extra: &[&str],
+    circuit: &std::path::Path,
+    steps: &std::path::Path,
+) -> (NamedTempFile, NamedTempFile) {
+    let bundle_file = NamedTempFile::new().unwrap();
+    let mut fold = Command::cargo_bin("nova-slim").unwrap();
+    fold.arg("fold")
+        .arg("--curve")
+        .arg(curve)
+        .args(extra)
+        .arg("--circuit")
+        .arg(circuit)
+        .arg("--steps")
+        .arg(steps)
+        .arg("--out")
+        .arg(bundle_file.path());
+    fold.assert().success();
+
+    let proof_file = NamedTempFile::new().unwrap();
+    let mut compress = Command::cargo_bin("nova-slim").unwrap();
+    compress
+        .arg("compress")
+        .arg("--windows")
+        .arg("--curve")
+        .arg(curve)
+        .args(extra)
+        .arg("--circuit")
+        .arg(circuit)
+        .arg("--steps")
+        .arg(steps)
+        .arg("--out")
+        .arg(proof_file.path());
+    compress
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Window proof written"));
+
+    let mut verify = Command::cargo_bin("nova-slim").unwrap();
+    verify
+        .arg("verify")
+        .arg("--curve")
+        .arg(curve)
+        .args(extra)
+        .arg("--ivc")
+        .arg(bundle_file.path())
+        .arg("--windows-proof")
+        .arg(proof_file.path())
+        .arg("--circuit")
+        .arg(circuit);
+    verify
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("window-model proofs OK"));
+
+    (bundle_file, proof_file)
+}
+
+/// Assert that a window proof does NOT verify a bundle it was not made for.
+fn assert_windows_rejected(
+    curve: &str,
+    extra: &[&str],
+    bundle: &std::path::Path,
+    proof: &std::path::Path,
+    circuit: &std::path::Path,
+) {
+    let mut verify = Command::cargo_bin("nova-slim").unwrap();
+    verify
+        .arg("verify")
+        .arg("--curve")
+        .arg(curve)
+        .args(extra)
+        .arg("--ivc")
+        .arg(bundle)
+        .arg("--windows-proof")
+        .arg(proof)
+        .arg("--circuit")
+        .arg(circuit);
+    verify.assert().failure();
+}
+
+/// SMOKE: honest window-model commitment-chain proof (P9) from fold →
+/// compress --windows → verify --windows-proof on the balanced Module-SIS
+/// parameter set (index 1).  Every step of the chain is verified against the
+/// step circuit with canonical-lift boundaries.
 #[test]
-fn module_sis_commitment_chain_slim_end_to_end() {
+fn module_sis_commitment_chain_windows_end_to_end() {
     let r1cs = NamedTempFile::new().unwrap();
     fs::write(r1cs.path(), build_synthetic_step_r1cs()).unwrap();
     let steps_dir = tempfile::tempdir().unwrap();
@@ -1631,13 +1720,33 @@ fn module_sis_commitment_chain_slim_end_to_end() {
     }
 
     let ms = ["--commitment", "module-sis", "--module-sis-params", "1"];
-    e2e_slim_flow("bn254", &ms, r1cs.path(), steps_dir.path());
+    let (bundle_file, proof_file) =
+        e2e_windows_flow("bn254", &ms, r1cs.path(), steps_dir.path());
+
+    // Tampering the bundle's instance must fail verification.
+    let mut tampered: prover::NifsBundle =
+        prover::NifsBundle::from_cbor::<ark_bn254::Fr>(&fs::read(bundle_file.path()).unwrap())
+            .unwrap();
+    tampered.final_instance.x[0] = (state + 1).to_string();
+    let tampered_file = tempfile::NamedTempFile::new().unwrap();
+    fs::write(
+        tampered_file.path(),
+        tampered.to_cbor::<ark_bn254::Fr>().unwrap(),
+    )
+    .unwrap();
+    assert_windows_rejected(
+        "bn254",
+        &ms,
+        tampered_file.path(),
+        proof_file.path(),
+        r1cs.path(),
+    );
 }
 
 /// The Module-SIS parameter-set index must match between fold and compress:
-/// the slim proof's final instance is re-folded with the compress-time index,
-/// so a mismatch produces a final-instance hash that does not bind to the
-/// bundle → verification fails.
+/// the window proof's bundle binding is produced by re-folding with the
+/// compress-time index, so a mismatch produces a different final instance →
+/// verification fails.
 #[test]
 fn module_sis_param_index_mismatch_rejected() {
     let r1cs = NamedTempFile::new().unwrap();
@@ -1666,49 +1775,29 @@ fn module_sis_param_index_mismatch_rejected() {
         .arg(bundle_file.path());
     fold.assert().success();
 
-    // ...but compress with Balanced-I (index 1): re-folding diverges.
-    let proof_file = NamedTempFile::new().unwrap();
-    let mut compress = Command::cargo_bin("nova-slim").unwrap();
-    compress
-        .arg("compress")
-        .arg("--slim")
-        .arg("--curve")
-        .arg("bn254")
-        .arg("--commitment")
-        .arg("module-sis")
-        .arg("--module-sis-params")
-        .arg("1")
-        .arg("--circuit")
-        .arg(r1cs.path())
-        .arg("--steps")
-        .arg(steps_dir.path())
-        .arg("--out")
-        .arg(proof_file.path());
-    compress.assert().success();
-
-    let mut verify = Command::cargo_bin("nova-slim").unwrap();
-    verify
-        .arg("verify")
-        .arg("--curve")
-        .arg("bn254")
-        .arg("--commitment")
-        .arg("module-sis")
-        .arg("--module-sis-params")
-        .arg("0")
-        .arg("--ivc")
-        .arg(bundle_file.path())
-        .arg("--slim-proof")
-        .arg(proof_file.path());
-    verify.assert().failure();
+    // ...but compress --windows with Balanced-I (index 1): re-folding diverges,
+    // so the window proof's bundle binding does not match the fold bundle.
+    let (_bundle_1, proof_1) = e2e_windows_flow(
+        "bn254",
+        &["--commitment", "module-sis", "--module-sis-params", "1"],
+        r1cs.path(),
+        steps_dir.path(),
+    );
+    assert_windows_rejected(
+        "bn254",
+        &["--commitment", "module-sis", "--module-sis-params", "0"],
+        bundle_file.path(),
+        proof_1.path(),
+        r1cs.path(),
+    );
 }
 
-/// SMOKE: level-1 (degree-2 sumcheck + W/E openings + final-claim-zero)
-/// harness with the Module-SIS commitment.  The commitment re-binding step is
-/// skipped for non-field-homomorphic schemes, but the deterministic fold-log
-/// chain-consistency check and PCS opening checks still run; tampering the
-/// bundle must still fail.
+/// SMOKE: window-model (P9) harness with the Module-SIS commitment using
+/// explicit `--windows`.  The per-window uniformized proofs verify every step
+/// of the chain against the step circuit; tampering the bundle must still
+/// fail.
 #[test]
-fn module_sis_commitment_chain_level1_end_to_end() {
+fn module_sis_commitment_chain_windows_explicit_end_to_end() {
     let r1cs = NamedTempFile::new().unwrap();
     fs::write(r1cs.path(), build_synthetic_step_r1cs()).unwrap();
 
@@ -1718,67 +1807,12 @@ fn module_sis_commitment_chain_level1_end_to_end() {
         state = write_step_wtns(steps_dir.path(), i, state, *x);
     }
 
-    // 1. fold -> bundle
-    let bundle_file = NamedTempFile::new().unwrap();
-    let mut fold = Command::cargo_bin("nova-slim").unwrap();
-    fold.arg("fold")
-        .arg("--curve")
-        .arg("bn254")
-        .arg("--commitment")
-        .arg("module-sis")
-        .arg("--module-sis-params")
-        .arg("1")
-        .arg("--circuit")
-        .arg(r1cs.path())
-        .arg("--steps")
-        .arg(steps_dir.path())
-        .arg("--out")
-        .arg(bundle_file.path());
-    fold.assert().success();
-
-    // 2. compress --level1 -> level-1 proof
-    let proof_file = NamedTempFile::new().unwrap();
-    let mut compress = Command::cargo_bin("nova-slim").unwrap();
-    compress
-        .arg("compress")
-        .arg("--level1")
-        .arg("--curve")
-        .arg("bn254")
-        .arg("--commitment")
-        .arg("module-sis")
-        .arg("--module-sis-params")
-        .arg("1")
-        .arg("--circuit")
-        .arg(r1cs.path())
-        .arg("--steps")
-        .arg(steps_dir.path())
-        .arg("--out")
-        .arg(proof_file.path());
-    compress
-        .assert()
-        .success()
-        .stderr(predicate::str::contains("Level-1 proof written"));
-
-    // 3. verify the bundle with the level-1 proof
-    let mut verify = Command::cargo_bin("nova-slim").unwrap();
-    verify
-        .arg("verify")
-        .arg("--curve")
-        .arg("bn254")
-        .arg("--commitment")
-        .arg("module-sis")
-        .arg("--module-sis-params")
-        .arg("1")
-        .arg("--ivc")
-        .arg(bundle_file.path())
-        .arg("--level1-proof")
-        .arg(proof_file.path());
-    verify.assert().success().stderr(predicate::str::contains(
-        "Level-1 degree-2 sumcheck proof OK",
-    ));
+    let ms = ["--commitment", "module-sis", "--module-sis-params", "1"];
+    let (bundle_file, proof_file) =
+        e2e_windows_flow("bn254", &ms, r1cs.path(), steps_dir.path());
 
     // 4. tampering the bundle's instance must fail verification even for the
-    //    ring-domain chain harness.
+    //    ring-domain window-model harness.
     let mut tampered: prover::NifsBundle =
         prover::NifsBundle::from_cbor::<ark_bn254::Fr>(&fs::read(bundle_file.path()).unwrap())
             .unwrap();
@@ -1789,20 +1823,13 @@ fn module_sis_commitment_chain_level1_end_to_end() {
         tampered.to_cbor::<ark_bn254::Fr>().unwrap(),
     )
     .unwrap();
-    let mut verify2 = Command::cargo_bin("nova-slim").unwrap();
-    verify2
-        .arg("verify")
-        .arg("--curve")
-        .arg("bn254")
-        .arg("--commitment")
-        .arg("module-sis")
-        .arg("--module-sis-params")
-        .arg("1")
-        .arg("--ivc")
-        .arg(tampered_file.path())
-        .arg("--level1-proof")
-        .arg(proof_file.path());
-    verify2.assert().failure();
+    assert_windows_rejected(
+        "bn254",
+        &ms,
+        tampered_file.path(),
+        proof_file.path(),
+        r1cs.path(),
+    );
 }
 
 /// Full Level-1 norm-audit flow at the CLI level: compress --level1 with a JL
@@ -1978,4 +2005,77 @@ fn bn254_level1_compress_verify_end_to_end() {
     verify.assert().success().stderr(predicate::str::contains(
         "Level-1 degree-2 sumcheck proof OK",
     ));
+}
+
+// ------------------------------------------------------------------
+// Window-model proof (P9)
+// ------------------------------------------------------------------
+
+/// Window-model flow on a non-ring commitment scheme (SIS) too: the per-window
+/// uniformized proofs verify every step of the chain whatever the commitment,
+/// and a proof is rejected against a bundle it was not made for.
+#[test]
+fn cip197_windows_e2e_for_sis() {
+    let r1cs = NamedTempFile::new().unwrap();
+    fs::write(r1cs.path(), build_synthetic_step_r1cs()).unwrap();
+    let steps_dir = tempfile::tempdir().unwrap();
+    let mut state = 2u64;
+    for (i, x) in [3u64, 5, 7].iter().enumerate() {
+        state = write_step_wtns(steps_dir.path(), i, state, *x);
+    }
+
+    let sis = ["--commitment", "sis", "--sis-param", "128"];
+    let (bundle_a, proof_a) = e2e_windows_flow("bls12-381", &sis, r1cs.path(), steps_dir.path());
+
+    // A second chain with a different witness: batch-reproduced bundle and
+    // per-window proofs bind to this specific transcript.
+    let other_dir = tempfile::tempdir().unwrap();
+    let mut other_state = 2u64;
+    for (i, x) in [5u64, 11, 13].iter().enumerate() {
+        other_state = write_step_wtns(other_dir.path(), i, other_state, *x);
+    }
+    let (bundle_b, proof_b) = e2e_windows_flow("bls12-381", &sis, r1cs.path(), other_dir.path());
+
+    // Binding: a window proof is rejected against a bundle it was not made for.
+    assert_windows_rejected("bls12-381", &sis, bundle_a.path(), proof_b.path(), r1cs.path());
+    assert_windows_rejected("bls12-381", &sis, bundle_b.path(), proof_a.path(), r1cs.path());
+}
+
+/// `--windows` conflicts with `--slim` and `--level1` at the CLI level.
+#[test]
+fn windows_conflicts_with_slim_and_level1() {
+    let r1cs = NamedTempFile::new().unwrap();
+    fs::write(r1cs.path(), build_synthetic_step_r1cs()).unwrap();
+    let steps_dir = tempfile::tempdir().unwrap();
+    let mut state = 2u64;
+    for (i, x) in [3u64, 5, 7].iter().enumerate() {
+        state = write_step_wtns(steps_dir.path(), i, state, *x);
+    }
+
+    let proof_file = NamedTempFile::new().unwrap();
+    let mut compress = Command::cargo_bin("nova-slim").unwrap();
+    compress
+        .arg("compress")
+        .arg("--windows")
+        .arg("--slim")
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(proof_file.path());
+    compress.assert().failure();
+
+    let mut compress2 = Command::cargo_bin("nova-slim").unwrap();
+    compress2
+        .arg("compress")
+        .arg("--windows")
+        .arg("--level1")
+        .arg("--circuit")
+        .arg(r1cs.path())
+        .arg("--steps")
+        .arg(steps_dir.path())
+        .arg("--out")
+        .arg(proof_file.path());
+    compress2.assert().failure();
 }

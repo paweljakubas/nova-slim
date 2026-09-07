@@ -5,7 +5,8 @@ use clap::Parser;
 use prover::{
     commitment::{HashCommitment, ModuleSisCommitment, PedersenCommitment, SisCommitment},
     curve::{Bandersnatch, Bls12_381, Bn254, Grumpkin, Pallas, Vesta},
-    run_verify_slim, run_verify_slim_level1, run_verify_sumcheck_opt, OptFlags, DEFAULT_SIS_PARAM,
+    run_verify_slim, run_verify_slim_level1, run_verify_sumcheck_opt, run_verify_windows, OptFlags,
+    DEFAULT_SIS_PARAM,
 };
 use std::error::Error;
 use std::path::PathBuf;
@@ -33,8 +34,16 @@ pub struct Args {
     /// Verifies the degree-2 sumcheck, the final-claim-zero check, the W/E
     /// opening proofs, and Pedersen commitment consistency — closing the
     /// "free E" / all-zeros soundness gap.
-    #[arg(long, value_name = "FILE", conflicts_with_all = ["sumcheck_proof", "slim_proof"])]
+    #[arg(long, value_name = "FILE", conflicts_with_all = ["sumcheck_proof", "slim_proof", "windows_proof"])]
     pub level1_proof: Option<PathBuf>,
+
+    /// Path to a window-model proof from `nova-slim compress --windows`.
+    /// Verifies every step of the chain with one uniformized per-window proof
+    /// (degree-2 sumcheck, HashPC openings, canonical-lift boundaries) plus
+    /// bundle binding and cross-window chaining — the post-quantum soundness
+    /// anchor (P9).  Requires `--circuit` to rebuild the step chain circuits.
+    #[arg(long, value_name = "FILE", requires = "circuit", conflicts_with_all = ["sumcheck_proof", "slim_proof", "level1_proof"])]
+    pub windows_proof: Option<PathBuf>,
 
     /// Elliptic curve to use.
     #[arg(long, value_enum, default_value = "bls12-381")]
@@ -91,6 +100,23 @@ pub struct Args {
 /// Run the `verify` subcommand.
 pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
     let m = crate::cmd::effective_m(args.commitment, args.sis_param, args.module_sis_params);
+    if let Some(ref wp) = args.windows_proof {
+        let circuit = args.circuit.as_deref().ok_or_else(|| {
+            "verify --windows-proof requires --circuit (needed to rebuild the step chain circuits)"
+                .to_string()
+        })?;
+        let out = dispatch!(args.curve, args.commitment, {
+            run_verify_windows::<C, CS>(&args.ivc, wp, m, circuit)
+        })?;
+        eprintln!(
+            "Verified {} steps: window-model proofs OK (every step v. the circuit), \
+             bundle binding OK, cross-window chaining OK",
+            out.steps
+        );
+        eprintln!("Final transcript: {}", out.transcript_final);
+        return Ok(());
+    }
+
     if let Some(ref l1) = args.level1_proof {
         let norm_mode = if args.norm_range {
             prover::norm::NormMode::Range
@@ -151,5 +177,5 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    Err("nothing to verify — pass --slim-proof or --sumcheck-proof".into())
+    Err("nothing to verify — pass --windows-proof, --slim-proof, --level1-proof, or --sumcheck-proof".into())
 }
