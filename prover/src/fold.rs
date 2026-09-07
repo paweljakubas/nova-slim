@@ -23,7 +23,9 @@
 //! `FIELD_HOMOMORPHIC` flag.
 
 use crate::commitment::CommitmentScheme;
-use crate::nifs::{fold_challenge, small_fold_challenge, RelaxedR1csInstance};
+use crate::nifs::{
+    fold_challenge, small_fold_challenge, RelaxedR1csInstance, RelaxedR1csWitness,
+};
 
 /// Which algebraic domain a scheme's NIFS folds run over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -48,23 +50,14 @@ pub trait FoldProtocol: CommitmentScheme {
     ///
     /// Field domain — full-field `r ∈ F_r` (sound against arbitrary scalar
     /// queries).
-    /// Ring domain — ternary `r ∈ {0, ±1}` (exact ring-linearity, so the
-    /// accumulated commitment stays the commitment of the folded witness).
+    /// Ring domain — ternary `r ∈ {0, ±1}` (small-challenge NIFS; the exact
+    /// ring-linearity that enables commitment re-binding is achieved by the
+    /// ring-residue fold of `subsec:ring-fold`).
     fn fold_challenge(
         acc: &[u8],
         u1: &RelaxedR1csInstance<Self>,
         u2: &RelaxedR1csInstance<Self>,
     ) -> Self::Scalar;
-
-    /// Whether a fresh commitment of the *folded field witness* can be
-    /// compared for equality with the homomorphically folded commitment.
-    ///
-    /// True for every scheme currently supported: field-homomorphic schemes
-    /// satisfy it under full-field challenges, and the ring-domain fold
-    /// satisfies it exactly under ternary challenges.
-    fn verifies_rebinding() -> bool {
-        true
-    }
 }
 
 impl<CS: CommitmentScheme> FoldProtocol for CS {
@@ -92,6 +85,7 @@ mod tests {
     use crate::commitment::{ModuleSisCommitment, PedersenCommitment};
     use crate::curve::Bls12_381;
     use ark_ff::{One, Zero};
+    use blake2::Digest;
 
     type P = PedersenCommitment<Bls12_381>;
     type MS = ModuleSisCommitment<Bls12_381>;
@@ -113,8 +107,10 @@ mod tests {
         let acc: Vec<u8> = vec![1, 2, 3];
         assert_eq!(P::FOLD_DOMAIN, FoldDomain::Field);
         assert_eq!(MS::FOLD_DOMAIN, FoldDomain::Ring);
+        // Field schemes rebind under full-field challenges; Module-SIS needs
+        // the (not-yet-implemented) ring-residue fold, so it reports false.
         assert!(P::verifies_rebinding());
-        assert!(MS::verifies_rebinding());
+        assert!(!MS::verifies_rebinding());
         // A Pedersen challenge matches the classical full-field derivation.
         assert_eq!(
             <P as FoldProtocol>::fold_challenge(&acc, &up, &up),
@@ -134,6 +130,105 @@ mod tests {
         let interval = MS::recommended_checkpoint_interval(&m)
             .expect("module-sis must recommend a norm-reset cadence");
         assert!(interval > 0, "checkpoint interval must be positive");
+    }
+
+    #[test]
+    fn ring_domain_field_fold_chain_is_consistent() {
+        type CS = MS;
+        type S = <CS as CommitmentScheme>::Scalar;
+        let params = CS::params_from_seed(b"p8-rebind", 4, 1, 0);
+        let l = vec![vec![(1u32, S::one())]];
+        let r = vec![vec![(2u32, S::one())]];
+        let o = vec![vec![(3u32, S::one())]];
+
+        fn mk<CS: CommitmentScheme>(
+            params: &CS::Params,
+            w: &[CS::Scalar],
+        ) -> (RelaxedR1csInstance<CS>, RelaxedR1csWitness<CS>) {
+            let e = vec![CS::Scalar::zero()];
+            (
+                RelaxedR1csInstance {
+                    x: w[1..3].to_vec(),
+                    u: CS::Scalar::one(),
+                    w_commit: CS::commit_witness(params, w),
+                    e_commit: CS::commit_error(params, &e),
+                },
+                RelaxedR1csWitness {
+                    w: w.to_vec(),
+                    e,
+                },
+            )
+        }
+
+        let (u0, w0) = mk::<CS>(&params, &[S::one(), S::from(2), S::from(3), S::from(6)]);
+        let mut u_acc = u0.clone();
+        let mut w_acc = w0.clone();
+        let mut acc: Vec<u8> = b"chain".to_vec();
+        for (a, b) in [(7u64, 42u64), (11u64, 462u64), (13u64, 6006u64)] {
+            let (u_step, w_step) = mk::<CS>(
+                &params,
+                &[S::one(), S::from(a), S::from(b / a), S::from(b)],
+            );
+            let chi = <CS as FoldProtocol>::fold_challenge(&acc, &u_acc, &u_step);
+            assert!(
+                chi == -S::one() || chi == S::zero() || chi == S::one(),
+                "ring-domain challenge must be ternary"
+            );
+            let (u3, w3, _cross) = crate::nifs::fold_with_log::<CS>(
+                &params, &l, &r, &o, &u_acc, &w_acc, &u_step, &w_step, chi, false,
+            );
+            u_acc = u3;
+            w_acc = w3;
+            let mut h = blake2::Blake2b512::new();
+            h.update(&acc);
+            h.update(crate::nifs::instance_to_bytes::<CS>(&u_acc).unwrap());
+            acc = h.finalize().to_vec();
+        }
+    }
+
+    /// The naive field-linear fold cannot bind Module-SIS commitments: folding
+    /// the *field* witness `w1 − w2` wraps negative coefficients mod `p`, and
+    /// `emb` is not a group homomorphism over that wrap (`lem:ring-fold-rebinding`
+    /// only applies to the ring-residue fold of `subsec:ring-fold`).  This test
+    /// pins the exact gap so it is not silently "fixed" by reintroducing the
+    /// equality check for Module-SIS before the ring-residue fold lands.
+    #[test]
+    fn module_sis_field_fold_does_not_rebind_on_coefficient_wrap() {
+        type CS = MS;
+        type S = <CS as CommitmentScheme>::Scalar;
+        let params = CS::params_from_seed(b"p8-rebind", 4, 1, 0);
+        let l = vec![vec![(1u32, S::one())]];
+        let r = vec![vec![(2u32, S::one())]];
+        let o = vec![vec![(3u32, S::one())]];
+
+        let e = vec![S::zero()];
+        let (w1, w2) = (
+            vec![S::one(), S::from(2), S::from(3), S::from(6)],
+            vec![S::one(), S::from(7), S::from(6), S::from(42)],
+        );
+        let u1 = RelaxedR1csInstance {
+            x: w1[1..3].to_vec(),
+            u: S::one(),
+            w_commit: CS::commit_witness(&params, &w1),
+            e_commit: CS::commit_error(&params, &e),
+        };
+        let u2 = RelaxedR1csInstance {
+            x: w2[1..3].to_vec(),
+            u: S::one(),
+            w_commit: CS::commit_witness(&params, &w2),
+            e_commit: CS::commit_error(&params, &e),
+        };
+        let w1 = RelaxedR1csWitness { w: w1, e: e.clone() };
+        let w2 = RelaxedR1csWitness { w: w2, e: e };
+        let (u3, w3, _cross) = crate::nifs::fold_with_log::<CS>(
+            &params, &l, &r, &o, &u1, &w1, &u2, &w2, -S::one(), false,
+        );
+        assert_ne!(
+            u3.w_commit,
+            CS::commit_witness(&params, &w3.w),
+            "folded field witness w1 − w2 wraps mod p (e.g. 2 − 7), so naive field \
+             folding cannot rebind the Module-SIS commitment; must use the ring-residue fold"
+        );
     }
 
     #[test]

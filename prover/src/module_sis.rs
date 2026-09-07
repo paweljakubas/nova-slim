@@ -604,6 +604,22 @@ pub fn field_mod_q<F: PrimeField>(f: &F, q: u64) -> u64 {
     acc as u64
 }
 
+/// The exact ring multiplier for a ring-domain fold challenge.
+///
+/// The ring-domain fold (`subsec:ring-fold`) draws ternary challenges
+/// `r ∈ {0, ±1}`.  A fresh commitment of the folded witness must equal the
+/// ring-linear combination of commitments — `com(w1 + r·w2) = com(w1) + r̂·com(w2)`
+/// with `r̂ = r mod q`.  The field element `-1` (i.e. `p − 1`) must therefore
+/// map to `q − 1` *exactly*; [`field_mod_q`] would instead give `(p − 1) mod q`,
+/// breaking witness re-binding (`lem:ring-fold-rebinding`).
+fn ring_scalar<F: PrimeField>(f: &F, q: u64) -> u64 {
+    if f == &-F::one() {
+        q - 1
+    } else {
+        field_mod_q(f, q)
+    }
+}
+
 /// Embed a vector of field scalars into blocks of `n` ring coefficients
 /// (zero-padded), i.e. `s ∈ R_q^{ceil(len/n)}`.
 pub fn embed_scalars<C: NovaCurve>(values: &[ScalarField<C>], n: usize, q: u64) -> Vec<Rq> {
@@ -749,6 +765,10 @@ impl<C: NovaCurve> CommitmentScheme for ModuleSisCommitment<C> {
         ))
     }
 
+    fn verifies_rebinding() -> bool {
+        false
+    }
+
     fn params_from_seed(
         seed: &[u8],
         n_wires: usize,
@@ -778,7 +798,7 @@ impl<C: NovaCurve> CommitmentScheme for ModuleSisCommitment<C> {
     }
 
     fn scalar_mul(c: &Self::Commitment, scalar: &Self::Scalar) -> Self::Commitment {
-        let phi = c.first().map(|r| field_mod_q(scalar, r.q)).unwrap_or(0);
+        let phi = ring_scalar(scalar, c.first().map(|r| r.q).unwrap_or(0));
         c.iter().map(|r| r.scalar_mul(phi)).collect()
     }
 

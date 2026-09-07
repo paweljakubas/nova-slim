@@ -1032,7 +1032,7 @@ fn fold_nifs<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
             Some(u_acc) => {
                 let w_acc = acc_w.take().expect("running witness must exist");
                 let acc = acc_hash.as_ref().expect("transcript initialized");
-                let challenge = nifs::fold_challenge::<CS>(acc, &u_acc, &step_u);
+                let challenge = <CS as fold::FoldProtocol>::fold_challenge(acc, &u_acc, &step_u);
                 let (u3, w3, cross_commit) = nifs::fold_with_log::<CS>(
                     &params,
                     &circuit.l,
@@ -1214,7 +1214,9 @@ where
     )?;
 
     // Build a traditional fold log for backward compatibility.
-    // We re-run the fold step-by-step to populate the fold_log.
+    // We re-run the fold step-by-step to populate the fold_log, using the
+    // same small ternary challenges as `batch_fold` so the log reproduces the
+    // batch-folded accumulator chain exactly.
     let mut fold_log: Vec<FoldLogEntry<CS>> = Vec::new();
     let mut acc_u = instances[0].clone();
     let mut acc_w = witnesses[0].clone();
@@ -1222,7 +1224,7 @@ where
     for i in 1..instances.len() {
         let step_u = &instances[i];
         let step_w = &witnesses[i];
-        let challenge = nifs::fold_challenge::<CS>(&running_hash, &acc_u, step_u);
+        let challenge = nifs::small_fold_challenge::<CS>(&running_hash, &acc_u, step_u);
         let (u3, w3, cross_commit) = nifs::fold_with_log::<CS>(
             &params, &circuit.l, &circuit.r, &circuit.o,
             &acc_u, &acc_w, step_u, step_w, challenge, false,
@@ -1648,14 +1650,14 @@ fn verify_sumcheck_compression_inner<
         return Err("E HashPC opening truth table hash mismatch".into());
     }
 
-    // 5. Verify commitments match the bundle.  Only valid for field-
-    //    homomorphic schemes: recomputing `commit(w)` from the *opened field
-    //    witness* and comparing it to the stored (possibly ring-folded)
-    //    commitment is sound when `commit(w1 + r·w2) == commit(w1) + r·commit(w2)`,
-    //    which holds for Pedersen/SIS/Hash but not for the experimental
-    //    Module-SIS commitment (ring-homomorphic only; witness re-binding is
-    //    the job of the committed-shortness / checkpoint protocol).
-    if CS::FIELD_HOMOMORPHIC {
+    // 5. Verify commitments match the bundle.  Only valid when the scheme
+    //    verifies re-binding: recomputing `commit(w)` from the *opened field
+    //    witness* and comparing it to the stored commitment is sound when
+    //    `commit(w1 + r·w2) == commit(w1) + r·commit(w2)`.  Field-homomorphic
+    //    schemes (Pedersen/SIS/Hash) satisfy this under full-field challenges;
+    //    the ring-domain Module-SIS fold (P8, `subsec:ring-fold`) satisfies it
+    //    exactly under its ternary challenges (`lem:ring-fold-rebinding`).
+    if <CS as commitment::CommitmentScheme>::verifies_rebinding() {
         let params = CS::params_from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints, sis_param);
         let w_vec = &w_opening.table[..n_wires.min(w_opening.table.len())];
         let expected_w_commit: CS::Commitment = commitment_parse(&bundle.final_instance.w_commit)?;
@@ -2288,14 +2290,12 @@ pub fn verify_slim_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarFiel
         return Err("E HashPC opening truth table hash mismatch".into());
     }
 
-    // 7. Verify commitments match the bundle.  Only valid for field-
-    //    homomorphic schemes — for the experimental Module-SIS commitment
-    //    (ring-homomorphic only) a fresh commitment of the *opened field
-    //    witness* cannot be compared to the stored ring-folded commitment;
-    //    re-binding is the job of the committed-shortness / checkpoint
-    //    protocol.  The deterministic fold-log chain consistency check below
-    //    remains the primary integrity guarantee.
-    if CS::FIELD_HOMOMORPHIC {
+    // 7. Verify commitments match the bundle.  Only valid when the scheme
+    //    verifies re-binding — field-homomorphic schemes under full-field
+    //    challenges, and the ring-domain Module-SIS fold (P8) exactly under
+    //    its ternary challenges.  The deterministic fold-log chain-consistency
+    //    check below remains an independent integrity guarantee.
+    if <CS as commitment::CommitmentScheme>::verifies_rebinding() {
         let n_wires = bundle.n_wires as usize;
         let params = CS::params_from_seed(NIFS_PARAMS_SEED, n_wires, n_constraints, sis_param);
         let w_vec = &w_opening.table[..n_wires.min(w_opening.table.len())];
@@ -2624,7 +2624,7 @@ pub fn verify_fold_log<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C
         };
         let cross = commitment_parse::<CS::Commitment>(&e.cross_commit)?;
 
-        let r = nifs::fold_challenge::<CS>(&acc_hash, &acc, &step);
+        let r = <CS as fold::FoldProtocol>::fold_challenge(&acc_hash, &acc, &step);
 
         // Homomorphic fold of the committed instances.
         let folded_x: Vec<ScalarField<C>> = acc

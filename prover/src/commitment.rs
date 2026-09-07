@@ -83,6 +83,20 @@ pub trait CommitmentScheme: Clone + Debug + Send + Sync + 'static {
     fn recommended_checkpoint_interval(_params: &Self::Params) -> Option<usize> {
         None
     }
+
+    /// Whether a fresh commitment of the *folded field witness* can be
+    /// compared for equality with the homomorphically folded commitment.
+    ///
+    /// Field-homomorphic schemes satisfy `commit(w1 + r·w2) == commit(w1) +
+    /// r·commit(w2)` for full-field challenges.  The experimental
+    /// `ModuleSisCommitment` is only ring-homomorphic: exact re-binding
+    /// requires the *ring-residue* fold of `subsec:ring-fold` (witnesses kept
+    /// as `[0, q)` residues so the pair-wise embedding distributes over the
+    /// fold) plus the P9 per-window transport, so it reports `false` until
+    /// that implementation lands.
+    fn verifies_rebinding() -> bool {
+        true
+    }
 }
 
 // ------------------------------------------------------------------
