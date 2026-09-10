@@ -51,6 +51,13 @@ pub type NifsBundle {
   transcript_hash: ByteArray,
 }
 
+/// The on-chain datum: either a sumcheck-only proof (backward-compatible) or a
+/// level-1 proof that additionally carries a norm record.
+pub type NovaSlimDatum {
+  SumOnly(NifsBundle)
+  WithNorm(NifsBundle, NormRecord)
+}
+
 /// ---------------------------------------------------------------------------
 /// Field arithmetic
 /// ---------------------------------------------------------------------------

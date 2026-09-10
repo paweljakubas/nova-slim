@@ -6,8 +6,8 @@ use norm.{
   verify_step_norm,
 }
 use verifier.{
-  NifsBundle, RoundPoly, SlimProof, derive_challenges, verify_slim,
-  verify_slim_with_norm,
+  NifsBundle, NovaSlimDatum, RoundPoly, SlimProof, derive_challenges,
+  verify_slim, verify_slim_with_norm,
 }
 
 /// Field prime, mirrored from verifier.ak so well-formed test transcripts are
@@ -381,4 +381,51 @@ test verify_slim_with_norm_rejects_bad_norm() {
   let proof = well_formed_proof(3, 5, 2)
   let rec = NormRecord { mode: NormMode.NormNone, bound_bits: 8, steps: [] }
   !verify_slim_with_norm(test_bundle(), proof, rec)
+}
+
+// ---------------------------------------------------------------------------
+// NovaSlimDatum / validator-level tests
+// ---------------------------------------------------------------------------
+
+/// A well-formed norm record for use in datum-level tests.
+fn good_norm_record() -> NormRecord {
+  let step =
+    StepNormCert {
+      cert_w: NormCertificate.RangeCert(good_range_cert()),
+      cert_e: NormCertificate.RangeCert(good_range_cert()),
+    }
+  NormRecord { mode: NormMode.NormRange, bound_bits: 8, steps: [step] }
+}
+
+/// SumOnly datum: the validator should dispatch to verify_slim (sumcheck only).
+test datum_sum_only_accepts() {
+  let proof = well_formed_proof(3, 5, 2)
+  let datum = NovaSlimDatum.SumOnly(test_bundle())
+  when datum is {
+    NovaSlimDatum.SumOnly(bundle) -> verify_slim(bundle, proof)
+    _ -> False
+  }
+}
+
+/// WithNorm datum: the validator should dispatch to verify_slim_with_norm.
+test datum_with_norm_accepts() {
+  let proof = well_formed_proof(3, 5, 2)
+  let datum = NovaSlimDatum.WithNorm(test_bundle(), good_norm_record())
+  when datum is {
+    NovaSlimDatum.WithNorm(bundle, norm) ->
+      verify_slim_with_norm(bundle, proof, norm)
+    _ -> False
+  }
+}
+
+/// WithNorm datum but bad norm: must be rejected.
+test datum_with_norm_rejects_bad_norm() {
+  let proof = well_formed_proof(3, 5, 2)
+  let bad_norm = NormRecord { mode: NormMode.NormNone, bound_bits: 8, steps: [] }
+  let datum = NovaSlimDatum.WithNorm(test_bundle(), bad_norm)
+  when datum is {
+    NovaSlimDatum.WithNorm(bundle, norm) ->
+      !verify_slim_with_norm(bundle, proof, norm)
+    _ -> False
+  }
 }
