@@ -43,15 +43,27 @@
 //!
 //! # Candidate parameter sets
 //!
-//! | Set | NIST analogue | n | q | d | m | β | Expected classical core-SVP | Expected quantum core-SVP |
+//! | Set | NIST analogue | n | q | d | m | β | Classical core-SVP | Quantum core-SVP |
 //! |---|---|---|---|---|---|---|---|---|
-//! | Conservative-I | Level I (128-bit PQ) | 512 | ~2^23 | 4 | 8 | 2^10 | ≫128 | ≫128 |
-//! | Balanced-I | Level I | 256 | ~2^23 | 6 | 12 | 2^10 | ≥128 | ≥128 |
-//! | Conservative-III | Level III (192-bit PQ) | 1024 | ~2^32 | 4 | 8 | 2^12 | ≫192 | ≫192 |
-//! | Balanced-III | Level III | 512 | ~2^32 | 6 | 12 | 2^12 | ≥192 | ≥192 |
+//! | Conservative-I | Level I (128-bit PQ) | 512 | ~2^23 | 4 | 8 | 2^10 | ~2^1195.7 | ~2^1085.2 |
+//! | Balanced-I | Level I | 256 | ~2^23 | 6 | 12 | 2^10 | ~2^896.7 | ~2^813.8 |
+//! | Conservative-III | Level III (192-bit PQ) | 1024 | ~2^32 | 4 | 8 | 2^12 | ~2^2391.8 | ~2^2170.6 |
+//! | Balanced-III | Level III | 512 | ~2^32 | 6 | 12 | 2^12 | ~2^1793.8 | ~2^1627.9 |
 //!
-//! These are **exploratory** and must be validated with a standard lattice
-//! estimator before operational use.
+//! The core-SVP columns are the **validated estimator output** (2026-09-10):
+//! the Core-SVP path of the Albrecht et al. lattice-estimator (ADPS16 sieving
+//! exponents 0.292/0.265, LGSA shape), ported to pure Python and committed in
+//! the docs repo at `tools/sis_core_svp.py` (output in
+//! `tools/sis_core_svp_output.json`; validated against the Dilithium2 anchor
+//! β=423, rop≈2^123.5).  For all four sets the optimized attack saturates at
+//! the maximum usable block size (β_block = n·m − 1 = lattice dimension − 1);
+//! the exponent recorded is the sieving cost 2^(0.292·β_block) /
+//! 2^(0.265·β_block), and including the estimator's success-probability
+//! repetition factor the total attack cost is even larger (≈2^1713 / 2^1287 /
+//! 2^21169 / 2^15879).  These figures are lower bounds on the best known
+//! attack class, not absolute proofs, and extrapolate asymptotic sieving
+//! constants to very large block sizes; they confirm the sets are
+//! **conservative** (see RFC §3.5).
 
 use std::io::{Read, Write};
 use std::marker::PhantomData;
@@ -116,6 +128,8 @@ pub struct ModuleSisParams {
 
 impl ModuleSisParams {
     /// Conservative-I: n=512, q≈2^23, d=4, m=8, β=2^10.
+    /// Validated (2026-09-10): core-SVP ~2^1195.7 classical / 2^1085.2 quantum
+    /// (estimated attack saturates at β_block = 4095).
     pub const CONSERVATIVE_I: Self = Self {
         level: NistLevel::Level1,
         balance: ParamBalance::Conservative,
@@ -128,6 +142,8 @@ impl ModuleSisParams {
     };
 
     /// Balanced-I: n=256, q≈2^23, d=6, m=12, β=2^10.
+    /// Validated (2026-09-10): core-SVP ~2^896.7 classical / 2^813.8 quantum
+    /// (estimated attack saturates at β_block = 3071).
     pub const BALANCED_I: Self = Self {
         level: NistLevel::Level1,
         balance: ParamBalance::Balanced,
@@ -140,6 +156,8 @@ impl ModuleSisParams {
     };
 
     /// Conservative-III: n=1024, q≈2^32, d=4, m=8, β=2^12.
+    /// Validated (2026-09-10): core-SVP ~2^2391.8 classical / 2^2170.6 quantum
+    /// (estimated attack saturates at β_block = 8191).
     pub const CONSERVATIVE_III: Self = Self {
         level: NistLevel::Level3,
         balance: ParamBalance::Conservative,
@@ -152,6 +170,8 @@ impl ModuleSisParams {
     };
 
     /// Balanced-III: n=512, q≈2^32, d=6, m=12, β=2^12.
+    /// Validated (2026-09-10): core-SVP ~2^1793.8 classical / 2^1627.9 quantum
+    /// (estimated attack saturates at β_block = 6143).
     pub const BALANCED_III: Self = Self {
         level: NistLevel::Level3,
         balance: ParamBalance::Balanced,
