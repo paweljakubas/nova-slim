@@ -13,20 +13,23 @@
 //! All phases keep the witnesses in memory (no disk I/O beyond the initial
 //! read) and exclude transcript hashing.  Usage:
 //!
-//!   cargo run --release --bin benchmark_nova -- --curve bls12-381 --circuit step.r1cs --steps DIR [--limit N] [--opt-parallel] [--commitment pedersen|sis]
+//!   cargo run --release --bin benchmark_nova -- --curve bls12-381 --circuit step.r1cs --steps DIR [--limit N] [--opt-parallel] [--commitment pedersen|sis|hash|module-sis] [--module-sis-params IDX]
 
 use ark_ff::Zero;
 use ark_serialize::CanonicalSerialize;
 use blake2::{Blake2b512, Digest};
 use prover::circuit::SparseCircuit;
-use prover::commitment::{CommitmentScheme, HashCommitment, PedersenCommitment, SisCommitment};
+use prover::commitment::{
+    CommitmentScheme, HashCommitment, ModuleSisCommitment, PedersenCommitment, SisCommitment,
+};
 use prover::nifs;
 use prover::norm;
 use prover::{
     curve::{NovaCurve, ScalarField},
-    fr_to_string, frs_from_strings, prove_level1, prove_sumcheck_compression_opt, verify_full,
-    verify_slim, verify_slim_level1, verify_sumcheck_compression, NifsBundle, NifsFinalInstance,
-    NifsFoldOutput, OptFlags, DEFAULT_SIS_PARAM, NIFS_PARAMS_SEED, NIFS_TRANSCRIPT_PREFIX,
+    fr_to_string, frs_from_strings, prove_level1, prove_sumcheck_compression_opt, prove_windows,
+    verify_full, verify_slim, verify_slim_level1, verify_sumcheck_compression, verify_windows,
+    NifsBundle, NifsFinalInstance, NifsFoldOutput, OptFlags, DEFAULT_SIS_PARAM,
+    DEFAULT_WINDOW_SIZE, NIFS_PARAMS_SEED, NIFS_TRANSCRIPT_PREFIX,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -53,7 +56,7 @@ fn main() {
         .map(|w| w[1].clone());
     let (Some(circuit_path), Some(steps_dir)) = (circuit_path, steps_dir) else {
         eprintln!(
-            "usage: benchmark_nova [--curve bls12-381|bn254|pallas|vesta|grumpkin|bandersnatch] [--commitment pedersen|sis|hash] [--opt-parallel] [--batch-size N] [--bound-bits B] --circuit <step.r1cs> --steps <witness-dir> [--limit N]"
+            "usage: benchmark_nova [--curve bls12-381|bn254|pallas|vesta|grumpkin|bandersnatch] [--commitment pedersen|sis|hash|module-sis] [--module-sis-params IDX] [--opt-parallel] [--batch-size N] [--bound-bits B] --circuit <step.r1cs> --steps <witness-dir> [--limit N]"
         );
         std::process::exit(2);
     };
@@ -85,6 +88,14 @@ fn main() {
                 .expect("--bound-bits must be a positive integer")
         })
         .unwrap_or(256);
+    let module_sis_params = args
+        .windows(2)
+        .find(|w| w[0] == "--module-sis-params")
+        .map(|w| {
+            w[1].parse::<usize>()
+                .expect("--module-sis-params must be a positive integer")
+        })
+        .unwrap_or(0);
 
     let curve = curve.as_deref().unwrap_or("bls12-381");
     let commitment = commitment.as_deref().unwrap_or("pedersen");
@@ -172,6 +183,41 @@ fn main() {
         >(
             &circuit_path, &steps_dir, limit, opt_parallel, sis_param, batch_size, bound_bits
         ),
+        ("bls12-381", "module-sis") => benchmark::<
+            prover::curve::Bls12_381,
+            ModuleSisCommitment<prover::curve::Bls12_381>,
+        >(&circuit_path, &steps_dir, limit, opt_parallel, module_sis_params, batch_size, bound_bits),
+        #[cfg(feature = "bn254")]
+        ("bn254", "module-sis") => benchmark::<
+            prover::curve::Bn254,
+            ModuleSisCommitment<prover::curve::Bn254>,
+        >(&circuit_path, &steps_dir, limit, opt_parallel, module_sis_params, batch_size, bound_bits),
+        #[cfg(feature = "pallas")]
+        ("pallas", "module-sis") => benchmark::<
+            prover::curve::Pallas,
+            ModuleSisCommitment<prover::curve::Pallas>,
+        >(
+            &circuit_path, &steps_dir, limit, opt_parallel, module_sis_params, batch_size, bound_bits
+        ),
+        #[cfg(feature = "vesta")]
+        ("vesta", "module-sis") => benchmark::<
+            prover::curve::Vesta,
+            ModuleSisCommitment<prover::curve::Vesta>,
+        >(&circuit_path, &steps_dir, limit, opt_parallel, module_sis_params, batch_size, bound_bits),
+        #[cfg(feature = "grumpkin")]
+        ("grumpkin", "module-sis") => benchmark::<
+            prover::curve::Grumpkin,
+            ModuleSisCommitment<prover::curve::Grumpkin>,
+        >(
+            &circuit_path, &steps_dir, limit, opt_parallel, module_sis_params, batch_size, bound_bits
+        ),
+        #[cfg(feature = "bandersnatch")]
+        ("bandersnatch", "module-sis") => benchmark::<
+            prover::curve::Bandersnatch,
+            ModuleSisCommitment<prover::curve::Bandersnatch>,
+        >(
+            &circuit_path, &steps_dir, limit, opt_parallel, module_sis_params, batch_size, bound_bits
+        ),
         ("bls12-381", "hash") => benchmark::<
             prover::curve::Bls12_381,
             HashCommitment<prover::curve::Bls12_381>,
@@ -216,7 +262,7 @@ fn main() {
             &circuit_path, &steps_dir, limit, opt_parallel, sis_param, batch_size, bound_bits
         ),
         _ => {
-            eprintln!("unknown curve/commitment: {curve}/{commitment} — valid curves: bls12-381, bn254, pallas, vesta, grumpkin, bandersnatch; valid commitments: pedersen, sis, hash");
+            eprintln!("unknown curve/commitment: {curve}/{commitment} — valid curves: bls12-381, bn254, pallas, vesta, grumpkin, bandersnatch; valid commitments: pedersen, sis, hash, module-sis");
             std::process::exit(2);
         }
     }
@@ -257,7 +303,9 @@ fn benchmark<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     let n_steps = wtns.len();
     let scheme_name = {
         let tn = std::any::type_name::<CS>();
-        if tn.contains("Sis") {
+        if tn.contains("ModuleSis") {
+            "module-sis"
+        } else if tn.contains("Sis") {
             "sis"
         } else if tn.contains("Hash") {
             "hash"
@@ -275,7 +323,22 @@ fn benchmark<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
         circuit.n_prv_in
     );
     println!("step witnesses: {n_steps} (from {steps_dir})");
-    println!("commitment scheme: {scheme_name}");
+    println!(
+        "commitment scheme: {scheme_name} (sis param / module-sis index = {sis_param})"
+    );
+    if scheme_name == "module-sis" {
+        let base = prover::module_sis::ModuleSisParams::ALL
+            [sis_param % prover::module_sis::ModuleSisParams::ALL.len()];
+        println!(
+            "module-sis parameter set: {} (n={}, q={}, d={}, m={}, beta=2^{})",
+            base.label(),
+            base.n,
+            base.q,
+            base.d,
+            base.m,
+            base.beta_bits
+        );
+    }
 
     benchmark_slim::<C, CS>(&mut circuit, &wtns, opt_parallel, sis_param, batch_size, bound_bits);
 }
@@ -298,10 +361,6 @@ fn benchmark_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     } else {
         opt.to_string()
     };
-    println!(
-        "mode: NIFS fold + sumcheck compress ({mode_str}), curve: {}",
-        std::any::type_name::<C>()
-    );
 
     // Starting norm bound B (bit-length) for norm certificates; the loop below
     // increases it until the honest witness fits, so this is just a lower bound.
@@ -318,6 +377,92 @@ fn benchmark_slim<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     println!(
         "nifs fold ({mode_str}): {fold_s:.3} s total, {:.3} ms/step over {n_steps} steps",
         fold_s * 1000.0 / n_steps as f64
+    );
+
+    // Ring-residue folds (Module-SIS) are NOT field-homomorphic: a sumcheck
+    // over the folded accumulator is not a valid relation there, because the
+    // folded instance is a canonical mod-q residue, not the field-linear
+    // combination.  The production artifact for ring folds is the window
+    // model (W1 transport fold + per-window W2 verification), so verify that
+    // instead of the field-only compress/level-1 chain below.
+    if CS::ring_modulus(&CS::params_from_seed(
+        NIFS_PARAMS_SEED,
+        circuit.n_wires as usize,
+        circuit.n_constraints as usize,
+        sis_param,
+    ))
+    .is_some()
+    {
+        println!("mode: NIFS fold + window-model verify (ring fold)");
+        let opts = if parallel {
+            OptFlags::PARALLEL
+        } else {
+            OptFlags::NONE
+        };
+        let t = Instant::now();
+        let ws = prove_windows::<C, CS>(circuit, &folded, DEFAULT_WINDOW_SIZE, opts)
+            .unwrap_or_else(|e| panic!("failed to build window proof: {e}"));
+        let windows_prove_s = t.elapsed().as_secs_f64();
+        let n_windows = ws.windows.len();
+
+        let t = Instant::now();
+        let ws_result = verify_windows::<C, CS>(&folded.bundle, &ws, sis_param, circuit);
+        let windows_verify_s = t.elapsed().as_secs_f64();
+        match ws_result {
+            Ok(_) => {}
+            Err(e) => {
+                // Module-SIS is secure *only* for canonical residues (io < q).
+                // Circuits whose honest io wraps mod p (e.g. hash outputs) cannot
+                // be verified with a ring commitment: refuse loudly instead of
+                // reporting a false positive.  Use a canonical-io circuit (e.g.
+                // the copy-state circuit emitted by benchmark_synthetic).
+                println!(
+                    "verify (windows): FAILED — {e}"
+                );
+                println!(
+                    "WARNING: Module-SIS verification requires canonical-residue io (every window boundary wire < q). This circuit's io is not canonical, so the honest proof is legitimately rejected."
+                );
+                println!("fold cost and sizes above remain valid measurements of the transport fold; end-to-end verification was NOT OK for this (non-canonical) circuit.");
+                std::process::exit(3);
+            }
+        }
+
+        let bundle_cbor = folded
+            .bundle
+            .to_cbor::<ScalarField<C>>()
+            .expect("bundle serialization should not fail");
+        let ws_cbor = prover::codec::windows_proof_encode::<ScalarField<C>>(&ws)
+            .expect("window proof serialization should not fail");
+        let base = prover::module_sis::ModuleSisParams::ALL
+            [sis_param % prover::module_sis::ModuleSisParams::ALL.len()];
+        println!(
+            "windows compress: {windows_prove_s:.3} s ({n_windows} windows of <= {DEFAULT_WINDOW_SIZE} steps)"
+        );
+        println!(
+            "verify (windows): {windows_verify_s:.4} s (W2 per-window sumcheck + canonical-lift + binding)"
+        );
+        println!(
+            "nifs bundle: {} B ({:.1} KiB cbor), O(1) in the step count",
+            bundle_cbor.len(),
+            bundle_cbor.len() as f64 / 1024.0
+        );
+        println!(
+            "windows proof: {} B ({:.1} KiB cbor) — production on-chain artifact",
+            ws_cbor.len(),
+            ws_cbor.len() as f64 / 1024.0
+        );
+        println!(
+            "w_commit/e_commit (ring) size: {} B each ({} B total on-chain) [{}]",
+            base.commitment_size(),
+            base.commitment_size() * 2,
+            base.label()
+        );
+        println!("all verifications OK");
+        return;
+    }
+    println!(
+        "mode: NIFS fold + sumcheck compress ({mode_str}), curve: {}",
+        std::any::type_name::<C>()
     );
 
     // 2. Sumcheck compress — one sumcheck proof + HashPC opening proofs

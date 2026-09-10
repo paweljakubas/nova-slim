@@ -4,23 +4,34 @@
 //! then benchmarks the full slim IVC flow (fold -> compress -> verify).
 //!
 //! Usage:
-//!   cargo run --release --bin benchmark_synthetic -- --curve bls12-381 --state-width N --steps M [--opt-parallel] [--commitment pedersen|sis]
+//!   cargo run --release --bin benchmark_synthetic -- --curve bls12-381 --state-width N --steps M [--opt-parallel] [--commitment pedersen|sis|hash|module-sis] [--module-sis-params IDX] [--batch-size N] [--bound-bits B] [--write-circuit step.r1cs] [--write-steps DIR]
+
+use std::sync::OnceLock;
 
 use ark_ff::Zero;
 use ark_serialize::CanonicalSerialize;
 use blake2::Digest;
 use prover::circuit::{r1cs_to_bytes_sparse, SparseCircuit};
 use prover::codec;
-use prover::commitment::{CommitmentScheme, HashCommitment, PedersenCommitment, SisCommitment};
+use prover::commitment::{
+    CommitmentScheme, HashCommitment, ModuleSisCommitment, PedersenCommitment, SisCommitment,
+};
 use prover::nifs;
 use prover::norm;
 use prover::{
     curve::{NovaCurve, ScalarField},
-    fr_to_string, prove_level1, prove_sumcheck_compression_opt, verify_full, verify_slim,
-    verify_slim_level1, verify_sumcheck_compression_opt, NifsBundle, NifsFinalInstance,
-    NifsFoldOutput, OptFlags, DEFAULT_SIS_PARAM, NIFS_PARAMS_SEED, NIFS_TRANSCRIPT_PREFIX,
+    fr_to_string, prove_level1, prove_sumcheck_compression_opt, prove_windows, verify_full,
+    verify_slim, verify_slim_level1, verify_sumcheck_compression_opt, verify_windows,
+    NifsBundle, NifsFinalInstance, NifsFoldOutput, NifsSumcheckProof, OptFlags,
+    DEFAULT_SIS_PARAM, DEFAULT_WINDOW_SIZE, NIFS_PARAMS_SEED, NIFS_TRANSCRIPT_PREFIX,
 };
 use std::time::Instant;
+
+/// Optional `--write-circuit`/`--write-steps` output paths (set once in `main`),
+/// used to export the in-memory canonical-io circuit + witnesses for
+/// `benchmark_nova` / the CLI.
+static WRITE_CIRCUIT: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
+static WRITE_STEPS: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -73,6 +84,28 @@ fn main() {
                 .expect("--bound-bits must be a positive integer")
         })
         .unwrap_or(256);
+    let module_sis_params = args
+        .windows(2)
+        .find(|w| w[0] == "--module-sis-params")
+        .map(|w| {
+            w[1].parse::<usize>()
+                .expect("--module-sis-params must be a positive integer")
+        })
+        .unwrap_or(0);
+    WRITE_CIRCUIT
+        .set(
+            args.windows(2)
+                .find(|w| w[0] == "--write-circuit")
+                .map(|w| std::path::PathBuf::from(&w[1])),
+        )
+        .ok();
+    WRITE_STEPS
+        .set(
+            args.windows(2)
+                .find(|w| w[0] == "--write-steps")
+                .map(|w| std::path::PathBuf::from(&w[1])),
+        )
+        .ok();
 
     let curve = curve.as_deref().unwrap_or("bls12-381");
     let commitment = commitment.as_deref().unwrap_or("pedersen");
@@ -143,6 +176,35 @@ fn main() {
             prover::curve::Bandersnatch,
             SisCommitment<prover::curve::Bandersnatch>,
         >(state_width, n_steps, opt_parallel, sis_param, batch_size, bound_bits),
+        ("bls12-381", "module-sis") => benchmark::<
+            prover::curve::Bls12_381,
+            ModuleSisCommitment<prover::curve::Bls12_381>,
+        >(state_width, n_steps, opt_parallel, module_sis_params, batch_size, bound_bits),
+        #[cfg(feature = "bn254")]
+        ("bn254", "module-sis") => benchmark::<
+            prover::curve::Bn254,
+            ModuleSisCommitment<prover::curve::Bn254>,
+        >(state_width, n_steps, opt_parallel, module_sis_params, batch_size, bound_bits),
+        #[cfg(feature = "pallas")]
+        ("pallas", "module-sis") => benchmark::<
+            prover::curve::Pallas,
+            ModuleSisCommitment<prover::curve::Pallas>,
+        >(state_width, n_steps, opt_parallel, module_sis_params, batch_size, bound_bits),
+        #[cfg(feature = "vesta")]
+        ("vesta", "module-sis") => benchmark::<
+            prover::curve::Vesta,
+            ModuleSisCommitment<prover::curve::Vesta>,
+        >(state_width, n_steps, opt_parallel, module_sis_params, batch_size, bound_bits),
+        #[cfg(feature = "grumpkin")]
+        ("grumpkin", "module-sis") => benchmark::<
+            prover::curve::Grumpkin,
+            ModuleSisCommitment<prover::curve::Grumpkin>,
+        >(state_width, n_steps, opt_parallel, module_sis_params, batch_size, bound_bits),
+        #[cfg(feature = "bandersnatch")]
+        ("bandersnatch", "module-sis") => benchmark::<
+            prover::curve::Bandersnatch,
+            ModuleSisCommitment<prover::curve::Bandersnatch>,
+        >(state_width, n_steps, opt_parallel, module_sis_params, batch_size, bound_bits),
         ("bls12-381", "hash") => benchmark::<
             prover::curve::Bls12_381,
             HashCommitment<prover::curve::Bls12_381>,
@@ -181,7 +243,7 @@ fn main() {
             HashCommitment<prover::curve::Bandersnatch>,
         >(state_width, n_steps, opt_parallel, sis_param, batch_size, bound_bits),
         _ => {
-            eprintln!("unknown curve/commitment: {curve}/{commitment} — valid curves: bls12-381, bn254, pallas, vesta, grumpkin, bandersnatch; valid commitments: pedersen, sis, hash");
+            eprintln!("unknown curve/commitment: {curve}/{commitment} — valid curves: bls12-381, bn254, pallas, vesta, grumpkin, bandersnatch; valid commitments: pedersen, sis, hash, module-sis");
             std::process::exit(2);
         }
     }
@@ -199,14 +261,32 @@ where
     CS::Scalar: ark_ff::PrimeField,
 {
     let type_name = std::any::type_name::<CS>();
-    let scheme_name = if type_name.contains("Sis") {
+    let scheme_name = if type_name.contains("ModuleSis") {
+        "module-sis"
+    } else if type_name.contains("Sis") {
         "sis"
     } else if type_name.contains("Hash") {
         "hash"
     } else {
         "pedersen"
     };
-    println!("synthetic benchmark: state_width={state_width}, steps={n_steps}, curve={}, commitment={scheme_name}", std::any::type_name::<C>());
+    println!(
+        "synthetic benchmark: state_width={state_width}, steps={n_steps}, curve={}, commitment={scheme_name} (sis param / module-sis index = {sis_param})",
+        std::any::type_name::<C>()
+    );
+    if scheme_name == "module-sis" {
+        let base =
+            prover::module_sis::ModuleSisParams::ALL[sis_param % prover::module_sis::ModuleSisParams::ALL.len()];
+        println!(
+            "module-sis parameter set: {} (n={}, q={}, d={}, m={}, beta=2^{})",
+            base.label(),
+            base.n,
+            base.q,
+            base.d,
+            base.m,
+            base.beta_bits
+        );
+    }
 
     let n_wires = 1 + 2 * state_width;
     let n_pub_out = state_width as u32;
@@ -242,13 +322,28 @@ where
         witnesses.push(w);
     }
 
+    if let Some(p) = WRITE_CIRCUIT.get().unwrap().as_ref() {
+        std::fs::write(p, &r1cs_bytes).expect("failed to write step circuit");
+        println!("step circuit written to {}", p.display());
+    }
+    if let Some(d) = WRITE_STEPS.get().unwrap().as_ref() {
+        std::fs::create_dir_all(d).expect("failed to create steps dir");
+        for (i, w) in witnesses.iter().enumerate() {
+            std::fs::write(
+                d.join(format!("step_{i:04}.wtns")),
+                wtns_bytes_from_le(&w),
+            )
+            .expect("failed to write step witness");
+        }
+        println!("step witnesses written to {} ({} files)", d.display(), n_steps);
+    }
+
     let opt = if opt_parallel {
         OptFlags::PARALLEL
     } else {
         OptFlags::NONE
     };
     let mode = if opt_parallel { "parallel" } else { "baseline" };
-    println!("mode: NIFS fold + sumcheck compress ({mode})");
 
     let t = Instant::now();
     let folded = if batch_size > 0 {
@@ -266,6 +361,67 @@ where
         "nifs fold ({mode_str}): {fold_s:.3} s total, {:.3} ms/step over {n_steps} steps",
         fold_s * 1000.0 / n_steps as f64
     );
+
+    // Ring-residue folds (Module-SIS) are NOT field-homomorphic: a sumcheck
+    // over the folded accumulator is not a valid relation there, because the
+    // folded instance is a canonical mod-q residue, not the field-linear
+    // combination.  The production artifact for ring folds is the window
+    // model (W1 transport fold + per-window W2 verification), so verify that
+    // instead of the field-only compress/level-1 chain below.
+    let ring_fold = CS::ring_modulus(&CS::params_from_seed(
+        NIFS_PARAMS_SEED,
+        1 + 2 * state_width,
+        state_width,
+        sis_param,
+    ))
+    .is_some();
+    if ring_fold {
+        println!("mode: NIFS fold + window-model verify (ring fold)");
+        let t = Instant::now();
+        let ws = prove_windows::<C, CS>(&circuit, &folded, DEFAULT_WINDOW_SIZE, opt)
+            .unwrap_or_else(|e| panic!("failed to build window proof: {e}"));
+        let windows_prove_s = t.elapsed().as_secs_f64();
+        let n_windows = ws.windows.len();
+
+        let t = Instant::now();
+        verify_windows::<C, CS>(&folded.bundle, &ws, sis_param, &circuit)
+            .unwrap_or_else(|e| panic!("window verification failed: {e}"));
+        let windows_verify_s = t.elapsed().as_secs_f64();
+
+        let bundle_cbor = folded
+            .bundle
+            .to_cbor::<ScalarField<C>>()
+            .expect("bundle serialization should not fail");
+        let ws_cbor = codec::windows_proof_encode::<ScalarField<C>>(&ws)
+            .expect("window proof serialization should not fail");
+        let base = prover::module_sis::ModuleSisParams::ALL
+            [sis_param % prover::module_sis::ModuleSisParams::ALL.len()];
+        println!(
+            "windows compress: {windows_prove_s:.3} s ({n_windows} windows of <= {DEFAULT_WINDOW_SIZE} steps)"
+        );
+        println!(
+            "verify (windows): {windows_verify_s:.4} s (W2 per-window sumcheck + canonical-lift + binding)"
+        );
+        println!(
+            "nifs bundle: {} B ({:.1} KiB cbor), O(1) in the step count",
+            bundle_cbor.len(),
+            bundle_cbor.len() as f64 / 1024.0
+        );
+        println!(
+            "windows proof: {} B ({:.1} KiB cbor) — production on-chain artifact",
+            ws_cbor.len(),
+            ws_cbor.len() as f64 / 1024.0
+        );
+        println!(
+            "w_commit/e_commit (ring) size: {} B each ({} B total on-chain) [{}]",
+            base.commitment_size(),
+            base.commitment_size() * 2,
+            base.label()
+        );
+        println!("all verifications OK");
+        return;
+    }
+    println!("mode: NIFS fold + sumcheck compress ({mode})");
 
     let mut rng = rand::thread_rng();
     let t = Instant::now();
@@ -605,4 +761,36 @@ fn commitment_hex<T: CanonicalSerialize>(value: &T) -> String {
         .serialize_compressed(&mut buf)
         .expect("commitment serialize");
     hex::encode(buf)
+}
+
+/// Serialize a step witness into the `.wtns` file format the CLI/benchmarks
+/// load via `SparseCircuit::load_witness`.  Each field element is written
+/// little-endian over 32 bytes (u64 + 24 zero bytes), so only values `< 2^64`
+/// are representable — which is exactly the canonical-residue regime Module-SIS
+/// requires.
+fn wtns_bytes_from_le<F: ark_ff::PrimeField>(witness: &[F]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"wtns");
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&2u32.to_le_bytes());
+
+    let mut header = Vec::new();
+    header.extend_from_slice(&32u32.to_le_bytes());
+    header.extend_from_slice(&[0u8; 32]);
+    header.extend_from_slice(&(witness.len() as u32).to_le_bytes());
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+    out.extend_from_slice(&header);
+
+    let mut data = Vec::new();
+    for v in witness {
+        let big = v.clone().into_bigint();
+        let low = big.as_ref()[0];
+        data.extend_from_slice(&low.to_le_bytes());
+        data.extend_from_slice(&[0u8; 24]);
+    }
+    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&(data.len() as u64).to_le_bytes());
+    out.extend_from_slice(&data);
+    out
 }
