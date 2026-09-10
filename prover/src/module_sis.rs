@@ -308,20 +308,27 @@ impl SmallChallengeSet {
         1 + self.max_abs()
     }
 
+    /// Conservative bound on the cross-term `‖T‖∞` for a witness norm `b`.
+    ///
+    /// For sparse R1CS matrices with ≤ 3 non-zeros per row, `‖T‖∞` is bounded
+    /// by `≈ 18·b² + 6·b`.  Saturating: once the norm exceeds `u64::MAX` it is
+    /// certainly not short, and callers only need the exact value while it is
+    /// below `q/2` (≤ 2^32 for our moduli), so clamping to `u64::MAX` is safe.
+    fn cross_term_bound(b: u64) -> u64 {
+        18u64
+            .saturating_mul(b)
+            .saturating_mul(b)
+            .saturating_add(6u64.saturating_mul(b))
+    }
+
     /// Expected norm-growth factor per fold for an error vector that
     /// includes a cross-term.
     ///
-    /// The cross-term `T` can be larger than the witness (it involves
-    /// products of matrix-vector products).  Empirically, for sparse R1CS
-    /// matrices with ≤ 3 non-zeros per row, `‖T‖∞` is bounded by
-    /// `≈ 18·B_w² + 6·B_w` when both witnesses have norm `B_w`.
     /// With a fresh step (`e_2 = 0`), the error fold is
     /// `e' = e_1 + r·T`, so the growth is additive: `‖e'‖∞ ≤ ‖e_1‖∞ + B_r·‖T‖∞`.
     pub fn error_growth_bound(&self, witness_norm: u64) -> u64 {
-        let b = witness_norm;
-        // Conservative bound for ‖T‖∞ with ≤ 3 non-zeros per matrix row.
-        let t_bound = 18 * b * b + 6 * b;
-        self.max_abs() * t_bound
+        self.max_abs()
+            .saturating_mul(Self::cross_term_bound(witness_norm))
     }
 }
 
@@ -367,13 +374,15 @@ pub fn simulate_norm_growth(
     for _ in 0..n_folds {
         // Cross-term T is computed from the *pre-fold* accumulator witness
         // and the fresh step witness.  Use the pre-fold accumulator norm.
-        let t_bound = 18 * witness_norm * witness_norm + 6 * witness_norm;
-        error_norm = error_norm + b_r * t_bound;
+        // Saturating: at this magnitude the simulation is dominated by the
+        // overflow, and any clamped value still overflows q/2 below.
+        let t_bound = SmallChallengeSet::cross_term_bound(witness_norm);
+        error_norm = error_norm.saturating_add(b_r.saturating_mul(t_bound));
 
         // Witness: w_acc + r * w_step.  w_step is fresh, so its norm
         // is initial_witness_bound.  w_acc has grown.
         // Worst case: both terms add constructively.
-        witness_norm = witness_norm + b_r * initial_witness_bound;
+        witness_norm = witness_norm.saturating_add(b_r.saturating_mul(initial_witness_bound));
     }
 
     // A vector is "short" for SIS if its infinity-norm is well below q.
@@ -1041,6 +1050,29 @@ mod tests {
             Q_L1,
         );
         assert!(!result.is_short, "full-field challenge must blow up quickly");
+    }
+
+    #[test]
+    fn extreme_growth_saturates_without_overflow() {
+        // Full-field-scale challenges drive the quadratic cross-term bound
+        // far past u64::MAX; the simulation must saturate, never panic.
+        let result = simulate_norm_growth(
+            10_000,
+            SmallChallengeSet::Uniform { bound: u64::MAX },
+            u64::MAX,
+            Q_L1,
+        );
+        assert!(!result.is_short, "saturated norm can never be short");
+        assert_eq!(result.final_witness_norm, u64::MAX);
+        assert_eq!(result.final_error_norm, u64::MAX);
+    }
+
+    #[test]
+    fn error_growth_bound_saturates() {
+        assert_eq!(
+            u64::MAX,
+            SmallChallengeSet::Uniform { bound: u64::MAX }.error_growth_bound(u64::MAX)
+        );
     }
 
     #[test]
