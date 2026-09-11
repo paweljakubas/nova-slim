@@ -516,3 +516,50 @@ test datum_with_norm_rejects_bad_norm() {
     _ -> False
   }
 }
+
+// ---------------------------------------------------------------------------
+// Fiat-Shamir golden tests
+// ---------------------------------------------------------------------------
+// These pin the exact output of derive_challenges for known inputs so any
+// regression in the hash-based derivation (e.g. transcript byte order,
+// integer_to_bytearray width, or blake2b_256) is immediately caught.
+
+test golden_derive_single_round() {
+  // A single round with fixed evals.
+  let rounds = [RoundPoly { eval_at_0: 1, eval_at_1: 2, eval_at_2: 3 }]
+  derive_challenges(test_bundle(), rounds, #"00") ==
+    [16929951500751571981113663996273193905068373582928884364803637547339592859593]
+}
+
+test golden_derive_four_zero_rounds() {
+  // Four zero-eval rounds: tests sequential transcript accumulation.
+  let rounds =
+    [
+      RoundPoly { eval_at_0: 0, eval_at_1: 0, eval_at_2: 0 },
+      RoundPoly { eval_at_0: 0, eval_at_1: 0, eval_at_2: 0 },
+      RoundPoly { eval_at_0: 0, eval_at_1: 0, eval_at_2: 0 },
+      RoundPoly { eval_at_0: 0, eval_at_1: 0, eval_at_2: 0 },
+    ]
+  derive_challenges(test_bundle(), rounds, #"00") == [
+    40567697305796473729143549081855633355917758540772945690797250625174332769881,
+    15818634843063192224941180539463993825982369414957740001887078341341578380200,
+    11583516624017853094539122299782969582435528202371229216294397029342260051647,
+    23019355995932246789385748719099435175264769341681124507214830553552729314158,
+  ]
+}
+
+test golden_derive_three_zero_rounds_prefix() {
+  // The first three challenges of the four-round zero vector must match the
+  // three-round derivation — prefix consistency of the hash chain.
+  let three =
+    [
+      RoundPoly { eval_at_0: 0, eval_at_1: 0, eval_at_2: 0 },
+      RoundPoly { eval_at_0: 0, eval_at_1: 0, eval_at_2: 0 },
+      RoundPoly { eval_at_0: 0, eval_at_1: 0, eval_at_2: 0 },
+    ]
+  derive_challenges(test_bundle(), three, #"00") == [
+    40567697305796473729143549081855633355917758540772945690797250625174332769881,
+    15818634843063192224941180539463993825982369414957740001887078341341578380200,
+    11583516624017853094539122299782969582435528202371229216294397029342260051647,
+  ]
+}
