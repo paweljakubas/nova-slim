@@ -66,10 +66,12 @@ pub type OpeningProof {
 }
 
 /// The on-chain datum: either a sumcheck-only proof (backward-compatible) or a
-/// level-1 proof that additionally carries a norm record.
+/// level-1 proof that additionally carries a norm record or opening proofs.
 pub type NovaSlimDatum {
   SumOnly(NifsBundle)
   WithNorm(NifsBundle, NormRecord)
+  WithOpening(NifsBundle, OpeningProof)
+  WithOpeningNorm(NifsBundle, OpeningProof, NormRecord)
 }
 
 /// ---------------------------------------------------------------------------
@@ -153,6 +155,40 @@ pub fn verify_slim_with_norm(
   norm: NormRecord,
 ) -> Bool {
   verify_slim(bundle, proof) && verify_norm(norm)
+}
+
+/// Verify a level-1 (opening) proof: the sumcheck pipeline *plus* the
+/// commitment opening check (P12).  `(az_r, bz_r, cz_r, fr_r)` must fold with
+/// `opening.w_salts` to the datum's `com_w_hash`, and `er_r` with
+/// `opening.e_salt` to `com_e_hash`.  This pins the claimed evaluations to the
+/// commitments in the datum — a prover can no longer substitute self-serving
+/// evaluation values that merely satisfy the algebraic checks.
+pub fn verify_slim_level1(
+  bundle: NifsBundle,
+  proof: SlimProof,
+  opening: OpeningProof,
+) -> Bool {
+  verify_slim(bundle, proof) &&
+    verify_opening(
+      bundle.com_w_hash,
+      [proof.az_r, proof.bz_r, proof.cz_r, proof.fr_r],
+      opening.w_salts,
+    ) &&
+    verify_opening(
+      bundle.com_e_hash,
+      [proof.er_r],
+      [opening.e_salt],
+    )
+}
+
+/// Level-1 opening proof plus an on-chain norm certificate.
+pub fn verify_slim_level1_with_norm(
+  bundle: NifsBundle,
+  proof: SlimProof,
+  opening: OpeningProof,
+  norm: NormRecord,
+) -> Bool {
+  verify_slim_level1(bundle, proof, opening) && verify_norm(norm)
 }
 
 /// Verify all rounds using list folding.

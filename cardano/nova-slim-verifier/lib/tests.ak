@@ -7,8 +7,9 @@ use norm.{
   verify_step_norm,
 }
 use verifier.{
-  NifsBundle, NovaSlimDatum, RoundPoly, SlimProof, derive_challenges,
-  opening_leaf, opening_root, verify_slim, verify_slim_with_norm,
+  NifsBundle, NovaSlimDatum, OpeningProof, RoundPoly, SlimProof,
+  derive_challenges, opening_leaf, opening_root, verify_slim,
+  verify_slim_level1, verify_slim_level1_with_norm, verify_slim_with_norm,
 }
 
 /// Field prime, mirrored from verifier.ak so well-formed test transcripts are
@@ -764,4 +765,225 @@ test opening_root_is_order_sensitive() {
 
 test opening_root_single_leaf_is_leaf() {
   opening_root([7], [#"09"]) == opening_leaf(7, #"09")
+}
+
+// ---------------------------------------------------------------------------
+// Level-1 opening (P12) helpers
+// ---------------------------------------------------------------------------
+/// Canonical opening proof: fixed salts per position.
+fn opening_for() -> OpeningProof {
+  OpeningProof {
+    w_salts: [#"01", #"02", #"03", #"04"],
+    e_salt: #"05",
+  }
+}
+
+/// Bundle whose commitment hashes are the opening roots of `proof`.  The
+/// transcript hash is unchanged, and because the Fiat-Shamir domain excludes
+/// the commitment hashes (P12), a proof rolled against test_bundle() verifies
+/// against this rooted bundle — self-consistent by construction.
+fn opening_bundle(proof: SlimProof) -> NifsBundle {
+  let opening = opening_for()
+  NifsBundle {
+    com_w_hash: opening_root(
+      [proof.az_r, proof.bz_r, proof.cz_r, proof.fr_r],
+      opening.w_salts,
+    ),
+    com_e_hash: opening_root([proof.er_r], [opening.e_salt]),
+    transcript_hash: test_bundle().transcript_hash,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Level-1 opening (P12) golden tests
+// ---------------------------------------------------------------------------
+
+test golden_level1_fixed_proof() {
+  let proof = well_formed_proof(2, 3, 5)
+  let bundle = opening_bundle(proof)
+  // Pinned opening roots (Python mirror) for the (2,3,5) proof.
+  bundle.com_w_hash == #"9df94619c00921fe8e1a681b239032a2d53811db87744a1f15808b1a5ddb800f" &&
+    bundle.com_e_hash == #"0a595d63346e64f5ae4db194c37cf2a3511b782ffa4fa1fd9b7b916eb58a4019" &&
+    verify_slim_level1(bundle, proof, opening_for())
+}
+
+// ---------------------------------------------------------------------------
+// Level-1 opening (P12) unit tests
+// ---------------------------------------------------------------------------
+
+test level1_valid_accepts() {
+  let proof = well_formed_proof(3, 5, 2)
+  verify_slim_level1(opening_bundle(proof), proof, opening_for())
+}
+
+test level1_tampered_w_salt_rejected() {
+  // The evaluations are unchanged (base sumcheck still verifies), but the
+  // recomputed W root no longer matches the datum commitment — an
+  // OP-specific rejection.
+  let proof = well_formed_proof(3, 5, 2)
+  let tampered =
+    OpeningProof {
+      ..opening_for(),
+      w_salts: [#"ff", #"02", #"03", #"04"],
+    }
+  !verify_slim_level1(opening_bundle(proof), proof, tampered)
+}
+
+test level1_tampered_e_salt_rejected() {
+  let proof = well_formed_proof(3, 5, 2)
+  let tampered = OpeningProof { ..opening_for(), e_salt: #"ff" }
+  !verify_slim_level1(opening_bundle(proof), proof, tampered)
+}
+
+test level1_empty_salts_rejected() {
+  // A missing salt makes the evaluations/salts length check fail.
+  let proof = well_formed_proof(3, 5, 2)
+  let tampered = OpeningProof { ..opening_for(), w_salts: [] }
+  !verify_slim_level1(opening_bundle(proof), proof, tampered)
+}
+
+test level1_wrong_commit_roots_rejected() {
+  // Same proof and opening, but a datum committed with different salts: with
+  // commit-free FS the sumcheck still verifies; only the OP check catches it.
+  let proof = well_formed_proof(3, 5, 2)
+  let opening = opening_for()
+  let wrong =
+    NifsBundle {
+      com_w_hash:
+        opening_root(
+          [proof.az_r, proof.bz_r, proof.cz_r, proof.fr_r],
+          [#"aa", #"aa", #"aa", #"aa"],
+        ),
+      com_e_hash: opening_root([proof.er_r], [#"bb"]),
+      transcript_hash: test_bundle().transcript_hash,
+    }
+  !verify_slim_level1(wrong, proof, opening)
+}
+
+// ---------------------------------------------------------------------------
+// Level-1 opening + norm tests
+// ---------------------------------------------------------------------------
+
+test level1_with_norm_accepts() {
+  let proof = well_formed_proof(3, 5, 2)
+  verify_slim_level1_with_norm(
+    opening_bundle(proof),
+    proof,
+    opening_for(),
+    good_norm_record(),
+  )
+}
+
+test level1_with_norm_rejects_bad_norm() {
+  let proof = well_formed_proof(3, 5, 2)
+  let bad = NormRecord { mode: NormMode.NormNone, bound_bits: 8, steps: [] }
+  !verify_slim_level1_with_norm(
+    opening_bundle(proof),
+    proof,
+    opening_for(),
+    bad,
+  )
+}
+
+test level1_with_norm_rejects_bad_opening() {
+  let proof = well_formed_proof(3, 5, 2)
+  let tampered = OpeningProof { ..opening_for(), e_salt: #"ff" }
+  !verify_slim_level1_with_norm(
+    opening_bundle(proof),
+    proof,
+    tampered,
+    good_norm_record(),
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Level-1 opening datum tests
+// ---------------------------------------------------------------------------
+
+test datum_with_opening_accepts() {
+  let proof = well_formed_proof(3, 5, 2)
+  let datum = NovaSlimDatum.WithOpening(opening_bundle(proof), opening_for())
+  when datum is {
+    NovaSlimDatum.WithOpening(bundle, opening) ->
+      verify_slim_level1(bundle, proof, opening)
+    _ -> False
+  }
+}
+
+test datum_with_opening_norm_accepts() {
+  let proof = well_formed_proof(3, 5, 2)
+  let datum =
+    NovaSlimDatum.WithOpeningNorm(
+      opening_bundle(proof),
+      opening_for(),
+      good_norm_record(),
+    )
+  when datum is {
+    NovaSlimDatum.WithOpeningNorm(bundle, opening, norm) ->
+      verify_slim_level1_with_norm(bundle, proof, opening, norm)
+    _ -> False
+  }
+}
+
+test datum_with_opening_rejects_bad_opening() {
+  let proof = well_formed_proof(3, 5, 2)
+  let tampered =
+    OpeningProof {
+      ..opening_for(),
+      w_salts: [#"ff", #"02", #"03", #"04"],
+    }
+  let datum = NovaSlimDatum.WithOpening(opening_bundle(proof), tampered)
+  when datum is {
+    NovaSlimDatum.WithOpening(bundle, opening) ->
+      !verify_slim_level1(bundle, proof, opening)
+    _ -> False
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Level-1 opening (P12) property tests
+// ---------------------------------------------------------------------------
+
+test level1_valid_always_verifies(
+  abc via fuzz.tuple3(fuzz.int(), fuzz.int(), fuzz.int()),
+) {
+  let (a, b, c) = abc
+  let proof = well_formed_proof(a, b, c)
+  verify_slim_level1(opening_bundle(proof), proof, opening_for())
+}
+
+test level1_tampered_salt_fails(
+  abc via fuzz.tuple3(fuzz.int(), fuzz.int(), fuzz.int()),
+) {
+  let (a, b, c) = abc
+  let proof = well_formed_proof(a, b, c)
+  let tampered = OpeningProof { ..opening_for(), e_salt: #"ff" }
+  !verify_slim_level1(opening_bundle(proof), proof, tampered)
+}
+
+test level1_wrong_commits_fail(
+  abc via fuzz.tuple3(fuzz.int(), fuzz.int(), fuzz.int()),
+) {
+  // A datum with an arbitrary committed E root rejects the well-formed proof:
+  // the commit-free FS cannot absorb the substitution — the OP check must.
+  let (a, b, c) = abc
+  let proof = well_formed_proof(a, b, c)
+  let opening = opening_for()
+  let wrong =
+    NifsBundle {
+      ..opening_bundle(proof),
+      com_e_hash: opening_root([add_mod(proof.er_r, 1)], [opening.e_salt]),
+    }
+  !verify_slim_level1(wrong, proof, opening)
+}
+
+test level1_tampered_fr_r_fails(
+  abc via fuzz.tuple3(fuzz.int(), fuzz.int(), fuzz.int()),
+) {
+  // fr_r is bound both by the level-1 equation and the OP root: a deviation
+  // must fail even when the opening salts stay untouched.
+  let (a, b, c) = abc
+  let proof = well_formed_proof(a, b, c)
+  let tampered = SlimProof { ..proof, fr_r: proof.fr_r + 1 }
+  !verify_slim_level1(opening_bundle(proof), tampered, opening_for())
 }
