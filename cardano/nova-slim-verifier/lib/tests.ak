@@ -106,6 +106,9 @@ fn well_formed_proof(a: Int, b: Int, c: Int) -> SlimProof {
 
   // er  such that  az * bz - u * cz - er == claim_3 (mod field_prime).
   let er = sub_mod(sub_mod(mul_mod(ra, rb), rc), claim_3)
+  // fr_r satisfies the level-1 equation  fr_r - u * cz - er == 0, i.e.
+  // fr_r == u*cz + er (u := 1 here).
+  let fr_r = add_mod(rc, er)
 
   SlimProof {
     rounds,
@@ -114,6 +117,7 @@ fn well_formed_proof(a: Int, b: Int, c: Int) -> SlimProof {
     bz_r: rb,
     cz_r: rc,
     er_r: er,
+    fr_r,
     public_input,
     u: 1,
   }
@@ -155,6 +159,7 @@ test e2e_4_rounds() {
       bz_r: 0,
       cz_r: 0,
       er_r: 0,
+      fr_r: 0,
       public_input: #"00",
       u: 1,
     }
@@ -175,6 +180,7 @@ test empty_proof_rejected() {
       bz_r: 0,
       cz_r: 0,
       er_r: 0,
+      fr_r: 0,
       public_input: #"00",
       u: 1,
     }
@@ -191,6 +197,7 @@ test challenges_without_rounds_rejected() {
       bz_r: 0,
       cz_r: 0,
       er_r: 0,
+      fr_r: 0,
       public_input: #"00",
       u: 1,
     }
@@ -209,6 +216,7 @@ test mismatch_counts_fails() {
       bz_r: 0,
       cz_r: 0,
       er_r: 0,
+      fr_r: 0,
       public_input: #"00",
       u: 1,
     }

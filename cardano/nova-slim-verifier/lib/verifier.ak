@@ -40,6 +40,7 @@ pub type SlimProof {
   bz_r: Scalar,
   cz_r: Scalar,
   er_r: Scalar,
+  fr_r: Scalar,
   public_input: ByteArray,
   u: Scalar,
 }
@@ -110,13 +111,23 @@ pub fn verify_slim(bundle: NifsBundle, proof: SlimProof) -> Bool {
     derive_challenges(bundle, proof.rounds, proof.public_input) ==
       proof.challenges
 
+  // Level-1 residual check: the MLE-of-product residual `fr_r` must satisfy
+  // fr_r - u * cz_r - er_r == 0 (equivalently fr_r == u*cz_r + er_r).
+  // `fr_r` is the MLE of AZ⊙BZ at r (the value the sumcheck bounds); the
+  // level-1 equation closes the "free-E" gap where a prover could pass with
+  // arbitrary az/bz/cz/er.  (The full level-1 proof additionally requires the
+  // final sumcheck claim to vanish; that is enforced by the commitment-opening
+  // step, P12.)
+  let l1_ok =
+    proof.fr_r == add_mod(mul_mod(proof.u, proof.cz_r), proof.er_r)
+
   // Verify each round: h_i(0) + h_i(1) == previous_claim.
   let rounds_ok = verify_all_rounds(proof.rounds, proof.challenges)
 
   // Final evaluation check.
   let final_ok = verify_final(proof)
 
-  fs_ok && counts_ok && rounds_ok && final_ok
+  fs_ok && counts_ok && l1_ok && rounds_ok && final_ok
 }
 
 /// Verify a level-1 proof that additionally carries a norm record: the base
