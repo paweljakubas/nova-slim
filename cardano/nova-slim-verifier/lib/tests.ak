@@ -35,7 +35,7 @@ fn sub_mod(a: Int, b: Int) -> Int {
 
 fn inv2() -> Int {
   // (field_prime + 1) / 2  =  2^{-1} mod field_prime
-  26217937587563095239723870254092982918845276250268918911301829349969290592257
+  26217937587563095239723870254092982918845276250263818911301829349969290592257
 }
 
 /// Degree-2 polynomial evaluation, mirroring verifier.ak's eval_poly.
@@ -618,4 +618,77 @@ test golden_derive_three_zero_rounds_prefix() {
     15818634843063192224941180539463993825982369414957740001887078341341578380200,
     11583516624017853094539122299782969582435528202371229216294397029342260051647,
   ]
+}
+
+// ---------------------------------------------------------------------------
+// Level-1 (fr_r) golden tests
+// ---------------------------------------------------------------------------
+// Pin the exact fr_r (MLE-of-product residual) that the Python mirror
+// computed for well_formed_proof(2, 3, 5) so any regression in the
+// sumcheck-circuit arithmetic or field-element encoding is caught.
+
+/// Verify that the well-formed proof for (2, 3, 5) still passes the full
+/// verification pipeline with the pinned fr_r value.
+test golden_l1_fixed_proof() {
+  let proof = well_formed_proof(2, 3, 5)
+  let l1_rhs = add_mod(mul_mod(proof.u, proof.cz_r), proof.er_r)
+  proof.fr_r == l1_rhs && verify_slim(test_bundle(), proof)
+}
+
+/// Pin the exact constants for well_formed_proof(2, 3, 5).
+/// Transcript bytes use 32-byte big-endian field elements; the challenge is
+/// blake2b_256 of the transcript interpreted as an unsigned integer
+/// (bytearray_to_integer(True, _) = big-endian unsigned) reduced mod p,
+/// matching scalar_from_bytes in verifier.ak.
+test golden_l1_fixed_proof_constants() {
+  let proof = well_formed_proof(2, 3, 5)
+  // challenges — pinned via the unsigned Python mirror.
+  proof.challenges == [
+    23574925186820971314618738110825202861113776913549720541346685721924983188440,
+    36840350308506967840401952273097443865780992173629607707919934450147480186009,
+    8454087999455834781016495474894335786902418218811582330836954262107643381658,
+  ] &&
+  // er and fr_r — derived from the same challenge chain above.
+  proof.er_r == 41184818356760088113659243961088770423705944737169497952831624572171875390003 &&
+  proof.fr_r == 41184818356760088113659243961088770423705944737169497952831624572171875390008 &&
+  // level-1 equation holds
+  proof.fr_r == add_mod(mul_mod(proof.u, proof.cz_r), proof.er_r)
+}
+
+/// A golden proof with the pinned fr_r rejected when fr_r is incremented by 1.
+test golden_l1_fixed_proof_tampered_rejected() {
+  let proof = well_formed_proof(2, 3, 5)
+  let tampered = SlimProof { ..proof, fr_r: 41184818356760088113659243961088770423705944737169497952831624572171875390009 }
+  !verify_slim(test_bundle(), tampered)
+}
+
+/// All-zero four-round proof must carry fr_r = 0 (the zero residual is the
+/// only value consistent with u = 1, cz = 0, er = 0).
+test golden_l1_all_zero_proof() {
+  let proof =
+    SlimProof {
+      rounds: [
+        RoundPoly { eval_at_0: 0, eval_at_1: 0, eval_at_2: 0 },
+        RoundPoly { eval_at_0: 0, eval_at_1: 0, eval_at_2: 0 },
+        RoundPoly { eval_at_0: 0, eval_at_1: 0, eval_at_2: 0 },
+        RoundPoly { eval_at_0: 0, eval_at_1: 0, eval_at_2: 0 },
+      ],
+      challenges: [
+        40567697305796473729143549081855633355917758540772945690797250625174332769881,
+        15818634843063192224941180539463993825982369414957740001887078341341578380200,
+        11583516624017853094539122299782969582435528202371229216294397029342260051647,
+        23019355995932246789385748719099435175264769341681124507214830553552729314158,
+      ],
+      az_r: 0,
+      bz_r: 0,
+      cz_r: 0,
+      er_r: 0,
+      fr_r: 0,
+      public_input: #"00",
+      u: 1,
+    }
+
+  proof.fr_r == 0 &&
+  proof.fr_r == add_mod(mul_mod(proof.u, proof.cz_r), proof.er_r) &&
+  verify_slim(test_bundle(), proof)
 }
