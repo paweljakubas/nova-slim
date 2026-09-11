@@ -377,6 +377,32 @@ test fs_tampered_bundle_fails(
 }
 
 // ---------------------------------------------------------------------------
+// Level-1 (fr_r) property tests
+// ---------------------------------------------------------------------------
+
+test fs_l1_tampered_fr_r_fails(
+  abc via fuzz.tuple3(fuzz.int(), fuzz.int(), fuzz.int()),
+) {
+  // A well-formed transcript satisfies  fr_r == u*cz_r + er_r; any single
+  // deviation in fr_r must therefore be rejected.
+  let (a, b, c) = abc
+  let proof = well_formed_proof(a, b, c)
+  let tampered = SlimProof { ..proof, fr_r: proof.fr_r + 1 }
+  !verify_slim(test_bundle(), tampered)
+}
+
+test fs_l1_tampered_u_fails(
+  abc via fuzz.tuple3(fuzz.int(), fuzz.int(), fuzz.int()),
+) {
+  // The relaxation factor u enters the level-1 equation via the u*cz_r term.
+  // c+1 keeps cz_r non-zero so the deviation is always observable.
+  let (a, b, c) = abc
+  let proof = well_formed_proof(a, b, c + 1)
+  let tampered = SlimProof { ..proof, u: proof.u + 1 }
+  !verify_slim(test_bundle(), tampered)
+}
+
+// ---------------------------------------------------------------------------
 // Norm-certificate tests
 // ---------------------------------------------------------------------------
 
