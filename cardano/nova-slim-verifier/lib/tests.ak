@@ -248,6 +248,29 @@ test derive_challenges_depends_on_public_input() {
   )
 }
 
+test carried_wrong_challenges_rejected() {
+  // A transcript that is otherwise internally consistent but carries
+  // self-serving challenges must be rejected: the on-chain verifier re-derives
+  // the Fiat-Shamir challenges from the bundle, rounds, and public input
+  // instead of trusting the ones in the redeemer.
+  let proof = well_formed_proof(3, 5, 2)
+  let tampered = SlimProof { ..proof, challenges: [7, 8, 9] }
+  !verify_slim(test_bundle(), tampered)
+}
+
+test single_wrong_challenge_rejected() {
+  // Even a single altered challenge among otherwise correct ones fails: the
+  // re-derived challenge list must match the carried one element for element.
+  let proof = well_formed_proof(3, 5, 2)
+  when proof.challenges is {
+    [first, second, third] -> {
+      let tampered = SlimProof { ..proof, challenges: [first, second, third + 1] }
+      !verify_slim(test_bundle(), tampered)
+    }
+    _ -> False
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Property tests (aiken-lang/fuzz)
 // ---------------------------------------------------------------------------
