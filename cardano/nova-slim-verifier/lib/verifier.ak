@@ -52,6 +52,19 @@ pub type NifsBundle {
   transcript_hash: ByteArray,
 }
 
+/// HashPC-style opening proof for the level-1 evaluations (P12).
+///
+/// The prover binds the four witness evaluations `(az_r, bz_r, cz_r, fr_r)`
+/// under `com_w_hash` and the error evaluation `er_r` under `com_e_hash`.
+/// Each evaluation forms a Merkle leaf `blake2b_256(be32(eval) ‖ salt)`; the
+/// salt lets distinct openings of the same evaluations coexist without
+/// correlation.  `com_w_hash` is the root of the 4-leaf tree (az, bz, cz,
+/// fr); `com_e_hash` is the root of a 1-leaf tree (er).
+pub type OpeningProof {
+  w_salts: List<ByteArray>,
+  e_salt: ByteArray,
+}
+
 /// The on-chain datum: either a sumcheck-only proof (backward-compatible) or a
 /// level-1 proof that additionally carries a norm record.
 pub type NovaSlimDatum {
@@ -211,6 +224,87 @@ fn verify_final(proof: SlimProof) -> Bool {
     )
 
   lhs == final_claim
+}
+
+/// ---------------------------------------------------------------------------
+/// Commitment opening (P12)
+/// ---------------------------------------------------------------------------
+/// One Merkle leaf of an opening proof: the BLAKE2b-256 of the 32-byte
+/// big-endian encoding of the field element (normalized mod p) followed by
+/// its salt.
+pub fn opening_leaf(eval: Scalar, salt: ByteArray) -> ByteArray {
+  let normalized = builtin.mod_integer(eval, field_prime)
+  blake2b_256(
+    bytearray.concat(
+      builtin.integer_to_bytearray(True, 32, normalized),
+      salt,
+    ),
+  )
+}
+
+/// The deterministic padding leaf used to complete an opening tree to the
+/// next power of two: BLAKE2b-256 of 32 zero bytes.
+fn empty_leaf() -> ByteArray {
+  blake2b_256(
+    #"0000000000000000000000000000000000000000000000000000000000000000",
+  )
+}
+
+fn next_power_of_two(n: Int) -> Int {
+  next_power_of_two_acc(n, 1)
+}
+
+fn next_power_of_two_acc(n: Int, acc: Int) -> Int {
+  if acc >= n {
+    acc
+  } else {
+    next_power_of_two_acc(n, acc * 2)
+  }
+}
+
+fn pad_leaves(leaves: List<ByteArray>, target: Int) -> List<ByteArray> {
+  if list.length(leaves) >= target {
+    leaves
+  } else {
+    pad_leaves(list.concat(leaves, [empty_leaf()]), target)
+  }
+}
+
+fn fold_level(level: List<ByteArray>) -> List<ByteArray> {
+  when level is {
+    [] -> []
+    [left, right, ..rest] ->
+      [blake2b_256(bytearray.concat(left, right)), ..fold_level(rest)]
+    [single] -> [single]
+  }
+}
+
+fn fold_to_root(level: List<ByteArray>) -> ByteArray {
+  when level is {
+    [single] -> single
+    _ -> fold_to_root(fold_level(level))
+  }
+}
+
+/// Root of the opening Merkle tree over `evals` with matching `salts`.  The
+/// tree is padded to the next power of two with `empty_leaf()` leaves; a
+/// single-evaluation opening folds to the leaf itself.
+pub fn opening_root(evals: List<Scalar>, salts: List<ByteArray>) -> ByteArray {
+  let leaves = list.map2(evals, salts, opening_leaf)
+  let padded = pad_leaves(leaves, next_power_of_two(list.length(leaves)))
+  fold_to_root(padded)
+}
+
+/// Verify a commitment opening: the evaluations, folded with the given salts,
+/// must reproduce the committed root.
+pub fn verify_opening(
+  com_root: ByteArray,
+  evals: List<Scalar>,
+  salts: List<ByteArray>,
+) -> Bool {
+  list.length(evals) >= 1 &&
+    list.length(evals) == list.length(salts) &&
+    opening_root(evals, salts) == com_root
 }
 
 /// ---------------------------------------------------------------------------

@@ -8,7 +8,7 @@ use norm.{
 }
 use verifier.{
   NifsBundle, NovaSlimDatum, RoundPoly, SlimProof, derive_challenges,
-  verify_slim, verify_slim_with_norm,
+  opening_leaf, opening_root, verify_slim, verify_slim_with_norm,
 }
 
 /// Field prime, mirrored from verifier.ak so well-formed test transcripts are
@@ -708,4 +708,60 @@ test golden_l1_all_zero_proof() {
   proof.fr_r == 0 &&
   proof.fr_r == add_mod(mul_mod(proof.u, proof.cz_r), proof.er_r) &&
   verify_slim(test_bundle(), proof)
+}
+
+// ---------------------------------------------------------------------------
+// Commitment opening (P12) golden tests
+// ---------------------------------------------------------------------------
+// These pin the Merkle-leaf and Merkle-root construction to the Python mirror:
+// leaf(eval, salt) = blake2b_256(be32(eval mod p) || salt), tree padded to
+// the next power of two with empty_leaf() = blake2b_256(32 zero bytes).
+
+test golden_opening_leaf_values() {
+  // Leaf values for a few canonical (eval, salt) pairs.
+  opening_leaf(2, #"01") == #"4dc550b6d70e17115932545b10ca42dfb184b5c4c25c1320090bd57f3734bc12" &&
+  opening_leaf(2, #"02") == #"f66e4dfeb6dbad7b5a51ff2ab0ce3afa73ac6c60469cb09ef0a15d41b5a3a2ef" &&
+  opening_leaf(0, #"01") == #"54b4c4ebb9feeb4425a865807f6f61888d0b86fbe4c84947af621673ac9feab1"
+}
+
+test golden_opening_root_single_and_two_leaves() {
+  // A one-evaluation opening folds to the leaf itself.
+  opening_root([2], [#"01"]) == #"4dc550b6d70e17115932545b10ca42dfb184b5c4c25c1320090bd57f3734bc12" &&
+  // Two leaves: root = blake2b_256(leaf(2,#01) || leaf(3,#02)).
+  opening_root([2, 3], [#"01", #"02"]) == #"2fee17cd477f4ced92215b970093a1bd3d1d4cdd4ff0145847162c1312a5046f"
+}
+
+test golden_opening_root_padding() {
+  // Three leaves pad to four with an empty leaf; pins the padding path.
+  opening_root([2, 3, 5], [#"01", #"02", #"03"]) == #"08f5aba912810f710cfef0e58e3af79bcc12ce879c91854db4632550a342544d"
+}
+
+// ---------------------------------------------------------------------------
+// Commitment opening (P12) property tests
+// ---------------------------------------------------------------------------
+
+test opening_root_is_deterministic() {
+  let evals = [2, 3, 5]
+  let salts = [#"01", #"02", #"03"]
+  opening_root(evals, salts) == opening_root(evals, salts)
+}
+
+test opening_leaf_is_salt_sensitive() {
+  // Same evaluation, different salt -> different leaf.
+  opening_leaf(2, #"01") != opening_leaf(2, #"02")
+}
+
+test opening_leaf_is_eval_sensitive() {
+  // Same salt, different evaluation -> different leaf.
+  opening_leaf(2, #"01") != opening_leaf(3, #"01")
+}
+
+test opening_root_is_order_sensitive() {
+  // Reordering evaluations (with salts reordered to match) changes the root:
+  // the tree structure is positional, not multiset.
+  opening_root([2, 3], [#"01", #"02"]) != opening_root([3, 2], [#"02", #"01"])
+}
+
+test opening_root_single_leaf_is_leaf() {
+  opening_root([7], [#"09"]) == opening_leaf(7, #"09")
 }
