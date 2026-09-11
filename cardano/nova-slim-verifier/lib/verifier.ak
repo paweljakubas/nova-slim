@@ -217,16 +217,22 @@ fn verify_final(proof: SlimProof) -> Bool {
 /// Fiat-Shamir challenge derivation
 /// ---------------------------------------------------------------------------
 /// Derive challenges from the NIFS bundle and round polynomials.
+///
+/// The transcript is seeded with `transcript_hash || public_input` only — the
+/// commitment hashes `com_w_hash` / `com_e_hash` are deliberately NOT part of
+/// the Fiat-Shamir domain (P12).  In the level-1/opening path those hashes are
+/// the Merkle roots over the final evaluations and are bound by the opening
+/// check, not by challenge derivation; including them here would make a
+/// self-consistent "root over the proof's own evaluations" bundle impossible
+/// (the evals determine the roots which would determine the evals).  This also
+/// aligns with the Rust sumcheck verifier, whose Fiat-Shamir input is the
+/// protocol messages only (`claims`/polys), not the commitments.
 pub fn derive_challenges(
   bundle: NifsBundle,
   rounds: List<RoundPoly>,
   public_input: ByteArray,
 ) -> List<Scalar> {
-  let transcript =
-    bytearray.concat(
-      bytearray.concat(bundle.com_w_hash, bundle.com_e_hash),
-      bytearray.concat(bundle.transcript_hash, public_input),
-    )
+  let transcript = bytearray.concat(bundle.transcript_hash, public_input)
   derive_challenges_acc(rounds, transcript, [])
 }
 
