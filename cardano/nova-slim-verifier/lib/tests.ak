@@ -280,6 +280,28 @@ test single_wrong_challenge_rejected() {
 }
 
 // ---------------------------------------------------------------------------
+// Level-1 (fr_r) unit tests
+// ---------------------------------------------------------------------------
+
+test l1_check_rejects_bad_fr_r() {
+  // The level-1 equation  fr_r == u*cz_r + er_r  must hold.  A one-off
+  // deviation in fr_r is enough to fail verification.
+  let proof = well_formed_proof(3, 5, 2)
+  let tampered = SlimProof { ..proof, fr_r: proof.fr_r + 1 }
+  !verify_slim(test_bundle(), tampered)
+}
+
+test l1_check_rejects_zero_fr_r_with_terms() {
+  // With u = 1 and a non-trivial honest transcript the residual fr_r =
+  // cz_r + er_r is a large field element.  Forcing fr_r = 0 breaks the
+  // level-1 equation — this is the "free-E" case the check is meant to
+  // close (the all-zero tautology fr_r = cz = er = 0 would pass trivially).
+  let proof = well_formed_proof(3, 5, 2)
+  let tampered = SlimProof { ..proof, fr_r: 0 }
+  !verify_slim(test_bundle(), tampered)
+}
+
+// ---------------------------------------------------------------------------
 // Property tests (aiken-lang/fuzz)
 // ---------------------------------------------------------------------------
 
