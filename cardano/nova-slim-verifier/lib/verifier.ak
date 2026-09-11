@@ -94,7 +94,7 @@ fn scalar_one() -> Int {
 /// Sumcheck verification
 /// ---------------------------------------------------------------------------
 /// Verify the slim proof against the NIFS bundle.
-pub fn verify_slim(_bundle: NifsBundle, proof: SlimProof) -> Bool {
+pub fn verify_slim(bundle: NifsBundle, proof: SlimProof) -> Bool {
   // Reject degenerate proofs: a valid sumcheck needs at least one round and
   // as many challenges as rounds.  Without the non-empty guard, a proof with
   // empty rounds and zeroed scalars would trivially pass.
@@ -103,13 +103,20 @@ pub fn verify_slim(_bundle: NifsBundle, proof: SlimProof) -> Bool {
       proof.rounds,
     ) >= 1
 
+  // Fiat-Shamir: the carried challenges must equal the ones re-derived from
+  // the NIFS bundle, round polynomials, and public input.  A prover cannot
+  // smuggle in self-serving challenges.
+  let fs_ok =
+    derive_challenges(bundle, proof.rounds, proof.public_input) ==
+      proof.challenges
+
   // Verify each round: h_i(0) + h_i(1) == previous_claim.
   let rounds_ok = verify_all_rounds(proof.rounds, proof.challenges)
 
   // Final evaluation check.
   let final_ok = verify_final(proof)
 
-  counts_ok && rounds_ok && final_ok
+  fs_ok && counts_ok && rounds_ok && final_ok
 }
 
 /// Verify a level-1 proof that additionally carries a norm record: the base

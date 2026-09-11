@@ -1,4 +1,5 @@
 use aiken/builtin
+use aiken/collection/list
 use aiken/fuzz
 use norm.{
   JlCertificate, NormCertificate, NormMode, NormRecord, RangeCertificate,
@@ -62,49 +63,72 @@ fn test_bundle() -> NifsBundle {
 
 /// Build a well-formed 3-round proof for arbitrary (a, b, c).  Each round
 /// polynomial and the final error term are derived so the transcript is
-/// internally consistent and must verify.
+/// internally consistent and must verify.  The Fiat-Shamir challenges are
+/// re-derived on-chain, so the rounds are rolled against the *actual* derived
+/// challenges (not a fixed choice): the (e0, e1) pair of each round sums to the
+/// previous claim, where the claim is the previous round evaluated at the
+/// challenge that its own transcript prefix yields.
+///
+/// The free inputs are normalized to canonical field elements in
+/// [0, field_prime): round evaluations are serialized to 32 bytes as part of
+/// the transcript, so every stored scalar must be a well-defined encoding.
 fn well_formed_proof(a: Int, b: Int, c: Int) -> SlimProof {
-  // Round 1 must sum to the initial claim (0).
-  let e0_1 = a
-  let e1_1 = neg_mod(e0_1)
-  let e2_1 = b
-  let challenge = c
-  let claim_1 = eval_poly_mod(e0_1, e1_1, e2_1, challenge)
+  let bundle = test_bundle()
+  let public_input = #"00"
+  let ra = builtin.mod_integer(a, field_prime)
+  let rb = builtin.mod_integer(b, field_prime)
+  let rc = builtin.mod_integer(c, field_prime)
 
-  // Round 2 must sum to claim_1.
-  let e0_2 = b
-  let e1_2 = sub_mod(claim_1, e0_2)
-  let e2_2 = a
-  let claim_2 = eval_poly_mod(e0_2, e1_2, e2_2, challenge)
+  // Round 1: e0 + e1 == claim_0 (== 0).
+  let h1 = RoundPoly { eval_at_0: ra, eval_at_1: neg_mod(ra), eval_at_2: rb }
+  let c1 = last_challenge(bundle, [h1], public_input)
+  let claim_1 = eval_poly_mod(ra, neg_mod(ra), rb, c1)
 
-  // Round 3 must sum to claim_2 and yield the final claim.
-  let e0_3 = a + 1
-  let e1_3 = sub_mod(claim_2, e0_3)
-  let e2_3 = b + 1
-  let claim_3 = eval_poly_mod(e0_3, e1_3, e2_3, challenge)
+  // Round 2: e0 + e1 == claim_1.
+  let h2 =
+    RoundPoly { eval_at_0: rb, eval_at_1: sub_mod(claim_1, rb), eval_at_2: ra }
+  let c2 = last_challenge(bundle, [h1, h2], public_input)
+  let claim_2 = eval_poly_mod(rb, sub_mod(claim_1, rb), ra, c2)
 
-  let rounds =
-    [
-      RoundPoly { eval_at_0: e0_1, eval_at_1: e1_1, eval_at_2: e2_1 },
-      RoundPoly { eval_at_0: e0_2, eval_at_1: e1_2, eval_at_2: e2_2 },
-      RoundPoly { eval_at_0: e0_3, eval_at_1: e1_3, eval_at_2: e2_3 },
-    ]
+  // Round 3: e0 + e1 == claim_2 and yield the final claim.
+  let ra1 = add_mod(ra, 1)
+  let rb1 = add_mod(rb, 1)
+  let h3 =
+    RoundPoly {
+      eval_at_0: ra1,
+      eval_at_1: sub_mod(claim_2, ra1),
+      eval_at_2: rb1,
+    }
+  let rounds = [h1, h2, h3]
+  let challenges = derive_challenges(bundle, rounds, public_input)
+  let c3 = last_challenge(bundle, rounds, public_input)
+  let claim_3 = eval_poly_mod(ra1, sub_mod(claim_2, ra1), rb1, c3)
 
-  let az = a
-  let bz = b
-  let cz = c
-  // er  such that  az * bz - cz - er == claim_3 (mod field_prime).
-  let er = sub_mod(sub_mod(mul_mod(az, bz), cz), claim_3)
+  // er  such that  az * bz - u * cz - er == claim_3 (mod field_prime).
+  let er = sub_mod(sub_mod(mul_mod(ra, rb), rc), claim_3)
 
   SlimProof {
     rounds,
-    challenges: [challenge, challenge, challenge],
-    az_r: az,
-    bz_r: bz,
-    cz_r: cz,
+    challenges,
+    az_r: ra,
+    bz_r: rb,
+    cz_r: rc,
     er_r: er,
-    public_input: #"00",
+    public_input,
     u: 1,
+  }
+}
+
+/// The last challenge in the FS-derived list for a transcript prefix (the
+/// challenge for the just-appended round).  Used while rolling a valid proof.
+fn last_challenge(
+  bundle: NifsBundle,
+  rounds: List<RoundPoly>,
+  public_input: ByteArray,
+) -> Int {
+  when list.last(derive_challenges(bundle, rounds, public_input)) is {
+    Some(c) -> c
+    None -> 0
   }
 }
 
