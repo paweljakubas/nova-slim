@@ -307,6 +307,46 @@ test tampered_final_value_fails(
 }
 
 // ---------------------------------------------------------------------------
+// Fiat-Shamir property tests
+// ---------------------------------------------------------------------------
+
+test fs_tampered_challenge_fails(
+  abc via fuzz.tuple3(fuzz.int(), fuzz.int(), fuzz.int()),
+) {
+  let (a, b, c) = abc
+  let proof = well_formed_proof(a, b, c)
+  when proof.challenges is {
+    [first, ..rest] -> {
+      let tampered = SlimProof { ..proof, challenges: [first + 1, ..rest] }
+      !verify_slim(test_bundle(), tampered)
+    }
+    _ -> True
+  }
+}
+
+test fs_tampered_public_input_fails(
+  abc via fuzz.tuple3(fuzz.int(), fuzz.int(), fuzz.int()),
+) {
+  let (a, b, c) = abc
+  let proof = well_formed_proof(a, b, c)
+  let tampered = SlimProof { ..proof, public_input: #"01" }
+  !verify_slim(test_bundle(), tampered)
+}
+
+test fs_tampered_bundle_fails(
+  abc via fuzz.tuple3(fuzz.int(), fuzz.int(), fuzz.int()),
+) {
+  let (a, b, c) = abc
+  let proof = well_formed_proof(a, b, c)
+  let other = NifsBundle {
+    ..test_bundle(),
+    com_e_hash:
+      #"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001",
+  }
+  !verify_slim(other, proof)
+}
+
+// ---------------------------------------------------------------------------
 // Norm-certificate tests
 // ---------------------------------------------------------------------------
 
