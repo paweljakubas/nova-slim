@@ -47,27 +47,31 @@ aiken build
 
 ## Test Results
 
-`aiken check` runs 35 tests: unit, property (100 fuzz cases each), and golden:
+`aiken check` runs 43 tests: unit, property (100 fuzz cases each), and golden:
 
 ```
    Collecting all tests scenarios across all modules
       Testing ...
     ┍━ tests ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    │ PASS [mem: 460.49 K, cpu: 191.27 M] e2e_4_rounds
-    │ PASS [mem:  31.41 K, cpu:  10.18 M] empty_proof_rejected
-    │ PASS [mem:  22.49 K, cpu:   7.28 M] challenges_without_rounds_rejected
-    │ PASS [mem:  42.53 K, cpu:  18.73 M] mismatch_counts_fails
+    │ PASS [mem: 476.75 K, cpu: 197.34 M] e2e_4_rounds
+    │ PASS [mem:  32.24 K, cpu:  10.39 M] empty_proof_rejected
+    │ PASS [mem:  23.32 K, cpu:   7.49 M] challenges_without_rounds_rejected
+    │ PASS [mem:  43.79 K, cpu:  19.08 M] mismatch_counts_fails
     │ PASS [mem:  51.82 K, cpu:  26.97 M] derive_challenges_is_deterministic
     │ PASS [mem:  52.42 K, cpu:  27.15 M] derive_challenges_depends_on_rounds
     │ PASS [mem:  52.42 K, cpu:  27.15 M] derive_challenges_depends_on_public_input
-    │ PASS [mem: 373.23 K, cpu: 183.16 M] carried_wrong_challenges_rejected
-    │ PASS [mem: 383.11 K, cpu: 186.65 M] single_wrong_challenge_rejected
+    │ PASS [mem: 376.44 K, cpu: 184.09 M] carried_wrong_challenges_rejected
+    │ PASS [mem: 386.31 K, cpu: 187.58 M] single_wrong_challenge_rejected
+    │ PASS [mem: 425.15 K, cpu: 201.60 M] l1_check_rejects_bad_fr_r
+    │ PASS [mem: 422.59 K, cpu: 200.37 M] l1_check_rejects_zero_fr_r_with_terms
     │ PASS [after 100 tests] valid_transcript_always_verifies
     │ PASS [after 100 tests] tampered_round_poly_fails
     │ PASS [after 100 tests] tampered_final_value_fails
     │ PASS [after 100 tests] fs_tampered_challenge_fails
     │ PASS [after 100 tests] fs_tampered_public_input_fails
     │ PASS [after 100 tests] fs_tampered_bundle_fails
+    │ PASS [after 100 tests] fs_l1_tampered_fr_r_fails
+    │ PASS [after 100 tests] fs_l1_tampered_u_fails
     │ PASS [mem:  23.77 K, cpu:   6.99 M] range_cert_valid_accepts
     │ PASS [mem:  22.70 K, cpu:   6.69 M] range_cert_coord_invalid_rejected
     │ PASS [mem:   9.72 K, cpu:   2.71 M] range_cert_empty_rejected
@@ -80,16 +84,20 @@ aiken build
     │ PASS [mem:  14.38 K, cpu:   3.59 M] norm_record_none_mode_rejected
     │ PASS [mem:  16.55 K, cpu:   4.68 M] norm_record_empty_steps_rejected
     │ PASS [mem:  63.91 K, cpu:  20.29 M] norm_record_bad_step_rejected
-    │ PASS [mem: 695.78 K, cpu: 289.16 M] verify_slim_with_norm_accepts
-    │ PASS [mem: 627.16 K, cpu: 267.26 M] verify_slim_with_norm_rejects_bad_norm
-    │ PASS [mem: 623.72 K, cpu: 266.57 M] datum_sum_only_accepts
-    │ PASS [mem: 700.00 K, cpu: 290.66 M] datum_with_norm_accepts
-    │ PASS [mem: 631.38 K, cpu: 268.76 M] datum_with_norm_rejects_bad_norm
+    │ PASS [mem: 713.98 K, cpu: 295.88 M] verify_slim_with_norm_accepts
+    │ PASS [mem: 645.36 K, cpu: 273.99 M] verify_slim_with_norm_rejects_bad_norm
+    │ PASS [mem: 641.92 K, cpu: 273.30 M] datum_sum_only_accepts
+    │ PASS [mem: 718.20 K, cpu: 297.38 M] datum_with_norm_accepts
+    │ PASS [mem: 649.58 K, cpu: 275.49 M] datum_with_norm_rejects_bad_norm
     │ PASS [mem:  26.26 K, cpu:  14.15 M] golden_derive_single_round
     │ PASS [mem:  67.57 K, cpu:  44.43 M] golden_derive_four_zero_rounds
     │ PASS [mem:  53.79 K, cpu:  34.23 M] golden_derive_three_zero_rounds_prefix
-    ┕━━━━━━━━━━━━━━━━━━━━━━ with --seed=<seed> → 35 tests | 35 passed | 0 failed
-      Summary 629 checks, 0 errors, 0 warnings
+    │ PASS [mem: 653.66 K, cpu: 277.87 M] golden_l1_fixed_proof
+    │ PASS [mem: 333.39 K, cpu: 156.38 M] golden_l1_fixed_proof_constants
+    │ PASS [mem: 422.59 K, cpu: 200.36 M] golden_l1_fixed_proof_tampered_rejected
+    │ PASS [mem: 421.84 K, cpu: 160.26 M] golden_l1_all_zero_proof
+    ┕━━━━━━━━━━━━━━━━━━━━━━ with --seed=<seed> → 43 tests | 43 passed | 0 failed
+      Summary 835 checks, 0 errors, 0 warnings
 ```
 
 What they cover:
@@ -114,9 +122,19 @@ What they cover:
   **`fs_tampered_bundle_fails`** — fuzz-driven: tampering a challenge, the
   public input, or the NIFS bundle is enough to break Fiat-Shamir binding and
   get the proof rejected.
+- **`fs_l1_tampered_fr_r_fails`** / **`fs_l1_tampered_u_fails`** — fuzz-driven:
+  altering the level-1 residual `fr_r` or the slack scalar `u` breaks the
+  `fr_r == u·cz_r + er_r` check and the proof is rejected.
 - **`golden_derive_*`** — golden vectors pin the exact `derive_challenges`
   output for fixed transcripts (single round, sequential zero rounds, prefix
   consistency) so any regression in the derivation is caught.
+- **`golden_l1_fixed_proof`** / **`golden_l1_fixed_proof_constants`** —
+  golden vectors pin `challenges`, `er_r`, and `fr_r` for
+  `well_formed_proof(2, 3, 5)`.
+- **`golden_l1_fixed_proof_tampered_rejected`** — a golden proof with `fr_r`
+  incremented by 1 is rejected.
+- **`golden_l1_all_zero_proof`** — the all-zero four-round proof carries
+  `fr_r = 0`, consistent with `u = 1`, `cz = 0`, `er = 0`.
 - **`range_cert_*`** / **`jl_cert_*`** / **`cert_enum_*`** — norm certificate
   structural checks: valid certs accepted, out-of-bounds/empty/zero certs
   rejected, both Range and JL flavours verified.
@@ -180,6 +198,7 @@ validator nova_slim {
 | `bz_r` | `Scalar` | Claimed B·Z evaluation at r |
 | `cz_r` | `Scalar` | Claimed C·Z evaluation at r |
 | `er_r` | `Scalar` | Claimed error E evaluation at r |
+| `fr_r` | `Scalar` | Claimed u·C·Z residual at r (level-1) |
 | `public_input` | `ByteArray` | Public input x |
 | `u` | `Scalar` | Slack scalar (usually 1) |
 
@@ -198,8 +217,18 @@ validator nova_slim {
 3. **Final evaluation**: Check that
    `azᵣ · bzᵣ - u · czᵣ - eᵣ == hₖ(rₖ)`.
 
+4. **Level-1 residual**: For level-1 proofs, check that
+   `fr_r == u · cz_r + er_r`, i.e. the residual `fr_r` of the MLE-of-product
+   `u·C·Z` is exactly the combination of the slack scalar, the claimed `C·Z`
+   evaluation, and the error evaluation.  This embeds the level-1 bound check
+   into the sumcheck circuit; `fr_r` is committed to by the Fiat-Shamir
+   boundary just like `er_r`.
+
 All arithmetic is performed in the **BLS12-381 scalar field** (`Fr`), which
-Plutus V3 supports natively.
+Plutus V3 supports natively.  Field elements are encoded on the wire as
+32-byte big-endian integers; byte strings are interpreted unsigned (the
+`bytearray_to_integer(True, _)` / `integer_to_bytearray(True, 32, _)` builtins
+use big-endian unsigned encoding, not two's-complement).
 
 ## Supported curves and commitments
 
