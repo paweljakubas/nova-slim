@@ -47,23 +47,27 @@ aiken build
 
 ## Test Results
 
-`aiken check` runs 24 unit tests and 3 property-based tests (100 random cases
-each, driven by [`aiken-lang/fuzz`](https://github.com/aiken-lang/fuzz)):
+`aiken check` runs 35 tests: unit, property (100 fuzz cases each), and golden:
 
 ```
    Collecting all tests scenarios across all modules
       Testing ...
     ┍━ tests ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    │ PASS [mem: 389.34 K, cpu: 144.89 M] e2e_4_rounds
-    │ PASS [mem:  16.51 K, cpu:   4.17 M] empty_proof_rejected
-    │ PASS [mem:  16.12 K, cpu:   3.99 M] challenges_without_rounds_rejected
-    │ PASS [mem:  25.74 K, cpu:   6.69 M] mismatch_counts_fails
+    │ PASS [mem: 460.49 K, cpu: 191.27 M] e2e_4_rounds
+    │ PASS [mem:  31.41 K, cpu:  10.18 M] empty_proof_rejected
+    │ PASS [mem:  22.49 K, cpu:   7.28 M] challenges_without_rounds_rejected
+    │ PASS [mem:  42.53 K, cpu:  18.73 M] mismatch_counts_fails
     │ PASS [mem:  51.82 K, cpu:  26.97 M] derive_challenges_is_deterministic
     │ PASS [mem:  52.42 K, cpu:  27.15 M] derive_challenges_depends_on_rounds
     │ PASS [mem:  52.42 K, cpu:  27.15 M] derive_challenges_depends_on_public_input
+    │ PASS [mem: 373.23 K, cpu: 183.16 M] carried_wrong_challenges_rejected
+    │ PASS [mem: 383.11 K, cpu: 186.65 M] single_wrong_challenge_rejected
     │ PASS [after 100 tests] valid_transcript_always_verifies
     │ PASS [after 100 tests] tampered_round_poly_fails
     │ PASS [after 100 tests] tampered_final_value_fails
+    │ PASS [after 100 tests] fs_tampered_challenge_fails
+    │ PASS [after 100 tests] fs_tampered_public_input_fails
+    │ PASS [after 100 tests] fs_tampered_bundle_fails
     │ PASS [mem:  23.77 K, cpu:   6.99 M] range_cert_valid_accepts
     │ PASS [mem:  22.70 K, cpu:   6.69 M] range_cert_coord_invalid_rejected
     │ PASS [mem:   9.72 K, cpu:   2.71 M] range_cert_empty_rejected
@@ -76,13 +80,16 @@ each, driven by [`aiken-lang/fuzz`](https://github.com/aiken-lang/fuzz)):
     │ PASS [mem:  14.38 K, cpu:   3.59 M] norm_record_none_mode_rejected
     │ PASS [mem:  16.55 K, cpu:   4.68 M] norm_record_empty_steps_rejected
     │ PASS [mem:  63.91 K, cpu:  20.29 M] norm_record_bad_step_rejected
-    │ PASS [mem: 439.04 K, cpu: 135.63 M] verify_slim_with_norm_accepts
-    │ PASS [mem: 370.12 K, cpu: 113.69 M] verify_slim_with_norm_rejects_bad_norm
-    │ PASS [mem: 367.18 K, cpu: 113.07 M] datum_sum_only_accepts
-    │ PASS [mem: 443.26 K, cpu: 137.13 M] datum_with_norm_accepts
-    │ PASS [mem: 374.64 K, cpu: 115.23 M] datum_with_norm_rejects_bad_norm
-    ┕━━━━━━━━━━━━━━━━━━━━━━━━ with --seed=<seed> → 27 tests | 27 passed | 0 failed
-      Summary 324 checks, 0 errors, 0 warnings
+    │ PASS [mem: 695.78 K, cpu: 289.16 M] verify_slim_with_norm_accepts
+    │ PASS [mem: 627.16 K, cpu: 267.26 M] verify_slim_with_norm_rejects_bad_norm
+    │ PASS [mem: 623.72 K, cpu: 266.57 M] datum_sum_only_accepts
+    │ PASS [mem: 700.00 K, cpu: 290.66 M] datum_with_norm_accepts
+    │ PASS [mem: 631.38 K, cpu: 268.76 M] datum_with_norm_rejects_bad_norm
+    │ PASS [mem:  26.26 K, cpu:  14.15 M] golden_derive_single_round
+    │ PASS [mem:  67.57 K, cpu:  44.43 M] golden_derive_four_zero_rounds
+    │ PASS [mem:  53.79 K, cpu:  34.23 M] golden_derive_three_zero_rounds_prefix
+    ┕━━━━━━━━━━━━━━━━━━━━━━ with --seed=<seed> → 35 tests | 35 passed | 0 failed
+      Summary 629 checks, 0 errors, 0 warnings
 ```
 
 What they cover:
@@ -94,11 +101,22 @@ What they cover:
   challenges count mismatch) are rejected.
 - **`derive_challenges_*`** — challenge derivation is deterministic, and
   depends on both the round polynomials and the public input.
+- **`carried_wrong_challenges_rejected`** /
+  **`single_wrong_challenge_rejected`** — challenges carried in the redeemer
+  that do not match the on-chain Fiat-Shamir re-derivation are rejected; even a
+  single altered challenge among otherwise correct ones fails.
 - **`valid_transcript_always_verifies`** — for *any* randomly generated
   transcript that is internally consistent, `verify_slim` accepts it.
 - **`tampered_round_poly_fails`** / **`tampered_final_value_fails`** — a
   single one-line deviation in a round polynomial or in `er_r` is enough for
   `verify_slim` to reject the proof.
+- **`fs_tampered_challenge_fails`** / **`fs_tampered_public_input_fails`** /
+  **`fs_tampered_bundle_fails`** — fuzz-driven: tampering a challenge, the
+  public input, or the NIFS bundle is enough to break Fiat-Shamir binding and
+  get the proof rejected.
+- **`golden_derive_*`** — golden vectors pin the exact `derive_challenges`
+  output for fixed transcripts (single round, sequential zero rounds, prefix
+  consistency) so any regression in the derivation is caught.
 - **`range_cert_*`** / **`jl_cert_*`** / **`cert_enum_*`** — norm certificate
   structural checks: valid certs accepted, out-of-bounds/empty/zero certs
   rejected, both Range and JL flavours verified.
@@ -171,11 +189,11 @@ validator nova_slim {
    `hᵢ(0) + hᵢ(1) == hᵢ₋₁(rᵢ₋₁)`. At least one round is required — degenerate
    proofs with zero rounds are rejected.
 
-2. **Fiat-Shamir**: Challenges are taken from the proof itself. The
-   `derive_challenges` function (exposing the prover's BLAKE2b-256 Fiat-Shamir
-   derivation) is provided for **off-chain checkers/auditors**. Re-deriving
-   and enforcing the challenges inside the on-chain validator is planned but
-   **not yet implemented** — today the validator trusts the proof's challenges.
+2. **Fiat-Shamir**: The challenges carried in the proof are enforced:
+   `derive_challenges` re-derives the BLAKE2b-256 challenges from the NIFS
+   bundle, the round polynomials, and the public input, and `verify_slim`
+   requires them to match the proof's `challenges` element for element.  A
+   prover cannot smuggle in self-serving challenges.
 
 3. **Final evaluation**: Check that
    `azᵣ · bzᵣ - u · czᵣ - eᵣ == hₖ(rₖ)`.
