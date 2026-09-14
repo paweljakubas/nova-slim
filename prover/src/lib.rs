@@ -110,6 +110,7 @@ pub mod fold;
 /// relaxed R1CS equation + HashPC commitments.
 pub mod module_sis;
 pub mod norm;
+pub mod opening;
 pub mod sumcheck;
 pub mod window;
 
@@ -453,6 +454,8 @@ pub mod codec {
         bundle_instance_hash: ByteBuf,
         norm: Option<StepNormRecordCbor>,
         fold_log: Option<Vec<FoldProofEntryCbor>>,
+        #[serde(default)]
+        aiken_opening: Option<super::opening::AikenOpening>,
     }
 
     /// CBOR form of a single fold-log entry carried in a level-1 proof.
@@ -646,6 +649,7 @@ pub mod codec {
                         .collect::<Result<_, _>>()
                 })
                 .transpose()?,
+            aiken_opening: p.aiken_opening.clone(),
         };
         write(&dto)
     }
@@ -691,6 +695,7 @@ pub mod codec {
                         .collect::<Result<Vec<_>, _>>()
                 })
                 .transpose()?,
+            aiken_opening: d.aiken_opening,
         })
     }
 
@@ -2019,6 +2024,12 @@ pub struct Level1SlimProof {
     /// fold log (e.g. older step-2 golden vectors / audit).  When `Some`, its
     /// length must equal `n_steps - 1` (one fold per step after the first).
     pub fold_log: Option<Vec<FoldProofEntry>>,
+    /// On-chain commitment opening (P12): canonical salts and the Merkle
+    /// roots that fill the Aiken `NifsBundle` datum's `com_w_hash` /
+    /// `com_e_hash`.  Emitted by `prove_level1`; `None` for artifacts
+    /// produced before this field existed (backward compatible).
+    #[serde(default)]
+    pub aiken_opening: Option<opening::AikenOpening>,
 }
 
 /// One per-window uniformized proof (P9), in serializable decimal/hex form.
@@ -2373,6 +2384,18 @@ pub fn prove_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>
         .into()
     };
 
+    // On-chain commitment opening (P12): canonical salts and the Merkle roots
+    // that bind the level-1 evaluations into the Aiken `NifsBundle` datum
+    // (`com_w_hash` over `[az_r, bz_r, cz_r, fr_r]`, `com_e_hash` over
+    // `[er_r]`).
+    let aiken_opening = opening::aiken_opening_from_evals::<ScalarField<C>>(
+        sc_proof.az_r,
+        sc_proof.bz_r,
+        sc_proof.cz_r,
+        sc_proof.fr_r,
+        sc_proof.er_r,
+    )?;
+
     Ok(Level1SlimProof {
         sumcheck_polys: sc_proof
             .polys
@@ -2397,6 +2420,7 @@ pub fn prove_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>
             .fold_log
             .as_ref()
             .map(|log| log.iter().map(FoldProofEntry::from_entry).collect()),
+        aiken_opening: Some(aiken_opening),
     })
 }
 
@@ -4403,6 +4427,7 @@ mod tests {
             bundle_final_instance_hash: "deadbeef".to_string(),
             norm: None,
             fold_log: None,
+            aiken_opening: None,
         };
 
         let result = verify_slim_level1::<
@@ -4711,6 +4736,66 @@ mod tests {
             64,
         )
         .unwrap();
+    }
+
+    /// P12 E2E: `prove_level1` emits the Aiken-compatible opening.  The carried
+    /// commitment roots must recompute from the evaluations, and must survive
+    /// the CBOR round-trip so the verifier can read them back verbatim.
+    #[test]
+    fn level1_emits_aiken_opening() {
+        let (_tmp, _r1cs_path, _steps_dir, fold_out, c) = norm_setup();
+        let l1 =
+            prove_level1::<crate::curve::Bls12_381, PedersenCommitment<crate::curve::Bls12_381>>(
+                &c,
+                &fold_out,
+                OptFlags::NONE,
+                norm::NormMode::None,
+                64,
+            )
+            .unwrap();
+
+        let opening = l1
+            .aiken_opening
+            .clone()
+            .expect("prove_level1 must emit an on-chain opening");
+
+        // Canonical salts, as the Aiken `OpeningProof` uses.
+        assert_eq!(opening.w_salts, ["01", "02", "03", "04"]);
+        assert_eq!(opening.e_salt, "05");
+
+        // Recomputing the roots from the carried evaluations must reproduce
+        // the emitted commitment hashes exactly.
+        let eval = |s: &str| s.parse::<Fr>().unwrap();
+        assert!(
+            opening::verify_aiken_opening(
+                eval(&l1.az_r),
+                eval(&l1.bz_r),
+                eval(&l1.cz_r),
+                eval(&l1.fr_r),
+                eval(&l1.er_r),
+                &opening,
+            )
+            .unwrap(),
+            "opening roots must recompute from the level-1 evaluations"
+        );
+
+        // CBOR round-trip preserves the opening unchanged.
+        let bytes = l1.to_cbor::<Fr>().unwrap();
+        let decoded = Level1SlimProof::from_cbor::<Fr>(&bytes).unwrap();
+        assert_eq!(
+            decoded
+                .aiken_opening
+                .as_ref()
+                .map(|o| &o.com_w_hash),
+            Some(&opening.com_w_hash)
+        );
+        assert_eq!(
+            decoded
+                .aiken_opening
+                .as_ref()
+                .map(|o| &o.com_e_hash),
+            Some(&opening.com_e_hash)
+        );
     }
 
     // ── Parameter-mismatch adversarial tests ──────────────────────────
