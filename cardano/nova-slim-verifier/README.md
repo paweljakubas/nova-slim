@@ -365,20 +365,37 @@ aiken build
 
 ## Integration with NovaSlim
 
-The Rust prover (`nova-slim`) outputs a slim proof as a CBOR-encoded byte
-array.  Convert it to the Aiken `SlimProof` type before submitting:
+The Rust prover (`nova-slim`) outputs a level-1 proof (`Level1SlimProof`) as a
+CBOR-encoded byte array.  Since P12, `prove_level1` carries the opening
+required by the on-chain verifier (commit `c7f0eee`):
 
 ```rust
-// In your Rust off-chain code
-let slim_proof_bytes = nova_slim_prover.generate_slim_proof(...);
-// Serialize to Aiken's expected format (CBOR map)
+let opening = proof.aiken_opening.as_ref().unwrap();
+// opening.w_salts   == ["01", "02", "03", "04"]
+// opening.e_salt    == "05"
+// opening.com_w_hash = Merkle root over [az_r, bz_r, cz_r, fr_r]
+// opening.com_e_hash = Merkle root over [er_r]
 ```
 
-A `nova-slim export --format aiken` conversion command is **planned** for the
-NovaSlim CLI but not yet implemented.  For P12, emitting the `OpeningProof`
-salts (matching the leaf/root construction above) from the Rust prover is the
-remaining integration step; today the salts are produced by the reference
-Python mirror (`/tmp/opencode/p12_mirror.py`) and pinned by the golden tests.
+`com_w_hash` / `com_e_hash` fill the datum's `NifsBundle` and are recomputed
+on-chain by `verify_opening` from the evaluations and the canonical salts, so
+no Merkle paths travel on the wire.  The leaf/root construction is pinned
+cross-language: the same golden constants appear in `tests.ak` and in the Rust
+`opening` module tests.  The HashPC commitment hashes stay a flat BLAKE2b-512
+(used only for the off-chain audit trail); the Merkle-based opening roots are
+an on-chain-specific surface.
+
+The sumcheck Fiat-Shamir derivation is now aligned between the two codebases:
+the Rust degree-2 path (`prove_degree2` / `verify_degree2`) seeds the chain
+with `transcript_hash ‖ public_input` and appends each round's
+`[g(0), g(1), g(2)]` as three 32-byte big-endian integers, exactly what
+`derive_challenges` accumulates, then reads the BLAKE2b-256 digest as a
+big-endian unsigned integer reduced mod the scalar order.  `prove_level1`
+binds the proof's own `public_input` (default `"00"`) into that seed and
+`verify_slim_level1` re-derives the challenges from the transported
+`public_input` + `transcript_final`.  The match is pinned cross-language: the
+Aiken golden vectors (`tests.ak`, `golden_derive_single_round` /
+`golden_derive_four_zero_rounds`) are re-asserted in the Rust `sumcheck` tests.
 
 ## Project structure
 

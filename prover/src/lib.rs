@@ -170,7 +170,7 @@ pub mod codec {
     use serde_bytes::ByteBuf;
     use std::error::Error;
 
-    const FORMAT_VERSION: u8 = 2;
+    const FORMAT_VERSION: u8 = 3;
 
     /// A field element in its cheapest CBOR form: a plain integer when the
     /// value fits in u64 (sumcheck coefficients often do), otherwise the
@@ -456,6 +456,8 @@ pub mod codec {
         fold_log: Option<Vec<FoldProofEntryCbor>>,
         #[serde(default)]
         aiken_opening: Option<super::opening::AikenOpening>,
+        #[serde(default)]
+        public_input: ByteBuf,
     }
 
     /// CBOR form of a single fold-log entry carried in a level-1 proof.
@@ -650,6 +652,7 @@ pub mod codec {
                 })
                 .transpose()?,
             aiken_opening: p.aiken_opening.clone(),
+            public_input: hash_enc(&p.public_input)?,
         };
         write(&dto)
     }
@@ -696,6 +699,7 @@ pub mod codec {
                 })
                 .transpose()?,
             aiken_opening: d.aiken_opening,
+            public_input: hex::encode(&d.public_input),
         })
     }
 
@@ -2030,6 +2034,12 @@ pub struct Level1SlimProof {
     /// produced before this field existed (backward compatible).
     #[serde(default)]
     pub aiken_opening: Option<opening::AikenOpening>,
+    /// Public input bound into the Fiat-Shamir seed
+    /// (`transcript_hash ‖ public_input`, hex bytes) — mirrors the Aiken
+    /// `SlimProof.public_input`.  Defaults to `"00"` (the on-chain fixture
+    /// convention); `prove_level1` emits it with the proof.
+    #[serde(default = "default_public_input")]
+    pub public_input: String,
 }
 
 /// One per-window uniformized proof (P9), in serializable decimal/hex form.
@@ -2324,6 +2334,18 @@ pub fn prove_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>
     let e = &folded.final_witness.e;
     let u = folded.final_instance.u;
 
+    // Public input bound into the Fiat-Shamir seed.  `#"00"` matches the Aiken
+    // on-chain fixture convention (see `SlimProof.public_input`).
+    let public_input = default_public_input();
+
+    // Fiat-Shamir seed: `transcript_hash ‖ public_input` (Aiken
+    // `derive_challenges`).  The transcript hash is the fold's final transcript
+    // digest; the Aiken datum carries the same bytes in `NifsBundle.transcript_hash`.
+    let fs_seed = sumcheck::fs_seed(
+        &hex::decode(&folded.bundle.transcript_final)?,
+        &hex::decode(&public_input)?,
+    );
+
     // Run degree-2 sumcheck.
     let (sc_proof, r_challenges) = sumcheck::prove_degree2_opts::<C>(
         &circuit.l,
@@ -2333,6 +2355,7 @@ pub fn prove_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>
         u,
         e,
         opts.parallel,
+        &fs_seed,
     );
 
     // HashPC commitments.
@@ -2421,6 +2444,7 @@ pub fn prove_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>
             .as_ref()
             .map(|log| log.iter().map(FoldProofEntry::from_entry).collect()),
         aiken_opening: Some(aiken_opening),
+        public_input,
     })
 }
 
@@ -2733,8 +2757,14 @@ pub fn verify_slim_level1<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarFiel
         er_r,
     };
 
-    // 2. Verify degree-2 sumcheck.
-    let v_out = sumcheck::verify_degree2::<C>(&sc_proof);
+    // 2. Verify degree-2 sumcheck (challenges reconstructed from the
+    //    `transcript_hash ‖ public_input` seed, aligned with the Aiken
+    //    on-chain `derive_challenges`).
+    let fs_seed = sumcheck::fs_seed(
+        &hex::decode(&bundle.transcript_final)?,
+        &hex::decode(&proof.public_input)?,
+    );
+    let v_out = sumcheck::verify_degree2::<C>(&sc_proof, &fs_seed);
     if !v_out.ok {
         return Err("degree-2 sumcheck verification failed".into());
     }
@@ -3555,6 +3585,12 @@ pub fn frs_from_strings<F: PrimeField>(strs: &[String]) -> Result<Vec<F>, Box<dy
                 .map_err(|_| format!("invalid field element '{s}'").into())
         })
         .collect()
+}
+
+/// Default `Level1SlimProof.public_input`: the single zero byte `#"00"`,
+/// matching the Aiken test/datum convention for the Fiat-Shamir seed.
+pub(crate) fn default_public_input() -> String {
+    "00".into()
 }
 
 #[cfg(test)]
@@ -4428,6 +4464,7 @@ mod tests {
             norm: None,
             fold_log: None,
             aiken_opening: None,
+            public_input: default_public_input(),
         };
 
         let result = verify_slim_level1::<

@@ -213,7 +213,7 @@ pub fn prove_window<C: NovaCurve>(
     let u = ScalarField::<C>::one();
 
     let (proof, r_challenges) =
-        prove_degree2_opts::<C>(&chain.l, &chain.r, &chain.o, &z, u, &e, parallel);
+        prove_degree2_opts::<C>(&chain.l, &chain.r, &chain.o, &z, u, &e, parallel, &[]);
 
     let params = PedersenParams::<C>::from_seed(
         NIFS_PARAMS_SEED,
@@ -281,8 +281,9 @@ pub fn verify_window<C: NovaCurve>(
         return reject(proof, zero, None);
     }
 
-    // (1) Degree-2 sumcheck + r-challenge binding.
-    let d = verify_degree2::<C>(&proof.sumcheck);
+    // (1) Degree-2 sumcheck + r-challenge binding.  Window proofs use an empty
+    //     FS seed: the window artifact is audit-only and self-contained.
+    let d = verify_degree2::<C>(&proof.sumcheck, &[]);
     if !d.ok || d.r_challenges != proof.r_challenges {
         return reject(proof, zero, None);
     }

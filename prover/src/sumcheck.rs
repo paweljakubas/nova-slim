@@ -127,6 +127,50 @@ pub fn hash_field_elements<C: NovaCurve>(elems: &[ScalarField<C>]) -> Vec<u8> {
     h.finalize().to_vec()
 }
 
+/// Fiat-Shamir seed: `transcript_hash ‖ public_input`, exactly the byte string
+/// the Aiken on-chain verifier's `derive_challenges` seeds its transcript with
+/// (commit-free FS — the commitment hashes are deliberately excluded).
+pub fn fs_seed(transcript_hash: &[u8], public_input: &[u8]) -> Vec<u8> {
+    let mut seed = Vec::with_capacity(transcript_hash.len() + public_input.len());
+    seed.extend_from_slice(transcript_hash);
+    seed.extend_from_slice(public_input);
+    seed
+}
+
+/// 32-byte big-endian encoding of a reduced field element — the byte layout
+/// Aiken's `integer_to_bytearray(True, 32, eval)` produces.
+pub fn element_to_be32<F: PrimeField>(e: &F) -> [u8; 32] {
+    let mut buf = [0u8; 32];
+    let be = e.into_bigint().to_bytes_be();
+    let off = 32 - be.len();
+    // A reduced field element fits in 32 bytes; shorter encodings are
+    // left-padded with zeros (the `off` prefix is already zeroed).
+    buf[off..].copy_from_slice(&be);
+    buf
+}
+
+/// Fiat-Shamir challenge from a hash digest, interpreted as a big-endian
+/// unsigned integer reduced mod the scalar order — Aiken's `scalar_from_bytes`
+/// (`bytearray_to_integer(True, _)` then `mod_integer(_, field_prime)`).
+pub fn challenge_from_be_hash<C: NovaCurve>(hash: &[u8]) -> ScalarField<C> {
+    ScalarField::<C>::from_be_bytes_mod_order(hash)
+}
+
+/// Append one round's `[g(0), g(1), g(2)]` evaluations to the accumulated
+/// transcript bytes, in Aiken's `derive_challenges` layout (96 bytes/round).
+fn append_round_be<C: NovaCurve>(transcript: &mut Vec<u8>, poly: &[ScalarField<C>; 3]) {
+    for c in poly {
+        transcript.extend_from_slice(&element_to_be32(c));
+    }
+}
+
+/// BLAKE2b-256 of the accumulated transcript (Aiken's `blake2b_256` builtin).
+fn hash_transcript(transcript: &[u8]) -> [u8; 32] {
+    let mut hasher = blake2::Blake2b::<U32>::new();
+    hasher.update(transcript);
+    hasher.finalize().into()
+}
+
 /// Run the sumcheck prover for the relaxed R1CS check.
 ///
 /// `l`, `r_mat`, `o` are the step circuit's sparse A/B/C matrices.
@@ -385,6 +429,10 @@ pub fn eval_poly_deg2<F: PrimeField>(c0: F, c1: F, c2: F, x: F) -> F {
 }
 
 /// Run the degree-2 sumcheck prover (sequential).
+///
+/// `seed` is the Fiat-Shamir seed (`transcript_hash ‖ public_input`, see
+/// [`fs_seed`]); the challenge chain matches the Aiken on-chain verifier's
+/// `derive_challenges`.
 pub fn prove_degree2<C: NovaCurve>(
     l: &[Vec<(u32, ScalarField<C>)>],
     r_mat: &[Vec<(u32, ScalarField<C>)>],
@@ -392,14 +440,21 @@ pub fn prove_degree2<C: NovaCurve>(
     z: &[ScalarField<C>],
     u: ScalarField<C>,
     e: &[ScalarField<C>],
+    seed: &[u8],
 ) -> (SumcheckProofDegree2<C>, Vec<ScalarField<C>>) {
-    prove_degree2_opts(l, r_mat, o, z, u, e, false)
+    prove_degree2_opts(l, r_mat, o, z, u, e, false, seed)
 }
 
 /// Run the degree-2 sumcheck prover with optimization flags.
 ///
 /// When `parallel` is true, per-row MLE evaluations and round sums use
 /// rayon for parallel iteration.
+///
+/// `seed` is the Fiat-Shamir seed (`transcript_hash ‖ public_input`, see
+/// [`fs_seed`]).  Round `r`'s challenge is `challenge_from_be_hash ∘
+/// blake2b_256(seed ‖ be32(round₀) ‖ … ‖ be32(roundᵣ))` — byte-for-byte the
+/// transcript the Aiken on-chain verifier accumulates in `derive_challenges`.
+#[allow(clippy::too_many_arguments)]
 pub fn prove_degree2_opts<C: NovaCurve>(
     l: &[Vec<(u32, ScalarField<C>)>],
     r_mat: &[Vec<(u32, ScalarField<C>)>],
@@ -408,6 +463,7 @@ pub fn prove_degree2_opts<C: NovaCurve>(
     u: ScalarField<C>,
     e: &[ScalarField<C>],
     parallel: bool,
+    seed: &[u8],
 ) -> (SumcheckProofDegree2<C>, Vec<ScalarField<C>>) {
     let n = l.len();
     assert_eq!(r_mat.len(), n);
@@ -490,6 +546,9 @@ pub fn prove_degree2_opts<C: NovaCurve>(
     let mut claims = Vec::with_capacity(num_rounds + 1);
     let mut polys: Vec<[ScalarField<C>; 3]> = Vec::with_capacity(num_rounds);
     let mut r_challenges: Vec<ScalarField<C>> = Vec::with_capacity(num_rounds);
+    // Accumulated transcript bytes: seed, then one round's [g(0), g(1), g(2)]
+    // encoded as 32-byte big-endian per round (Aiken `derive_challenges`).
+    let mut transcript = seed.to_vec();
 
     for _round in 0..num_rounds {
         let half = az_vec.len() / 2;
@@ -552,13 +611,12 @@ pub fn prove_degree2_opts<C: NovaCurve>(
         claims.push(g0 + g1);
         polys.push([g0, g1, g2]);
 
-        // Fiat-Shamir: hash claims[..=round] ++ [g(0), g(1), g(2)].
-        let mut hash_input = claims.clone();
-        for c in polys.last().unwrap() {
-            hash_input.push(*c);
-        }
-        let h = hash_field_elements::<C>(&hash_input);
-        let ri = challenge_from_hash::<C>(&h);
+        // Fiat-Shamir (Aiken-aligned): challenge is the accumulated transcript
+        // `seed ‖ round₀ ‖ … ‖ round_r` hashed with blake2b-256 and read as a
+        // big-endian unsigned integer mod `p`.
+        append_round_be::<C>(&mut transcript, polys.last().unwrap());
+        let h = hash_transcript(&transcript);
+        let ri = challenge_from_be_hash::<C>(&h);
         r_challenges.push(ri);
 
         // Fold all vectors with challenge ri (MLE folding).
@@ -608,7 +666,13 @@ pub fn prove_degree2_opts<C: NovaCurve>(
 /// `fr_r − u·cz_r − er_r == final_claim` and `final_claim == 0` (residual
 /// vanishes) — closing the all-zeros / "free E" gap.  Note `fr_r` is what the
 /// sumcheck bounds; `az_r·bz_r` does NOT equal `fr_r` for relaxed witnesses.
-pub fn verify_degree2<C: NovaCurve>(proof: &SumcheckProofDegree2<C>) -> Degree2VerifyOutput<C> {
+///
+/// The Fiat-Shamir challenges are reconstructed from `seed` and the round
+/// polynomials, exactly as the Aiken on-chain `derive_challenges` does.
+pub fn verify_degree2<C: NovaCurve>(
+    proof: &SumcheckProofDegree2<C>,
+    seed: &[u8],
+) -> Degree2VerifyOutput<C> {
     let zero = ScalarField::<C>::zero();
     let claimed_sum = proof.claims[0];
     let num_rounds = proof.polys.len();
@@ -642,6 +706,7 @@ pub fn verify_degree2<C: NovaCurve>(proof: &SumcheckProofDegree2<C>) -> Degree2V
 
     let mut current_sum = claimed_sum;
     let mut r_challenges: Vec<ScalarField<C>> = Vec::with_capacity(num_rounds);
+    let mut transcript = seed.to_vec();
 
     for round in 0..num_rounds {
         let poly = &proof.polys[round];
@@ -661,13 +726,11 @@ pub fn verify_degree2<C: NovaCurve>(proof: &SumcheckProofDegree2<C>) -> Degree2V
             };
         }
 
-        // Fiat-Shamir (must match prover).
-        let mut hash_input = proof.claims[..=round].to_vec();
-        for c in poly {
-            hash_input.push(*c);
-        }
-        let h = hash_field_elements::<C>(&hash_input);
-        let ri = challenge_from_hash::<C>(&h);
+        // Fiat-Shamir (must match prover / Aiken derive_challenges): hash the
+        // accumulated `seed ‖ round₀ ‖ … ‖ round_r`, read big-endian mod `p`.
+        append_round_be::<C>(&mut transcript, poly);
+        let h = hash_transcript(&transcript);
+        let ri = challenge_from_be_hash::<C>(&h);
         r_challenges.push(ri);
 
         // Next claimed sum = g(r_i) via Lagrange interpolation on {0,1,2}.
@@ -863,6 +926,10 @@ mod tests {
     use crate::commitment::PedersenParams;
     use ark_bls12_381::Fr;
     use ark_ff::{One, Zero};
+
+    /// Seed used by the unit tests for degree-2 FS: the single zero byte,
+    /// matching the Aiken fixture convention `#"00"`.
+    const FS_TEST_SEED: &[u8] = &[0x00];
 
     /// One-constraint multiplier: Z[1]·Z[2] = Z[3], wire 0 = constant 1.
     fn simple_r1cs() -> (
@@ -1502,8 +1569,8 @@ mod tests {
         );
 
         // Degree-2
-        let (proof2, _r2) = prove_degree2::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e);
-        let out2 = verify_degree2::<crate::curve::Bls12_381>(&proof2);
+        let (proof2, _r2) = prove_degree2::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e, FS_TEST_SEED);
+        let out2 = verify_degree2::<crate::curve::Bls12_381>(&proof2, FS_TEST_SEED);
         assert!(out2.ok, "degree-2 sumcheck must pass");
 
         // Both have the same number of rounds.
@@ -1563,8 +1630,8 @@ mod tests {
             e.push(az * bz - u * cz);
         }
 
-        let (proof2, _r2) = prove_degree2::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e);
-        let out2 = verify_degree2::<crate::curve::Bls12_381>(&proof2);
+        let (proof2, _r2) = prove_degree2::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e, FS_TEST_SEED);
+        let out2 = verify_degree2::<crate::curve::Bls12_381>(&proof2, FS_TEST_SEED);
         assert!(
             out2.ok,
             "degree-2 sumcheck must pass for honest relaxed witness"
@@ -1601,19 +1668,19 @@ mod tests {
         let u = Fr::from(1u64);
         let e = vec![Fr::zero(); k];
 
-        let (proof, _) = prove_degree2::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e);
+        let (proof, _) = prove_degree2::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e, FS_TEST_SEED);
 
         // Tamper initial claim.
         let mut bad = proof.clone();
         bad.claims[0] += Fr::from(42u64);
-        let out = verify_degree2::<crate::curve::Bls12_381>(&bad);
+        let out = verify_degree2::<crate::curve::Bls12_381>(&bad, FS_TEST_SEED);
         assert!(!out.ok, "tampered initial claim must be rejected");
 
         // Tamper a poly coefficient.
         let mut bad = proof.clone();
         if !bad.polys.is_empty() {
             bad.polys[0][0] += Fr::from(1u64);
-            let out = verify_degree2::<crate::curve::Bls12_381>(&bad);
+            let out = verify_degree2::<crate::curve::Bls12_381>(&bad, FS_TEST_SEED);
             assert!(!out.ok, "tampered poly coefficient must be rejected");
         }
     }
@@ -1632,11 +1699,11 @@ mod tests {
         let e = vec![Fr::zero()];
 
         let (proof, r_challenges) =
-            prove_degree2::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e);
+            prove_degree2::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e, FS_TEST_SEED);
         assert!(proof.polys.is_empty(), "1 constraint must have 0 rounds");
         assert!(r_challenges.is_empty());
 
-        let out = verify_degree2::<crate::curve::Bls12_381>(&proof);
+        let out = verify_degree2::<crate::curve::Bls12_381>(&proof, FS_TEST_SEED);
         assert!(out.ok);
         assert!(out.r_challenges.is_empty());
         assert_eq!(out.az_r, Fr::from(3u64));
@@ -1667,11 +1734,11 @@ mod tests {
         let e = vec![Fr::zero(); 2];
 
         let (proof, r_challenges) =
-            prove_degree2::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e);
+            prove_degree2::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e, FS_TEST_SEED);
         assert_eq!(proof.polys.len(), 1, "2 constraints → 1 round");
         assert_eq!(r_challenges.len(), 1);
 
-        let out = verify_degree2::<crate::curve::Bls12_381>(&proof);
+        let out = verify_degree2::<crate::curve::Bls12_381>(&proof, FS_TEST_SEED);
         assert!(out.ok);
         // The degree-2 final claim equals fr_r - u*cz_r - er_r (level-1).
         assert_eq!(out.final_claim, out.fr_r - u * out.cz_r - out.er_r);
@@ -1703,13 +1770,13 @@ mod tests {
         let e = vec![Fr::zero(); k];
 
         let (seq_proof, seq_r) =
-            prove_degree2_opts::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e, false);
+            prove_degree2_opts::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e, false, FS_TEST_SEED);
         let (par_proof, par_r) =
-            prove_degree2_opts::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e, true);
+            prove_degree2_opts::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e, true, FS_TEST_SEED);
 
         // Both must verify.
-        let out_seq = verify_degree2::<crate::curve::Bls12_381>(&seq_proof);
-        let out_par = verify_degree2::<crate::curve::Bls12_381>(&par_proof);
+        let out_seq = verify_degree2::<crate::curve::Bls12_381>(&seq_proof, FS_TEST_SEED);
+        let out_par = verify_degree2::<crate::curve::Bls12_381>(&par_proof, FS_TEST_SEED);
         assert!(out_seq.ok, "sequential degree-2 proof must verify");
         assert!(out_par.ok, "parallel degree-2 proof must verify");
 
@@ -1719,6 +1786,78 @@ mod tests {
 
         // Final claims must match.
         assert_eq!(out_seq.final_claim, out_par.final_claim);
+    }
+
+    /// Aiken `golden_derive_single_round` pin: the single round (1,2,3) seeded
+    /// with transcript_hash `abcd1234…` and public_input `#"00"` must yield the
+    /// exact challenge the Aiken tests assert.
+    #[test]
+    fn fs_golden_single_round_matches_aiken() {
+        let transcript_hash =
+            hex::decode("abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234")
+                .unwrap();
+        let seed = fs_seed(&transcript_hash, &[0x00]);
+        let mut transcript = seed.clone();
+
+        let poly = [Fr::from(1u64), Fr::from(2u64), Fr::from(3u64)];
+        append_round_be::<crate::curve::Bls12_381>(&mut transcript, &poly);
+        let c =
+            challenge_from_be_hash::<crate::curve::Bls12_381>(&hash_transcript(&transcript));
+
+        let expected =
+            "26431810460542350328225393435127278891560367633488502080741380211698890681653"
+                .parse::<Fr>()
+                .unwrap();
+        assert_eq!(c, expected);
+    }
+
+    /// Aiken `golden_derive_four_zero_rounds` pin: four zero-eval rounds must
+    /// reproduce the exact sequential-transcript challenges, including prefix
+    /// consistency across the chain.
+    #[test]
+    fn fs_golden_four_zero_rounds_matches_aiken() {
+        let transcript_hash =
+            hex::decode("abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234")
+                .unwrap();
+        let seed = fs_seed(&transcript_hash, &[0x00]);
+        let zeros = [Fr::zero(), Fr::zero(), Fr::zero()];
+        let expected = [
+            "43416796802790507556482780476042606248231725083497544914022562377655870104988"
+                .parse::<Fr>()
+                .unwrap(),
+            "2603025244603371477507367197449043627422987308936417670176319573407695934964"
+                .parse::<Fr>()
+                .unwrap(),
+            "34363117575299314384860064376102630579675077636401179669498996178842910478054"
+                .parse::<Fr>()
+                .unwrap(),
+            "17407178141284272902480343621261340541285614482762926843228023338703760161082"
+                .parse::<Fr>()
+                .unwrap(),
+        ];
+
+        let challenge_at = |round: usize| {
+            let mut transcript = seed.clone();
+            for _ in 0..=round {
+                append_round_be::<crate::curve::Bls12_381>(&mut transcript, &zeros);
+            }
+            challenge_from_be_hash::<crate::curve::Bls12_381>(&hash_transcript(&transcript))
+        };
+
+        for round in 0..4 {
+            assert_eq!(
+                challenge_at(round),
+                expected[round],
+                "challenge {round} differs from the Aiken golden vector"
+            );
+        }
+
+        // Prefix consistency (Aiken `golden_derive_three_zero_rounds_prefix`):
+        // the first three challenges of the 4-round chain equal the 3-round
+        // derivation — the transcript is accumulated, never reset.
+        assert_eq!(challenge_at(0), expected[0]);
+        assert_eq!(challenge_at(1), expected[1]);
+        assert_eq!(challenge_at(2), expected[2]);
     }
 
     /// eval_poly_deg2 correctness: evaluates to the correct values at 0, 1, 2.
@@ -2108,7 +2247,7 @@ mod opening_proptests {
             let (l, r_mat, o, z, u, e) = relaxed_multiplier_circuit(a1, b1, a2, b2);
             let n = l.len();
             let (proof, r_challenges) =
-                prove_degree2_opts::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e, false);
+                prove_degree2_opts::<crate::curve::Bls12_381>(&l, &r_mat, &o, &z, u, &e, false, &[0x00]);
 
             // Recompute the openings at the *prover's* own challenge point `r`
             // and require exact agreement with the claims it emitted.
