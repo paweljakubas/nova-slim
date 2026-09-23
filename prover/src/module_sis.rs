@@ -1098,8 +1098,8 @@ mod tests {
             1024, // β = 2^10
             Q_L1,
         );
-        // With β = 2^10 and q ≈ 2^23, the checkpoint interval should be
-        // small but non-trivial (empirically ~3-5 folds with conservative bounds).
+        // With β = 2^10 and q ≈ 2^23, the checkpoint interval is
+        // ~1 fold under the worst-case cross-term bound (18·β²+6·β > q/2).
         assert!(
             interval > 0,
             "checkpoint interval must be positive"
