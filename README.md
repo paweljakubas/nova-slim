@@ -77,12 +77,12 @@ nova-slim verify   → check bundle + proof (slim: ~0.2 ms)
 | **Aiken eUTXO verifier** | ✅ 0.2.0 | On-chain Plutus-compatible verifier (`cardano/nova-slim-verifier/`) |
 | **Cross-system comparison** (Sonobe, STARK, LatticeFold) | ✅ 0.2.0 | Benchmarked against Nova+CycleFold and theoretical baselines |
 | **Formal security proof** | ✅ 0.2.0 | 4-game knowledge-soundness proof; generic over commitment scheme **(batch-proving model only)** |
-| **Level 1 — Algebraic consistency check** | ✅ 0.4.0 | `verify_slim_level1` checks `fr_r - u·cz_r - er_r == final_claim == 0` using the MLE-of-product residual (fixes the earlier `az_r·bz_r` reconstruction that rejected every honest relaxed fold). Implemented off-chain; **not** part of the deployed on-chain verifier. |
+| **Level 1 — Algebraic consistency check** | ✅ 0.4.0 | `verify_slim_level1` checks `fr_r - u·cz_r - er_r == final_claim == 0` using the MLE-of-product residual (fixes the earlier `az_r·bz_r` reconstruction that rejected every honest relaxed fold). In Rust this is the `--level1` proof path; the Aiken on-chain verifier (`cardano/nova-slim-verifier`, `verify_slim_level1`) implements the same check. |
 | **PCS openings — circuit-backed OP** | ✅ 0.4.0 | `recompute_circuit_evals` at `r`; `verify_slim_level1` enforces `MLE(tt_E)(r) == er_r`, binding evaluations to the committed witness/error. |
 | **Complete verifier (`verify_full`)** | ✅ 0.4.0 | `verify_full` runs degree-2 sumcheck + L1 residual + OP openings + optional norm audit + fold re-verification (FV). Knowledge soundness under an untrusted prover. |
 | **Fold re-verification (FV, #29)** | ✅ 0.4.0 | Per-fold-step fold log in `Level1SlimProof` (CBOR, `FORMAT_VERSION=2`). `verify_fold_log` recomputes FS challenges and re-checks the NIFS homomorphic fold relation per step, binding the chain to the final instance. |
 | **Norm enforcement (audit-only)** | ✅ 0.4.0 | Per-step pre-fold witness shortness certificates: Option A (range/bit-decomposition) and Option B (JL/sketch), selectable via `--norm-range` / `--norm-jl`. Re-fold ground-truth audit in `verify_level1_norm`. |
-| **Level 1 + norm benchmarks** | ✅ 0.4.0 | VRF 254 steps, BLS12-381/Pedersen: slim 0.4 KiB (0.3 ms), level-1 1.4 KiB (69 ms), norm-range 34 KiB (142 ms), norm-JL 42 KiB (215 ms). |
+| **Level 1 + norm benchmarks** | ✅ 0.4.0 | VRF 254 steps, BLS12-381/Pedersen: slim 0.4 KiB (0.2 ms), level-1 1.7 KiB (57 ms), norm-range 34.2 KiB (126 ms), norm-JL 42.6 KiB (260 ms). |
 | **Level 2 — Sumcheck-based matrix evaluation** | 🔜 0.5.0 | Three extra sumchecks proving `az_r`, `bz_r`, `cz_r` are the *correct* evaluations of the matrix-vector products at the random point. Restores knowledge soundness under an untrusted prover and is what actually closes the all-zero/free-`E` transcript gap (the Level-1 `final_claim == 0` check is honest-consistent but does not, by itself, bind the sumcheck to the committed witness). Estimated honest proof size: ~3–5 KiB for Ed25519 (k=13). |
 | **Toward quantum proofs** | 🔜 Research | Close gaps (i) and (ii) for a complete post-quantum argument: (i) QROM Fiat–Shamir soundness via multi-round measure-and-reprogram (`thm:qrom-fs`); (ii) quantum extraction via commitment collapsing (`thm:qrom-2`). These layer on top of a classically sound verifier (Level 2). |
 | **Tight Module-SIS commitment** | 🔜 Research | Modular, CLI-selectable commitment with committed shortness and tight reduction to Module-SIS. Would upgrade concrete PQ label from "conjectured" to "standard-assumption (tight)" while preserving folding. Parameter exploration done; implementation blocked on folding-preserving committed shortness (short-folded-instance problem). |
@@ -233,7 +233,7 @@ All proof modes are produced by `nova-slim compress` and consumed by
 |---|---|---|---|---|
 | **slim** | `--slim` | `--slim-proof` | sumcheck transcript only (no openings) | ~0.4 KiB (on-chain) |
 | **full sumcheck** | default | `--sumcheck-proof` | sumcheck + W/E HashPC openings + commitments | ~1.6 KiB |
-| **level-1** | `--level1` | `--level1-proof` | degree-2 sumcheck + openings + final-claim-zero (+ OP with `--circuit`) | ~1.4 KiB |
+| **level-1** | `--level1` | `--level1-proof` | degree-2 sumcheck + openings + final-claim-zero (+ OP with `--circuit`) | ~1.7 KiB |
 | **level-1 + norm-range** | `--level1 --norm-range` | `--level1-proof --norm-range --circuit --steps` | level-1 + per-step range certs | ~34 KiB |
 | **level-1 + norm-jl** | `--level1 --norm-jl` | `--level1-proof --norm-jl --circuit --steps` | level-1 + per-step JL certs | ~42 KiB |
 
@@ -476,24 +476,28 @@ the full Level-1 + norm path end to end.
 
 | Circuit | Constr. | NIFS bundle | Slim proof | Level-1 proof | Slim ver. |
 |---|---|---|---|---|---|
-| `vrf_verify_nova` (bls12-381) | 9 | 0.7 KiB | **0.4 KiB** (388 B) | 1.4 KiB | **0.1 ms** |
+| `vrf_verify_nova` (bls12-381) | 9 | 0.7 KiB | **0.4 KiB** (388 B) | 1.7 KiB | **0.2 ms** |
 | synthetic (state-width 24) | — | 1.9 KiB | **0.4 KiB** (425 B) | — | **~0.2 ms** |
 
 - The bundle is O(1) in step count and circuit size (≤ 2.5 KiB everywhere).
 - Level-1 adds the commitment openings + final-claim-zero residual check
-  (1.4 KiB for VRF), keeping the proof well within on-chain budgets.
+  (1.7 KiB for VRF, current Aiken-aligned `OpeningProof` format), keeping the
+  proof well within on-chain budgets.  In Plutus-Data wire encoding the
+  on-chain redeemer is 762 B (k=4) / 2,490 B (k=16).
 
-**2. End-to-end timing — real `VRF` circuit** (bls12-381, Pedersen, 254 steps):
+**2. End-to-end timing — real `VRF` circuit** (bls12-381, Pedersen, 254 steps,
+Intel i7-7500U 2C/4T, Debian 12):
 
 | Metric | baseline | `--opt-parallel` |
 |---|---|---|
-| NIFS fold | 4.7 s (18 ms/step) | 5.0 s (20 ms/step) |
+| NIFS fold | 5.53 s (21.8 ms/step) | 4.78 s (18.8 ms/step) |
 | Sumcheck compress | 0.07 s | 0.07 s |
-| Verify (full) | 0.06 s | 0.05 s |
-| Verify (slim) | **0.1 ms** | **0.1 ms** |
-| Level-1 compress / verify | 0.06 s / 57 ms | 0.06 s / 57 ms |
-| Norm A (range) L1 verify / size | 0.18 s / 33.2 KiB | — |
-| Norm B (JL) L1 verify / size | 0.24 s / 41.4 KiB | — |
+| Verify (full) | 0.06 s | 0.06 s |
+| Verify (slim) | **0.2 ms** | **0.2 ms** |
+| Level-1 compress / verify | 0.04 s / 57 ms | — |
+| Norm A (range) L1 verify / size | 0.13 s / 34.2 KiB (33.4 KiB historical) | — |
+| Norm B (JL) L1 verify / size | 0.26 s / 42.6 KiB (41.4 KiB historical) | — |
+| Peak RSS | 4.4 MiB | 4.4 MiB |
 
 - The 9-constraint VRF circuit isolates protocol overhead; it shows the slim
   verifier is sub-millisecond and independent of step count.
