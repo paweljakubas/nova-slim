@@ -676,10 +676,20 @@ fn nifs_fold<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     let mut acc_w: Option<nifs::RelaxedR1csWitness<CS>> = None;
     let mut step_witnesses: Vec<(Vec<String>, Vec<String>)> = Vec::new();
 
+    // Sub-phase timers, so the crypto cost (MSM + fold core) can be separated
+    // from disk I/O and the `Fr` <-> decimal-string round-trips that otherwise
+    // dominate the reported per-step time at these tiny circuit sizes.
+    let mut t_load = 0.0f64;
+    let mut t_msm = 0.0f64;
+    let mut t_core = 0.0f64;
+    let mut t_ser = 0.0f64;
+
     for p in wtns {
+        let t = Instant::now();
         circuit
             .load_witness(p.to_str().expect("witness path is not valid UTF-8"))
             .unwrap_or_else(|e| panic!("failed to load witness {}: {e}", p.display()));
+        t_load += t.elapsed().as_secs_f64();
         let w = &circuit.witness;
 
         let out_fr = &w[1..1 + n_pub_out];
@@ -697,20 +707,25 @@ fn nifs_fold<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
         }
 
         let x = w[1..1 + n_pub_out + n_pub_in].to_vec();
+        let t = Instant::now();
+        let w_commit = CS::commit_witness(&params, w);
+        t_msm += t.elapsed().as_secs_f64();
         let step_u = nifs::RelaxedR1csInstance {
             x,
             u: ScalarField::<C>::from(1u64),
-            w_commit: CS::commit_witness(&params, w),
+            w_commit,
             e_commit: CS::zero(sis_param),
         };
         let step_w = nifs::RelaxedR1csWitness {
             w: w.to_vec(),
             e: zero_e.clone(),
         };
+        let t = Instant::now();
         step_witnesses.push((
             step_w.w.iter().map(fr_to_string).collect(),
             step_w.e.iter().map(fr_to_string).collect(),
         ));
+        t_ser += t.elapsed().as_secs_f64();
 
         match acc_u.take() {
             None => {
@@ -720,11 +735,13 @@ fn nifs_fold<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
             Some(u_acc) => {
                 let w_acc = acc_w.take().expect("running witness must exist");
                 let acc = acc_hash.as_ref().expect("transcript initialized");
+                let t = Instant::now();
                 let challenge = nifs::fold_challenge::<CS>(acc, &u_acc, &step_u);
                 let (u3, w3) = nifs::fold_with_opts::<CS>(
                     &params, &circuit.l, &circuit.r, &circuit.o, &u_acc, &w_acc, &step_u, &step_w,
                     challenge, parallel,
                 );
+                t_core += t.elapsed().as_secs_f64();
                 acc_u = Some(u3);
                 acc_w = Some(w3);
             }
@@ -740,6 +757,16 @@ fn nifs_fold<C: NovaCurve, CS: CommitmentScheme<Scalar = ScalarField<C>>>(
     let final_u = acc_u.expect("no step witnesses folded");
     let final_w = acc_w.expect("final witness present");
     let transcript_final = hex::encode(acc_hash.expect("transcript finalized"));
+
+    let n = wtns.len() as f64;
+    println!(
+        "  fold breakdown: load {:.3} ms/step, commit(MSM) {:.3} ms/step, \
+         fold-core {:.3} ms/step, serialize {:.3} ms/step",
+        t_load * 1000.0 / n,
+        t_msm * 1000.0 / n,
+        t_core * 1000.0 / n,
+        t_ser * 1000.0 / n,
+    );
 
     let bundle = NifsBundle {
         circuit: String::new(),
