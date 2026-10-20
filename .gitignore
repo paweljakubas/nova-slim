@@ -2,6 +2,10 @@
 target/
 Cargo.lock
 
+# Nix
+result
+result-*
+
 # IDE
 .idea/
 .vscode/

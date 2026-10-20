@@ -24,6 +24,12 @@ rayon = "1.10"
 serde = { version = "1", features = ["derive"] }
 serde_bytes = "0.11"
 serde_json = "1"
+# Pinned to the exact versions bundled with Verus release
+# 0.2026.09.20.aef82ed.  A newer `vstd` (e.g. 2026-10-18) panics the verifier
+# with "unexpected verus diagnostic item ... rust_div", so the `=` is required.
+vstd = { version = "=0.0.0-2026-09-20-0158", optional = true }
+verus_builtin = { version = "=0.0.0-2026-09-16-0054", optional = true }
+verus_builtin_macros = { version = "=0.0.0-2026-09-20-0158", optional = true }
 
 [features]
 default = ["bls12-381"]
@@ -33,6 +39,13 @@ pallas = ["dep:ark-pallas"]
 vesta = ["dep:ark-vesta"]
 grumpkin = ["dep:ark-bn254"]
 bandersnatch = ["dep:ark-ed-on-bls12-381-bandersnatch"]
+verus = ["dep:vstd", "dep:verus_builtin", "dep:verus_builtin_macros"]
+
+# Without this, `cargo verus verify` only *compiles* the crate and never runs
+# the verification engine (no `__VERUS_DRIVER_VERIFY_*` is exported for the
+# primary package), so a false assertion slips through silently.
+[package.metadata.verus]
+verify = true
 
 [dev-dependencies]
 proptest = "1.4"

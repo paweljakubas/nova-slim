@@ -114,6 +114,11 @@ pub mod opening;
 pub mod sumcheck;
 pub mod window;
 
+/// Verus formal-verification layer (pure-integer proofs + smoke canary).
+/// Gated behind the `verus` feature; erased from normal builds.
+#[cfg(feature = "verus")]
+pub mod verus_smoke;
+
 /// JSON descriptor of a step circuit (emitted by the `params` operation).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CircuitDescriptor {
