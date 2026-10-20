@@ -119,6 +119,10 @@ pub mod window;
 #[cfg(feature = "verus")]
 pub mod verus_smoke;
 
+/// Verus integer models of the norm arithmetic in [`norm`].
+#[cfg(feature = "verus")]
+pub mod verus_norm;
+
 /// JSON descriptor of a step circuit (emitted by the `params` operation).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CircuitDescriptor {
