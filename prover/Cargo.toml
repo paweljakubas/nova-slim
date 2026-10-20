@@ -40,6 +40,9 @@ vesta = ["dep:ark-vesta"]
 grumpkin = ["dep:ark-bn254"]
 bandersnatch = ["dep:ark-ed-on-bls12-381-bandersnatch"]
 verus = ["dep:vstd", "dep:verus_builtin", "dep:verus_builtin_macros"]
+# Optional native (vendored blst) MSM acceleration.  Purely additive: without
+# it the Rust wrapper falls back to arkworks.
+native = []
 
 # Without this, `cargo verus verify` only *compiles* the crate and never runs
 # the verification engine (no `__VERUS_DRIVER_VERIFY_*` is exported for the
@@ -50,3 +53,6 @@ verify = true
 [dev-dependencies]
 proptest = "1.4"
 tempfile = "3"
+
+[build-dependencies]
+cmake = "0.1"

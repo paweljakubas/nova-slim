@@ -127,6 +127,11 @@ pub mod verus_norm;
 #[cfg(feature = "verus")]
 pub mod verus_specs;
 
+/// Optional native (vendored blst) BLS12-381 G1 MSM accelerator.  Gated behind
+/// the `native` feature *and* the BLS12-381 curve; erased from normal builds.
+#[cfg(all(feature = "native", feature = "bls12-381"))]
+pub mod native_msm;
+
 /// JSON descriptor of a step circuit (emitted by the `params` operation).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CircuitDescriptor {

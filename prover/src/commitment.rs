@@ -172,6 +172,9 @@ pub fn pedersen_commit<C: NovaCurve>(
         return C::G1Affine::zero();
     }
     debug_assert_eq!(basis.len(), values.len(), "basis/values length mismatch");
+    if let Some(fast) = C::native_msm(basis, values) {
+        return fast;
+    }
     C::G1Affine::from(G1Projective::<C>::msm(basis, values).expect("MSM length mismatch"))
 }
 

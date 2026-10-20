@@ -35,6 +35,18 @@ pub trait NovaCurve:
     /// values.  Its scalar field must match `Self::ScalarField` so that
     /// Pedersen MSMs are well-typed.
     type G1Affine: AffineRepr<ScalarField = Self::ScalarField>;
+
+    /// Optional native multi-scalar multiplication hook.
+    ///
+    /// Returns `Some(sum_i scalars[i] * points[i])` when a native accelerator
+    /// is compiled in for this curve, or `None` (the default) so callers fall
+    /// back to arkworks.  The native result is checked bit-for-bit against
+    /// arkworks in the `native` feature tests, so enabling it cannot change
+    /// observable outputs — only speed.
+    #[allow(unused_variables)]
+    fn native_msm(points: &[Self::G1Affine], scalars: &[Self::ScalarField]) -> Option<Self::G1Affine> {
+        None
+    }
 }
 
 /// Convenience alias for the projective group associated with a curve's G1.
@@ -56,6 +68,18 @@ pub struct Bls12_381;
 impl NovaCurve for Bls12_381 {
     type ScalarField = ark_bls12_381::Fr;
     type G1Affine = ark_bls12_381::G1Affine;
+
+    /// Route the Pedersen MSM through the vendored-blst backend when the
+    /// `native` feature is enabled.  arkworks is used otherwise, and as a
+    /// fallback if the native call reports an error.
+    #[cfg(feature = "native")]
+    #[allow(unused_variables)]
+    fn native_msm(
+        points: &[ark_bls12_381::G1Affine],
+        scalars: &[ark_bls12_381::Fr],
+    ) -> Option<ark_bls12_381::G1Affine> {
+        crate::native_msm::native_msm_g1(points, scalars)
+    }
 }
 
 /// BN254 — widely used in Ethereum zk-rollups.
