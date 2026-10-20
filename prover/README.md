@@ -92,6 +92,17 @@ nova-slim compress --slim --opt parallel --curve bls12-381 --circuit step_circui
 
 ---
 
+## Optional accelerators
+
+- **Native (blst) MSM backend** — an opt-in `native` feature swaps the
+  BLS12-381 G1 Pedersen MSM onto the vendored blst library through a C ABI
+  (1.3–1.95× measured, off by default). See [NativeBackend.md](NativeBackend.md).
+- **Formal verification (Verus)** — an opt-in `verus` feature proves the
+  pure-integer norm arithmetic and asserts contracts over the ark-typed
+  surface. See [FormalVerification.md](FormalVerification.md).
+
+---
+
 ## Why slim proofs are safe
 
 The sumcheck protocol proves knowledge of `Z, E` such that the relaxed R1CS

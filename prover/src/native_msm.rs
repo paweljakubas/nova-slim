@@ -217,4 +217,70 @@ mod tests {
         let back = decode_g1(&bytes).expect("decode");
         assert_eq!(p, back);
     }
+
+    // ── ABI drift ───────────────────────────────────────────────────────
+    // Fail the build if the committed C header and the Rust bindings ever
+    // disagree.  This is the same guard the sibling bls backend uses: the
+    // header is a checked-in artifact, so parsing it is the cheapest way to
+    // catch an accidental edit that would silently corrupt the ABI.
+    const HEADER: &str = include_str!("../native/include/nova_backend.h");
+
+    fn parse_macro(name: &str) -> Option<usize> {
+        for line in HEADER.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("#define ") {
+                let mut it = rest.split_whitespace();
+                if it.next() == Some(name) {
+                    return it.next().and_then(|v| v.parse().ok());
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn header_macros_match_rust_widths() {
+        assert_eq!(parse_macro("NOVA_BACKEND_MODULE_VERSION"), Some(MODULE_VERSION as usize));
+        assert_eq!(parse_macro("NOVA_BACKEND_FR_BYTES"), Some(FR_BYTES));
+        assert_eq!(parse_macro("NOVA_BACKEND_FP_BYTES"), Some(FP_BYTES));
+        assert_eq!(parse_macro("NOVA_BACKEND_G1_AFFINE_BYTES"), Some(G1_AFFINE_BYTES));
+    }
+
+    #[test]
+    fn header_declares_the_functions_we_bind() {
+        for sig in [
+            "nova_backend_version",
+            "nova_backend_flavor",
+            "nova_msm_g1",
+        ] {
+            assert!(
+                HEADER.contains(sig),
+                "header no longer declares {sig}, but native_msm.rs binds it"
+            );
+        }
+        // the status codes we switch on must still be named and valued as expected
+        assert!(HEADER.contains("NOVA_BACKEND_OK"));
+        assert!(HEADER.contains("NOVA_BACKEND_INFINITY_OUTPUT"));
+    }
+
+    #[test]
+    fn header_status_values_match_rust_constants() {
+        // STATUS_OK / STATUS_INFINITY_OUTPUT are compared against the C return;
+        // any renumbering in the header must be mirrored here.
+        fn parse_enum(name: &str) -> Option<i32> {
+            for line in HEADER.lines() {
+                let line = line.trim();
+                if let Some(rest) = line.strip_prefix(name) {
+                    let rest = rest.trim_start_matches(|c: char| c == ' ' || c == '=');
+                    let val = rest
+                        .split(|c: char| c == ',' || c == ' ' || c == '}')
+                        .next()?;
+                    return val.parse().ok();
+                }
+            }
+            None
+        }
+        assert_eq!(parse_enum("NOVA_BACKEND_OK"), Some(STATUS_OK));
+        assert_eq!(parse_enum("NOVA_BACKEND_INFINITY_OUTPUT"), Some(STATUS_INFINITY_OUTPUT));
+    }
 }
