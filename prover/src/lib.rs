@@ -123,6 +123,10 @@ pub mod verus_smoke;
 #[cfg(feature = "verus")]
 pub mod verus_norm;
 
+/// Verus *contracts* (asserted, not proved) for the ark-typed norm surface.
+#[cfg(feature = "verus")]
+pub mod verus_specs;
+
 /// JSON descriptor of a step circuit (emitted by the `params` operation).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CircuitDescriptor {
